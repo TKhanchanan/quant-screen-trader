@@ -83,3 +83,16 @@ Electron GUI input/debugger checks used a separate temporary application-data di
 - **Engine health is offline:** run `npm run engine:dev` and read the terminal error. Check that port 8765 is free and that the editable Python package is installed.
 - **The database cannot initialize:** verify that the current user can write to the OS application-data directory. Do not move the database into the checkout.
 - **`npm ci` rejects the lockfile:** use the Node/npm versions above. If dependencies intentionally changed, run `npm install`, validate, and commit both manifest and lockfile changes.
+
+
+## Phase 4–5 checks
+
+Reinstall the editable engine dependencies after updating (DuckDB is now required). npm installs Tesseract.js and local English language data. No Python OCR executable, runtime model download or ML model is needed.
+
+- `node scripts/market-smoke.mjs`: real native Electron capture and local OCR of generated synthetic chart text, with an isolated temporary OS profile and no stored screenshot.
+- `node scripts/python.mjs services/quant-engine/tests/benchmark_market.py`: 18-slot deterministic builder workload, with wall/CPU time and traced Python memory.
+- `npm test`: parser/provider, scheduler isolation/backpressure, quality, time-boundary, no-look-ahead, storage and existing Phase 0–3 regression tests.
+
+On macOS ARM64, the native synthetic OCR check read asset, price, payout and timer at 0.95 reported confidence: capture 188 ms, cold OCR 506 ms, warm OCR 107 ms in one run. The builder processed 21,618 fixture observations in 3.45 seconds (6264/s), 3.43 CPU seconds and 69 MB peak traced Python memory. These are synthetic local measurements, not live broker rates or OCR accuracy. Serial per-platform OCR is the expected bottleneck with nine visual slots; requested sampling targets are not guaranteed.
+
+Authenticated Google-session preservation and broker chart accuracy must be manually checked with both platforms on the target OS. Windows native capture/OCR has not been exercised in this session. Do not mark Phase 4 accepted merely because fixtures pass. Phase 6 remains out of scope.

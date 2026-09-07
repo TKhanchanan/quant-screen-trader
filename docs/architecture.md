@@ -56,3 +56,12 @@ Zustand owns renderer session/configuration snapshots and request status. React 
 The architecture supports analysis, paper simulation, and explicit manual confirmation. Unattended real-money order submission is outside the allowed boundary. Future broker support must sit behind a capability-reporting adapter and keep live submission disabled or human-confirmed.
 
 See [ADR 0001](adr/0001-lightweight-monorepo-and-local-health-transport.md) for the repository and local transport decision.
+
+
+## Phase 4–5 data flow
+
+Main-process providers observe calibrated remote-view slots → strict shared observation contract → bounded latest-per-slot HTTP batches → Python quality gate → canonical samples → one-second stream and aligned S5/M1/M5/M10 candles → buffered Parquet. DuckDB provides serialization and research queries. No OHLC logic is duplicated in TypeScript and no SQLite migrations changed.
+
+Only trusted workspace main frames can issue observation start/stop/state IPC. Calibration overlays and remote pages cannot. Configuration responses reset provider context, and browser lifecycle/geometry changes invalidate in-flight capture. Existing Google navigation and partition ownership are preserved.
+
+See [provider boundaries](market-data-providers.md), [scheduler and capture](capture-parser.md), [builder/storage semantics](market-data-builder.md), and [quality gates](data-quality.md). Live chart extraction remains subject to broker-specific verification; Phase 4 is not yet signed off for authenticated data accuracy.

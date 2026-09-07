@@ -1,6 +1,6 @@
 # QuantScreen Trader
 
-QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence.
+QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence. It now includes calibrated DOM/visual observation, local OCR, provenance and quality gates, plus a Python one-second and multi-timeframe market-data builder with Parquet storage.
 
 This software is for research and simulation. It does not place unattended real-money orders, collect platform passwords, or bypass platform security controls.
 
@@ -90,7 +90,7 @@ Phase 2 ✅ Isolated embedded sessions; login is manual and authentication state
 
 Phase 3 ✅ Asset configuration, presets, and calibration. See the verification notes and limitations in the guides below.
 
-Phase 4 has **not** started. There is no capture/parser pipeline, market extraction, signal generation, trading, or installer packaging.
+Phase 4 capture/parser implementation is available; authenticated broker extraction acceptance is pending. Phase 5 data-builder tests pass. Signal generation, trading and installer packaging remain unimplemented.
 
 ## Workspace workflow
 
@@ -102,3 +102,14 @@ Phase 4 has **not** started. There is no capture/parser pipeline, market extract
 See [Platform sessions](docs/platform-session.md), [Calibration](docs/calibration.md), and [Asset presets](docs/asset-presets.md).
 
 Contributions follow [Conventional Commits](CONTRIBUTING.md). The design and process boundaries are documented in [Architecture](docs/architecture.md).
+
+
+## Market data foundation
+
+Load an asset configuration and calibration profile, then choose **Start observation** in a workspace. Disabled slots stay idle. Observation status, source, quality, age and series progress appear on each slot. Sampling targets are configurable per workspace; developer diagnostics expose timings, ROI and queue drops. Images are never stored.
+
+Phase 4 implementation is available with account-free native OCR and scheduler tests. Authenticated broker selector/OCR accuracy still requires live verification; ambiguous chart text produces DATA_UNCERTAIN rather than a fabricated price. Phase 4 is not marked complete pending that acceptance check.
+
+Phase 5 ✅ Deterministic samples, one-second selection, S5/M1/M5/M10 OHLC, forming/closed state, gaps, bounded buffers and Parquet/replay tests. Phase 6 has not started.
+
+See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.

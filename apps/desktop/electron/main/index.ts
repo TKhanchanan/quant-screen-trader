@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { app, BrowserWindow, ipcMain, WebContentsView, type IpcMainInvokeEvent } from 'electron'
 import {
-  IPC_CHANNELS,
+  IPC_CHANNELS, MarketCommandSchema,
   PlatformSchema,
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS,
   type Platform
@@ -12,6 +12,7 @@ import { EngineProcessManager } from './engine-process'
 import { fetchEngineHealth } from './health-client'
 import { PlatformWindowRegistry } from './window-registry'
 import { PlatformBrowserManager } from './platform-browser'
+import { MarketManager } from './market-manager'
 import { requestConfiguration } from './configuration-client'
 import { requireScope, type RendererScope } from './ipc-scope'
 
@@ -39,6 +40,7 @@ const browsers = new PlatformBrowserManager((platform) => {
 
 let dashboardWindow: BrowserWindow | null = null
 let engineProcess: EngineProcessManager | null = null
+let market: MarketManager | null = null
 
 function rendererLocation(): { devServerUrl?: string; file: string } {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
@@ -162,6 +164,12 @@ void app.whenReady().then(() => {
     resourcesPath: process.resourcesPath
   })
   engineProcess.start()
+  market = new MarketManager(browsers, connection)
+  ipcMain.handle(IPC_CHANNELS.market, (event, input: unknown) => {
+    const command = MarketCommandSchema.parse(input)
+    if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot observe')
+    return market!.command(command)
+  })
 
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })
   ipcMain.handle(IPC_CHANNELS.openWorkspace, (event, input: unknown) => {
@@ -175,10 +183,12 @@ void app.whenReady().then(() => {
       throw new Error('Overlay operation not authorized')
     return browsers.command(command)
   })
-  ipcMain.handle(IPC_CHANNELS.configuration, (event, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.configuration, async (event, input: unknown) => {
     const request = ConfigurationRequestSchema.parse(input)
     if (authorize(event, request.platform).overlay) throw new Error('Overlay cannot persist configuration')
-    return requestConfiguration(connection, request)
+    const result = await requestConfiguration(connection, request)
+    market!.configure(result)
+    return result
   })
 
   openDashboard()
@@ -187,7 +197,7 @@ void app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => engineProcess?.stop())
+app.on('before-quit', () => { market?.stop(); engineProcess?.stop() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

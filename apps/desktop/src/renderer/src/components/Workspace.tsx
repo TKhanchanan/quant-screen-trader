@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { defaultCalibration, type Platform } from '@quant-screen-trader/shared-types'
+import { defaultCalibration, type MarketSnapshot, type Platform } from '@quant-screen-trader/shared-types'
 import { PLATFORM_DETAILS } from '../platforms'
 import { useAppStore } from '../state/appStore'
 import { EngineStatus } from './EngineStatus'
@@ -16,6 +16,9 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
   const engineHealth = useAppStore((state) => state.engineHealth)
   const { data, session, busy, error, execute, setSession } = useWorkspaceStore()
   const [mode, setMode] = useState<'browser' | 'assets' | 'calibration'>('browser')
+  const [now, setNow] = useState(0)
+  const [market, setMarket] = useState<MarketSnapshot | null>(null)
+  const [developer, setDeveloper] = useState(false)
   const [actionError, setActionError] = useState('')
   const region = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -23,9 +26,12 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
     let disposed = false
     const poll = (): void => { void window.quantScreenTrader.platformCommand({ operation: 'state', platform })
       .then((s) => { if (!disposed) setSession(s.session) }).catch(() => { if (!disposed) setActionError('Platform browser unavailable') }) }
+    const dataPoll = (): void => { void window.quantScreenTrader.market({ operation: 'state', platform })
+      .then(s => { if (!disposed) { setMarket(s); setNow(Date.now()) } }).catch(() => {}) }
+    const dataTimer = window.setInterval(dataPoll, 500)
     poll()
     const timer = window.setInterval(poll, 1000)
-    return () => { disposed = true; window.clearInterval(timer) }
+    return () => { disposed = true; window.clearInterval(timer); window.clearInterval(dataTimer) }
   }, [platform, execute, setSession])
   useEffect(() => {
     const element = region.current
@@ -63,13 +69,26 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
         <button disabled={!data || busy || mode !== 'browser'} onClick={() => setMode('assets')}>Asset Setup</button>
         <button disabled={busy || mode !== 'browser'} onClick={() => void execute({ operation: 'get', platform })}>Refresh configuration</button>
       </div>
+      <div className="toolbar">
+        <button disabled={!data?.activeCalibrationId} onClick={() => void window.quantScreenTrader.market({ platform,
+          operation: market?.running ? 'stop' : 'start' }).then(setMarket).catch(() => setActionError('Observation unavailable'))}>{market?.running ? 'Stop observation' : 'Start observation'}</button>
+        <label>Sampling <select value={market?.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000)} onChange={e => void window.quantScreenTrader.market({ platform, operation: 'state', intervalMs: Number(e.target.value) }).then(setMarket)}>
+          {[250, 500, 1000, 2000].map(ms => <option key={ms} value={ms}>{ms} ms target</option>)}</select></label>
+        <label><input type="checkbox" checked={developer} onChange={e => setDeveloper(e.target.checked)} /> Developer diagnostics</label>
+        <span>Enabled {data?.configuration.slots.filter(s => s.enabled).length ?? 0} · Healthy {market?.slots.filter(s => s.state === 'READY').length ?? 0} · Uncertain {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0} · Stale {market?.slots.filter(s => s.state === 'STALE').length ?? 0} · {market?.captureRate.toFixed(1) ?? 0} obs/s · Queue {market?.queueDepth ?? 0} · Engine {market?.engineAvailable ? 'receiving' : 'waiting'}</span>
+      </div>
       <p>Login manually in the platform. Login status is unverified; READY is never inferred from page load.</p>
       {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
       {(error || actionError) && <p role="alert" className="error-banner">{error || actionError}</p>}
       <div className="slot-summary" aria-label="Nine configured slots">{Array.from({ length: 9 }, (_, i) => {
         const slot = data?.configuration.slots.find((s) => s.id === i + 1)
-        return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'}</span>
+        const observed = market?.slots.find(s => s.slotId === i + 1)
+        return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'}<br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br />Price {observed?.state === 'READY' ? observed.observation?.price : '—'} · {observed?.observation?.dataQuality.state ?? '—'}
+          {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
+          <small><br />1s {observed?.secondSamples ?? 0} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
+        </span>
       })}</div>
+      {developer && <details><summary>Slot diagnostics (images are not stored)</summary><pre style={{ maxHeight: 200, overflow: 'auto' }}>{JSON.stringify({ market, calibration: data?.calibrations.find(p => p.id === data.activeCalibrationId) }, null, 2)}</pre></details>}
       {mode === 'calibration' && <CalibrationControls platform={platform} onClose={close} onError={setActionError} />}
     </header>
     <div ref={region} className="browser-region" aria-label={`${details.name} platform browser`}>

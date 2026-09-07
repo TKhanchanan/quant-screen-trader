@@ -9,6 +9,7 @@ description = "Local quantitative engine for QuantScreen Trader"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
+  "duckdb>=1.4,<2",
   "uvicorn[standard]>=0.32,<1",
 ]
 

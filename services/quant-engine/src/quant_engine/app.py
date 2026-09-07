@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -15,6 +16,9 @@ from pydantic import BaseModel, Field
 
 from quant_engine import __version__
 from quant_engine.configuration_api import router as configuration_router
+from quant_engine.market_api import MarketEngine
+from quant_engine.market_api import router as market_router
+from quant_engine.market_storage import ParquetStorage
 from quant_engine.paths import AppPaths, ensure_app_paths
 from quant_engine.storage.database import database_is_healthy, initialize_database
 
@@ -70,7 +74,34 @@ def create_app(
         paths = ensure_app_paths(data_dir)
         await asyncio.to_thread(initialize_database, paths.database_file)
         application.state.paths = paths
-        yield
+        market = MarketEngine(ParquetStorage(paths.market_data))
+        application.state.market = market
+
+        stopping = asyncio.Event()
+
+        async def maintain_market() -> None:
+            while not stopping.is_set():
+                try:
+                    await asyncio.wait_for(stopping.wait(), timeout=1)
+                    return
+                except TimeoutError:
+                    pass
+                if not market.busy:
+                    market.busy = True
+                    try:
+                        await asyncio.to_thread(market.advance_live, int(time.time() * 1000))
+                    except Exception:
+                        market.storage_error = True
+                    finally:
+                        market.busy = False
+
+        task = asyncio.create_task(maintain_market())
+        try:
+            yield
+        finally:
+            stopping.set()
+            await task
+            await asyncio.to_thread(market.storage.flush)
 
     application = FastAPI(
         title="QuantScreen Trader Quant Engine",
@@ -78,6 +109,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.include_router(configuration_router)
+    application.include_router(market_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { MarketCommand, MarketSnapshot } from './market'
 
 export const PlatformSchema = z.enum(['capitalbear', 'iqoption'])
 export type Platform = z.infer<typeof PlatformSchema>
@@ -49,12 +50,13 @@ export const EngineHealthSnapshotSchema = z.object({
 export type EngineHealthSnapshot = z.infer<typeof EngineHealthSnapshotSchema>
 
 export const IPC_CHANNELS = {
-  getEngineHealth: 'engine:get-health',
+  getEngineHealth: 'engine:get-health', market: 'market:command',
   openWorkspace: 'workspace:open',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
 
 export interface DesktopBridge {
+  market: (request: MarketCommand) => Promise<MarketSnapshot>
   getEngineHealth: () => Promise<EngineHealthSnapshot>
   openWorkspace: (platform: Platform) => Promise<void>
   platformCommand: (request: PlatformCommand) => Promise<BrowserSnapshot>
@@ -148,3 +150,5 @@ export function adjustBounds(bounds: NormalizedBounds, dx: number, dy: number, r
     height: clamp(bounds.height + dy, 0.01, 1 - bounds.y) }
     : { ...bounds, x: clamp(bounds.x + dx, 0, 1 - bounds.width), y: clamp(bounds.y + dy, 0, 1 - bounds.height) }
 }
+
+export * from './market'
