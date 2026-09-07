@@ -29,10 +29,19 @@ Copy `.env.example` to the ignored `.env` file only when overriding a default.
 | `QST_ENGINE_HOST` | `127.0.0.1` | Loopback address used by the desktop and engine. |
 | `QST_ENGINE_PORT` | `8765` | Local HTTP and WebSocket port. |
 | `QST_LOG_LEVEL` | `info` | Python engine log level. |
-| `QST_DATA_DIR` | OS application-data directory | Optional standalone-engine data directory. |
+| `QST_DATA_DIR` | OS application-data directory | Standalone engine override; in desktop development, an existing directory outside the checkout overrides both SQLite and Chromium profile storage. |
 | `QST_PYTHON_EXECUTABLE` | Project virtual environment, then system Python | Optional interpreter override used by desktop/root scripts. |
 
 Keep the host loopback-only. No credential belongs in `.env`; platform authentication occurs manually inside its isolated embedded-browser profile.
+
+Platform start URL overrides and the strict navigation policy are documented in [Platform sessions](platform-session.md). For destructive UI smoke tests, use a fresh temporary directory and a separate engine port, never the normal user profile:
+
+```bash
+mkdir -p /private/tmp/qst-manual-test
+QST_DATA_DIR=/private/tmp/qst-manual-test QST_ENGINE_PORT=8877 npm run dev
+```
+
+On Windows create a temporary directory outside the checkout and set the same environment variables in PowerShell. The desktop requires the override directory to exist, resolves symlinks and rejects checkout-contained paths. Stop the test instance before deleting its temporary data. Do not use a real login during automated tests.
 
 ## Process and health checks
 
@@ -59,9 +68,18 @@ Tests must be deterministic and must not require a broker login or network acces
 
 GitHub Actions runs lint, type checking, tests, and a build on pull requests and pushes to `main`. Reproduce failures with the root commands before changing workflow configuration.
 
+Phase 2/3 tests cover configuration schemas, navigation restrictions, IPC sender scope, independent browser lifecycle/reload/crash behavior, bounds/clamping/scaling, preset/profile persistence and isolation, fresh migration and upgrade from migration 0001. GUI checks additionally exercise both real unauthenticated platform pages and sanitized asset/preset/calibration workflows in an isolated profile. CI does not authenticate with either broker. Windows-specific native compositing and manual authenticated login still require verification on the target machine.
+
+### Phase 2/3 verification — 2026-09-07
+
+On macOS ARM64, Node 26 and Python 3.14: lint, TypeScript/mypy, 49 TypeScript tests, 26 Python tests and production build passed. The existing CI retains its Node 22/Python 3.12 baseline; it has not been rerun remotely for these changes.
+
+Electron GUI input/debugger checks used a separate temporary application-data directory and engine port. Verified both unauthenticated platform documents loaded concurrently, distinct native session objects/storage directories, independent reload and close/reopen, and isolated renderer-crash reporting/recovery. Verified all nine asset fields, enabled/disabled retention, preset CRUD/load, profile CRUD/load, pointer drag/resize, transparent overlay DOM, and full app-restart persistence. Native resize changed both browser and overlay to the same 1050×451 content region; saved normalized geometry remained unchanged and rendered proportionally. Individual renderer captures do not include sibling native views, so these captures are not evidence of full-window compositing on every OS.
+
 ## Troubleshooting
 
 - **Python is not found:** create `services/quant-engine/.venv` using the README commands, or set `QST_PYTHON_EXECUTABLE` to a Python 3.12+ executable.
+- **Electron starts as Node instead of opening a window:** unset an inherited `ELECTRON_RUN_AS_NODE` variable before running the dev command.
 - **Engine health is offline:** run `npm run engine:dev` and read the terminal error. Check that port 8765 is free and that the editable Python package is installed.
 - **The database cannot initialize:** verify that the current user can write to the OS application-data directory. Do not move the database into the checkout.
 - **`npm ci` rejects the lockfile:** use the Node/npm versions above. If dependencies intentionally changed, run `npm install`, validate, and commit both manifest and lockfile changes.

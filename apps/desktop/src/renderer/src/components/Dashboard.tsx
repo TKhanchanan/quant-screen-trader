@@ -27,7 +27,7 @@ export function Dashboard(): JSX.Element {
             Two isolated workspaces, one measured view of market conditions.
           </p>
         </div>
-        <div className="phase-chip">PHASE 1 · APPLICATION SHELL</div>
+        <div className="phase-chip">SESSIONS · ASSETS · CALIBRATION</div>
       </header>
 
       <section className="platform-grid" aria-label="Platform workspaces">
@@ -41,7 +41,7 @@ export function Dashboard(): JSX.Element {
                 </div>
                 <div>
                   <h2>{details.name}</h2>
-                  <span className="platform-state">OFFLINE · SESSION NOT CONNECTED</span>
+                  <span className="platform-state">MANUAL LOGIN · ISOLATED SESSION</span>
                 </div>
               </div>
 

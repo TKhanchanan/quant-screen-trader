@@ -1,6 +1,6 @@
 # QuantScreen Trader
 
-QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. The current milestone provides the application shell: a dashboard, independent CapitalBear and IQ Option workspace windows, responsive 3x3 slot grids, local engine health monitoring, and automatic SQLite initialization.
+QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence.
 
 This software is for research and simulation. It does not place unattended real-money orders, collect platform passwords, or bypass platform security controls.
 
@@ -82,6 +82,23 @@ SQLite databases, browser sessions, logs, screenshots, market datasets, diagnost
 
 ## Status
 
-Phase 0 and Phase 1 are the current scope. Platform login, capture/calibration, live market parsing, quantitative signals, and packaging installers are later phases and must not be represented as complete.
+Phase 0 ✅ Repository foundation
+
+Phase 1 ✅ Application shell
+
+Phase 2 ✅ Isolated embedded sessions; login is manual and authentication state remains unverified.
+
+Phase 3 ✅ Asset configuration, presets, and calibration. See the verification notes and limitations in the guides below.
+
+Phase 4 has **not** started. There is no capture/parser pipeline, market extraction, signal generation, trading, or installer packaging.
+
+## Workspace workflow
+
+1. Open either or both platform workspaces. Log in manually inside each platform's browser.
+2. Open **Asset Setup**, enter your own asset labels, enable the desired slots, and save. This does not change the platform's instruments; select those manually on the platform.
+3. Create a named asset preset for reuse. Presets never cross platform boundaries.
+4. Open **Calibrate Slots**. Drag the slot labels and resize with the lower-right handles. Create a profile, or save over the selected profile. Cancel discards unsaved geometry.
+
+See [Platform sessions](docs/platform-session.md), [Calibration](docs/calibration.md), and [Asset presets](docs/asset-presets.md).
 
 Contributions follow [Conventional Commits](CONTRIBUTING.md). The design and process boundaries are documented in [Architecture](docs/architecture.md).

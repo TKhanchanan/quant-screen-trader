@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from quant_engine import __version__
+from quant_engine.configuration_api import router as configuration_router
 from quant_engine.paths import AppPaths, ensure_app_paths
 from quant_engine.storage.database import database_is_healthy, initialize_database
 
@@ -76,6 +77,7 @@ def create_app(
         version=__version__,
         lifespan=lifespan,
     )
+    application.include_router(configuration_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

@@ -2,13 +2,15 @@
 
 ## Current milestone
 
-Phase 0 and Phase 1 establish a single cross-platform repository, the Electron application shell, two independently managed platform workspace windows, a shared contract package, and a local Python health/storage service. Later capture, calibration, quantitative analysis, and packaging phases extend these boundaries rather than bypassing them.
+Phases 0–3 retain the Electron/React/shared-types and FastAPI/SQLite boundaries. Workspace windows contain a main-process-owned remote WebContentsView. Calibration uses a separate transparent local WebContentsView above it, not injected code in a platform page. The workspace renderer retains the toolbar and configuration UI.
 
 ```text
 Electron main process
 ├── Dashboard renderer
-├── CapitalBear workspace window ── isolated persistent session partition
-├── IQ Option workspace window ──── isolated persistent session partition
+├── CapitalBear workspace window → remote view / isolated persistent partition
+│   └── temporary local transparent calibration overlay
+├── IQ Option workspace window → remote view / isolated persistent partition
+│   └── temporary local transparent calibration overlay
 └── Loopback client/process manager
     └── Python FastAPI quant engine
         ├── HTTP /health
@@ -29,19 +31,28 @@ The Electron renderer has no direct Node.js access. Browser windows use context 
 
 The user authenticates manually within the embedded platform. The application must never ask for or log a platform password. Platform pages cannot submit arbitrary commands to the Python service or receive raw Node.js capabilities.
 
+Only local renderer webContents IDs are registered for IPC, and only their main frames are authorized. Workspace operations require the sender's platform to match. Overlay renderers may read browser state and update the in-memory calibration draft, but cannot save configuration or reload a platform. Remote browser views have no application preload. Popup windows, downloads and permission requests are denied; main-frame navigation is limited to exact configured HTTPS origins.
+
 ## Local service boundary
 
 The Python service listens on loopback by default. HTTP provides a simple startup/readiness probe, while WebSocket supports ongoing health and later state streaming without polling every feature update. Desktop behavior remains usable when the engine is absent: it reports an offline/degraded state rather than crashing.
 
 SQLite is initialized in WAL mode under the dynamically resolved operating-system application-data directory. No database, browser profile, log, screenshot, or local dataset belongs in the repository.
 
+`POST /api/workspaces/{platform}/configuration` accepts a discriminated operation contract: `get`, `slots`, `savePreset`, `loadPreset`, `deletePreset`, `saveCalibration`, `loadCalibration`, or `deleteCalibration`. Rename uses save with an existing ID; duplication uses save without an ID. The response contains current slot configuration, platform presets/profiles, and the active calibration ID. Zod validates both IPC input and engine responses; Pydantic validates HTTP input. Engine error bodies and platform URLs are not forwarded to the renderer.
+
+The HTTP router delegates to validated domain models and a parameterized SQLite repository. Changes and their resulting snapshot use one transaction. Browser-origin requests are rejected and no CORS access is enabled. This is a local-user trust boundary, not protection against malicious native software running as the same OS user.
+
+Migration `0002_calibration_and_presets.sql` adds `calibration_profiles`, `calibration_slots`, `asset_presets`, `asset_preset_slots`, and `active_calibrations`. Migration 0001 is unchanged. Existing `workspace_profiles`/`slot_profiles` remain the source for current asset assignments; the first existing workspace for each platform is reused. Nine missing slots are initialized disabled. Geometry exists only in calibration profiles, not duplicated into asset presets. Profile child rows cascade on deletion; deleting an active profile clears its active reference.
+
 ## Window isolation
 
-The Electron main process owns a separate `BrowserWindow` reference for each platform. Opening an existing workspace focuses it; closing one releases only that reference and must not terminate the dashboard, the other workspace, or the engine. Each workspace always models nine slots, rendered as a responsive 3x3 grid at normal desktop sizes.
+The Electron main process owns a separate `BrowserWindow` reference for each platform. Opening an existing workspace focuses it; closing one disposes its remote view and overlay without touching the other workspace or engine. Reopening reuses the platform's persistent partition. A remote renderer crash becomes an ERROR state; Reload recovers that view without an automatic reload loop. Each workspace always models nine logical slots.
+
+Zustand owns renderer session/configuration snapshots and request status. React components own unsaved form drafts; Electron owns only the temporary overlay draft and native view geometry. Durable data belongs to the engine. Renderer ResizeObserver measurements use browser-region coordinates in device-independent pixels; persisted slot bounds remain normalized and scale with that region.
 
 ## Execution safety
 
 The architecture supports analysis, paper simulation, and explicit manual confirmation. Unattended real-money order submission is outside the allowed boundary. Future broker support must sit behind a capability-reporting adapter and keep live submission disabled or human-confirmed.
 
 See [ADR 0001](adr/0001-lightweight-monorepo-and-local-health-transport.md) for the repository and local transport decision.
-
