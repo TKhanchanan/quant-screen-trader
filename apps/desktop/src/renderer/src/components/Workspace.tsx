@@ -64,7 +64,8 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
         <button disabled={busy || mode !== 'browser'} onClick={() => void execute({ operation: 'get', platform })}>Refresh configuration</button>
       </div>
       <p>Login manually in the platform. Login status is unverified; READY is never inferred from page load.</p>
-      {(error || actionError || session?.errorMessage) && <p role="alert" className="error-banner">{error || actionError || session?.errorMessage}</p>}
+      {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
+      {(error || actionError) && <p role="alert" className="error-banner">{error || actionError}</p>}
       <div className="slot-summary" aria-label="Nine configured slots">{Array.from({ length: 9 }, (_, i) => {
         const slot = data?.configuration.slots.find((s) => s.id === i + 1)
         return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'}</span>

@@ -1,6 +1,6 @@
-import { WebContentsView, type BrowserWindow } from 'electron'
+import { WebContentsView, BrowserWindow, type WebContents } from 'electron'
 import { type BrowserSnapshot, type Platform, type PlatformCommand } from '@quant-screen-trader/shared-types'
-import { allowedNavigation, getPlatformConfig, safeOrigin } from '../platforms/config'
+import { allowedLoginNavigation, allowedNavigation, getPlatformConfig, safeOrigin } from '../platforms/config'
 
 interface Entry {
   window: BrowserWindow
@@ -28,19 +28,60 @@ export class PlatformBrowserManager {
     contents.session.setPermissionCheckHandler(() => false)
     const preventDownload = (event: Electron.Event): void => event.preventDefault()
     contents.session.on('will-download', preventDownload)
-    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    const loginWindows = new Set<BrowserWindow>()
+    let loginError: { errorCode: string; errorMessage: string } | undefined
+    const reportLoginError = (errorCode: string, errorMessage: string): void => {
+      loginError = { errorCode, errorMessage }
+      entry.snapshot.session = { ...entry.snapshot.session, ...loginError,
+        state: 'ERROR', lastUpdatedAt: new Date().toISOString() }
+    }
+    const blocked = (url: string): void => reportLoginError('LOGIN_NAVIGATION_BLOCKED',
+      `QuantScreen Trader blocked a login page (${safeOrigin(url) ?? 'unsupported destination'}). This destination is not permitted for ${config.displayName}.`)
+    const guardNavigation = (remote: WebContents): void => {
+      remote.on('will-navigate', (event, url) => {
+        if (!allowedLoginNavigation(config, url)) { event.preventDefault(); blocked(url) }
+      })
+      remote.on('will-redirect', (event, url, _inPlace, mainFrame) => {
+        if (mainFrame && !allowedLoginNavigation(config, url)) { event.preventDefault(); blocked(url) }
+      })
+    }
+    guardNavigation(contents)
+    contents.setWindowOpenHandler(({ url }) => {
+      if (!allowedLoginNavigation(config, url)) { blocked(url); return { action: 'deny' } }
+      return { action: 'allow', createWindow: (options) => {
+        // Preserve Chromium's opener/POST behavior, but pin all browser privileges
+        // and session ownership to the originating platform before the first load.
+        const popup = new BrowserWindow({ ...options, parent: window, show: true,
+          width: 600, height: 760, title: `${config.displayName} — Sign in`,
+          webPreferences: { session: contents.session, partition: config.sessionPartition,
+            contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+            navigateOnDragDrop: false, spellcheck: false } })
+        guardNavigation(popup.webContents)
+        popup.webContents.setWindowOpenHandler(({ url: target }) => { blocked(target); return { action: 'deny' } })
+        popup.webContents.on('did-fail-load', (_event, code, _description, _url, mainFrame) => {
+          if (mainFrame && code !== -3) reportLoginError(`LOGIN_LOAD_${code}`,
+            `The ${config.displayName} sign-in window could not load (code ${code}). Close it and retry from the workspace.`)
+        })
+        popup.webContents.on('render-process-gone', () => reportLoginError('LOGIN_RENDERER_GONE',
+          `The ${config.displayName} sign-in window stopped responding. Close it and retry from the workspace.`))
+        loginWindows.add(popup)
+        popup.once('closed', () => loginWindows.delete(popup))
+        return popup.webContents
+      } }
+    })
     const state = (status: BrowserSnapshot['session']['state'], loadState: BrowserSnapshot['session']['loadState'], errorCode?: string): void => {
+      if (errorCode) loginError = undefined
       const origin = safeOrigin(contents.getURL())
       entry.snapshot.session = { platform, state: status, loadState, lastUpdatedAt: new Date().toISOString(),
         ...(origin ? { currentUrl: origin } : {}),
-        ...(errorCode ? { errorCode, errorMessage: 'Platform unavailable. Check your connection or reload; no security bypass is attempted.' } : {}) }
+        ...(errorCode ? { errorCode, errorMessage: 'Platform unavailable. Check your connection or reload; no security bypass is attempted.' } : {}),
+        ...(loginError ? { ...loginError, state: 'ERROR' } : {}) }
     }
-    contents.on('will-navigate', (event, url) => { if (!allowedNavigation(config, url)) event.preventDefault() })
-    contents.on('will-redirect', (event, url, _inPlace, mainFrame) => {
-      if (mainFrame && !allowedNavigation(config, url)) event.preventDefault()
-    })
-    contents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
-      if (mainFrame && !inPlace) state('LOADING', 'loading')
+    contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
+      if (mainFrame && !inPlace && allowedLoginNavigation(config, url)) {
+        loginError = undefined
+        state('LOADING', 'loading')
+      }
     })
     contents.on('dom-ready', () => state('LOGIN_REQUIRED', 'loaded'))
     contents.on('did-finish-load', () => state('LOGIN_REQUIRED', 'loaded'))
@@ -51,6 +92,7 @@ export class PlatformBrowserManager {
     contents.on('zoom-changed', () => { contents.setZoomFactor(entry.snapshot.zoomFactor) })
     window.once('closed', () => {
       this.endCalibration(entry)
+      for (const popup of loginWindows) if (!popup.isDestroyed()) popup.destroy()
       contents.session.removeListener('will-download', preventDownload)
       if (!contents.isDestroyed()) contents.close()
       this.entries.delete(platform)

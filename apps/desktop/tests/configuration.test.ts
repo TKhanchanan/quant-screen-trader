@@ -2,15 +2,33 @@ import { describe, expect, it } from 'vitest'
 import { adjustBounds, defaultCalibration, normalizedToPixel, NormalizedBoundsSchema,
   SlotConfigurationSchema, PlatformCommandSchema, ConfigurationRequestSchema, CalibrationSlotsSchema,
   PlatformSessionStateSchema } from '@quant-screen-trader/shared-types'
-import { getPlatformConfig, allowedNavigation, safeOrigin } from '../electron/platforms/config'
+import { getPlatformConfig, allowedLoginNavigation, allowedNavigation, safeOrigin } from '../electron/platforms/config'
 import { createPlaceholderSlots } from '../src/renderer/src/features/slots/createPlaceholderSlots'
 
 describe('platform configuration and IPC contracts', () => {
+  it('allows published platform login hops and Google callbacks only in their own workspace', () => {
+    const capital = getPlatformConfig('capitalbear', {}), iq = getPlatformConfig('iqoption', {})
+    for (const [owner, other] of [[capital, iq], [iq, capital]]) {
+      for (const origin of owner!.allowedOrigins) {
+        const callback = `${origin}/?social=google`
+        const google = `https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=${encodeURIComponent(callback)}`
+        expect(allowedNavigation(owner!, callback)).toBe(true)
+        expect(allowedNavigation(other!, callback)).toBe(false)
+        expect(allowedLoginNavigation(owner!, google)).toBe(true)
+        expect(allowedLoginNavigation(other!, google)).toBe(false)
+      }
+    }
+    expect(allowedNavigation(capital, 'https://trade.capitalbear.com/en/login')).toBe(true)
+    expect(allowedNavigation(iq, 'https://auth.iqoption.com/api/v3/oauth/login')).toBe(true)
+    expect(allowedNavigation(iq, 'https://sc.iqoption.com/en/login')).toBe(true)
+  })
   it('uses independent persistent profiles and canonical platform names', () => {
     const capital = getPlatformConfig('capitalbear', {})
     const iq = getPlatformConfig('iqoption', {})
     expect(capital.displayName).toBe('CapitalBear')
     expect(iq.displayName).toBe('IQ Option')
+    expect(capital.startUrl).toBe('https://trade.capitalbear.com/traderoom')
+    expect(iq.startUrl).toBe('https://iqoption.com/traderoom')
     expect(capital.sessionPartition).toBe('persist:capitalbear-profile')
     expect(iq.sessionPartition).toBe('persist:iqoption-profile')
     expect(capital.sessionPartition).not.toBe(iq.sessionPartition)
