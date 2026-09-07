@@ -1,0 +1,36 @@
+{
+  "name": "quant-screen-trader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-platform quantitative market analysis desktop application",
+  "license": "UNLICENSED",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": ">=22.12",
+    "npm": ">=10"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @quant-screen-trader/desktop",
+    "engine:start": "node scripts/python.mjs -m quant_engine",
+    "engine:dev": "node scripts/python.mjs -m quant_engine --reload",
+    "lint:js": "npm run lint --workspaces --if-present",
+    "lint:python": "node scripts/python.mjs -m ruff check --config services/quant-engine/pyproject.toml services/quant-engine && node scripts/python.mjs -m ruff format --check --config services/quant-engine/pyproject.toml services/quant-engine",
+    "lint": "npm run lint:js && npm run lint:python",
+    "typecheck:js": "npm run typecheck --workspaces --if-present",
+    "typecheck:python": "node scripts/python.mjs -m mypy --config-file services/quant-engine/pyproject.toml services/quant-engine/src services/quant-engine/tests",
+    "typecheck": "npm run typecheck:js && npm run typecheck:python",
+    "test:js": "npm run test --workspaces --if-present",
+    "test:python": "node scripts/python.mjs -m pytest services/quant-engine/tests",
+    "test": "npm run test:js && npm run test:python",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
+  }
+}

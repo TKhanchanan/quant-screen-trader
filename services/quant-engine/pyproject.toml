@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quant-screen-engine"
+version = "0.1.0"
+description = "Local quantitative engine for QuantScreen Trader"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<10",
+  "ruff>=0.8,<1",
+]
+
+[project.scripts]
+quant-screen-engine = "quant_engine.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quant_engine"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers -ra"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
