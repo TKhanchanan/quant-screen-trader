@@ -169,11 +169,9 @@ void app.whenReady().then(() => {
   market = new MarketManager(browsers, connection)
   assetSync = new AssetSyncManager(browsers, async (platform, before, slots) => {
     const profile = before.calibrations.find(p => p.id === before.activeCalibrationId)
-    const result = await requestConfiguration(connection, { operation: 'syncAssets', platform, slots,
+    return requestConfiguration(connection, { operation: 'syncAssets', platform, slots,
       expectedSlots: before.configuration.slots, expectedCalibrationVersion: profile ? `${profile.id}:${profile.updatedAt}` : null })
-    market!.configure(result)
-    return result
-  })
+  }, result => market!.configure(result))
   ipcMain.handle(IPC_CHANNELS.assetSync, (event, input: unknown) => {
     const command = AssetSyncCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot sync assets')

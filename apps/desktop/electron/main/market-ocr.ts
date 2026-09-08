@@ -2,9 +2,28 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { nativeImage } from 'electron'
 import { createWorker, OEM, PSM, type Worker } from 'tesseract.js'
+import { normalizeAsset } from './asset-detector'
 import { parsePrice, parsePayout, parseTimer, type NormalizedImage, type OCRProvider, type ParsedFields } from './market-providers'
 
-export function parseOCRFields(text: string, confidence: number): ParsedFields {
+interface OCRLine { text: string; confidence: number; words: { text: string; confidence: number }[] }
+function assetLineConfidence(asset: string, lines: OCRLine[]): number | null {
+  const target = normalizeAsset(asset), matches: number[] = []
+  for (const line of lines) {
+    const words: { text: string; confidence: number }[] = []
+    for (const word of line.words) {
+      words.push(word)
+      if (normalizeAsset(words.map(w => w.text).join(' ')) === target) {
+        if (words.every(w => Number.isFinite(w.confidence) && w.confidence >= 0 && w.confidence <= 100))
+          matches.push(words.reduce((sum, w) => sum + w.confidence, 0) / words.length / 100)
+        break
+      }
+    }
+    if (!line.words.length && normalizeAsset(line.text) === target && Number.isFinite(line.confidence) && line.confidence >= 0 && line.confidence <= 100)
+      matches.push(line.confidence / 100)
+  }
+  return matches.length === 1 ? matches[0]! : null
+}
+export function parseOCRFields(text: string, confidence: number, layoutLines: OCRLine[] = []): ParsedFields {
   const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
   const unique = (test: (s: string) => boolean): string | undefined => {
     const values = lines.filter(test)
@@ -13,8 +32,9 @@ export function parseOCRFields(text: string, confidence: number): ParsedFields {
   const price = unique(s => parsePrice(s) !== null)
   const payout = unique(s => parsePayout(s) !== null)
   const timer = unique(s => parseTimer(s) !== null)
-  const asset = unique(s => /^(?:[A-Z0-9]{2,10}\s*\/\s*[A-Z0-9]{2,10}(?:\s*(?:\(OTC\)|OTC))?|[A-Za-z][A-Za-z0-9 /&+._-]{1,80}\s*(?:\(OTC\)| OTC))$/.test(s))
-  return { confidence, ...(price ? { price } : {}), ...(payout ? { payout } : {}),
+  const asset = unique(s => normalizeAsset(s) !== null)
+  const assetConfidence = asset && !price && !payout && !timer ? assetLineConfidence(asset, layoutLines) : null
+  return { confidence: assetConfidence ?? confidence, ...(price ? { price } : {}), ...(payout ? { payout } : {}),
     ...(timer ? { timer } : {}), ...(asset ? { asset } : {}) }
 }
 export class TesseractOCRProvider implements OCRProvider {
@@ -35,8 +55,9 @@ export class TesseractOCRProvider implements OCRProvider {
       const bitmap = Buffer.alloc(image.width * image.height * 4)
       image.grayscale.forEach((v, i) => { bitmap[i * 4] = v; bitmap[i * 4 + 1] = v; bitmap[i * 4 + 2] = v; bitmap[i * 4 + 3] = 255 })
       const png = nativeImage.createFromBitmap(bitmap, { width: image.width, height: image.height }).toPNG()
-      const result = await worker.recognize(png)
-      return parseOCRFields(result.data.text, result.data.confidence / 100)
+      const result = await worker.recognize(png, {}, { blocks: true })
+      const lines = result.data.blocks?.flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines)) ?? []
+      return parseOCRFields(result.data.text, result.data.confidence / 100, lines)
     } finally { this.busy = false }
   }
   async stop(): Promise<void> { const worker = this.worker; this.worker = null; if (worker) await (await worker).terminate() }

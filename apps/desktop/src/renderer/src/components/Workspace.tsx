@@ -33,7 +33,9 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
     const syncPoll = (): void => { void window.quantScreenTrader.assetSync({ operation: 'state', platform }).then(s => {
       if (disposed) return
       setSync(s)
-      if (syncRevision.current !== s.revision) { syncRevision.current = s.revision; void execute({ operation: 'get', platform }) }
+      if (syncRevision.current !== s.revision) void execute({ operation: 'get', platform }).then(result => {
+        if (!disposed && result) syncRevision.current = s.revision
+      })
     }).catch(() => {}) }
     const syncTimer = window.setInterval(syncPoll, 1000)
     const dataTimer = window.setInterval(dataPoll, 500)

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { defaultCalibration, type AssetDetectionResult, type AssetSyncCommand, type AssetSyncState, type ConfigurationResult, type Platform, type PlatformSlot } from '@quant-screen-trader/shared-types'
 import { normalizeAsset } from './asset-detector'
 import { TesseractOCRProvider } from './market-ocr'
@@ -22,14 +21,15 @@ export class AssetStability {
     })
   }
 }
-interface Entry { config: ConfigurationResult; state: AssetSyncState; stability: AssetStability; generation: number; next: number; signature: string; ocrCursor: number }
+interface Entry { config: ConfigurationResult; state: AssetSyncState; stability: AssetStability; generation: number; next: number; signature: string; ocrCursor: number; active: Promise<void> | null }
 export class AssetSyncManager {
   private readonly entries = new Map<Platform, Entry>()
   private readonly timer: ReturnType<typeof setInterval>
   private readonly ocr = new TesseractOCRProvider()
   private ocrBusy = false
   constructor(private readonly browsers: PlatformBrowserManager,
-    private readonly save: (platform: Platform, before: ConfigurationResult, slots: PlatformSlot[]) => Promise<ConfigurationResult | null>) {
+    private readonly save: (platform: Platform, before: ConfigurationResult, slots: PlatformSlot[]) => Promise<ConfigurationResult | null>,
+    private readonly apply: (config: ConfigurationResult) => void = () => {}) {
     this.timer = setInterval(() => { for (const [platform, entry] of this.entries) {
       if (entry.state.auto && !entry.state.busy && Date.now() >= entry.next) void this.run(platform, false)
     } }, 500)
@@ -39,7 +39,7 @@ export class AssetSyncManager {
     if (old) {
       if (JSON.stringify(old.config) !== JSON.stringify(config)) { old.generation++; old.stability.reset(); old.state.detection = null; old.state.revision++ }
       old.config = config
-    } else this.entries.set(platform, { config, generation: 0, next: 0, signature: '', ocrCursor: 0, stability: new AssetStability(),
+    } else this.entries.set(platform, { config, generation: 0, next: 0, signature: '', ocrCursor: 0, active: null, stability: new AssetStability(),
       state: { auto: false, busy: false, intervalMs: 3000, stableChecks: 3, detection: null, applied: 0, manualPreserved: 0, error: null, revision: 0 } })
   }
   async command(command: AssetSyncCommand): Promise<AssetSyncState> {
@@ -51,9 +51,15 @@ export class AssetSyncManager {
     if (command.operation === 'sync') await this.run(command.platform, true)
     return entry.state
   }
-  private async run(platform: Platform, once: boolean): Promise<void> {
+  private run(platform: Platform, once: boolean): Promise<void> {
     const entry = this.entries.get(platform)!
-    if (entry.state.busy) return
+    if (entry.active) return once ? entry.active.then(() => this.run(platform, true)) : entry.active
+    const active = this.execute(platform, once)
+    entry.active = active
+    return active.finally(() => { if (entry.active === active) entry.active = null })
+  }
+  private async execute(platform: Platform, once: boolean): Promise<void> {
+    const entry = this.entries.get(platform)!
     entry.next = Date.now() + entry.state.intervalMs
     const surface = this.browsers.observationSurface(platform)
     const signature = JSON.stringify(surface)
@@ -67,7 +73,7 @@ export class AssetSyncManager {
       const start = Date.now(), result = await this.browsers.detectAssets(platform, profile?.slots)
       // Auto mode OCRs at most one small label per cycle. Explicit sync visits each missing label.
       const missing = result.slots.filter(s => s.state !== 'DETECTED' && before.configuration.slots.find(c => c.id === s.slotId)?.assetMode !== 'MANUAL')
-      const checked = new Set(result.slots.filter(s => s.state !== 'NOT_FOUND').map(s => s.slotId))
+      const checked = new Set(result.slots.filter(s => s.state === 'DETECTED').map(s => s.slotId))
       const fallbacks = once ? missing : missing.slice(entry.ocrCursor % Math.max(1, missing.length), entry.ocrCursor % Math.max(1, missing.length) + 1)
       entry.ocrCursor++
       if (missing.length && !calibrated) entry.state.error = 'No mapped DOM chart labels. Align calibration regions with individual charts; the default full-browser grid is not a verified chart mapping.'
@@ -84,9 +90,7 @@ export class AssetSyncManager {
               if ((['x', 'y', 'width', 'height'] as const).every(k => Math.abs(bounds[k] - initial[k]) < 1e-8)) {
                 Object.assign(fallback, { state: 'UNCERTAIN', confidence: 0 }); continue
               }
-              const labelBounds = { ...bounds, height: Math.min(bounds.height * .16, 48 / surface.bounds.height) }
-              const image = await this.browsers.captureSlot({ platform, slotId: fallback.slotId, assetName: 'Asset detection',
-                contextId: randomUUID(), calibrationProfileId: profile.id, bounds: labelBounds })
+              const image = await this.browsers.captureAssetLabel(platform, fallback.slotId, profile.slots)
               const text = await this.ocr.parseText(image), name = text.asset ? normalizeAsset(text.asset) : null
               Object.assign(fallback, { source: 'OCR', evidenceType: 'CALIBRATED_OCR', confidence: text.confidence,
                 detectedAt: new Date().toISOString(), state: name && text.confidence >= .95 ? 'DETECTED' : 'UNCERTAIN',
@@ -109,7 +113,9 @@ export class AssetSyncManager {
       if (changed) {
         const saved = await this.save(platform, before, slots)
         if (!saved) { entry.state.error = 'Configuration changed during detection; sync again.'; return }
+        if (entry.generation !== generation || JSON.stringify(this.browsers.observationSurface(platform)) !== signature) return
         entry.config = saved; entry.state.applied = changed; entry.state.revision++
+        this.apply(saved)
       }
     } catch { entry.state.error = 'Asset detection unavailable. Existing assets were preserved.' }
     finally { entry.state.busy = false; entry.next = Date.now() + entry.state.intervalMs }

@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+
 from quant_engine.storage.database import connect_database, initialize_database
 
 

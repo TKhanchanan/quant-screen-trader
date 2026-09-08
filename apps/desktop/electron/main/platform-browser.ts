@@ -16,6 +16,7 @@ interface Entry {
 }
 export class PlatformBrowserManager {
   private readonly entries = new Map<Platform, Entry>()
+  private readonly assetScans = new Set<Platform>()
   constructor(private readonly createOverlay: (platform: Platform) => WebContentsView) {}
   attach(platform: Platform, window: BrowserWindow): void {
     const config = getPlatformConfig(platform)
@@ -121,7 +122,7 @@ export class PlatformBrowserManager {
   async captureSlot(context: ObservationContext): Promise<NormalizedImage> {
     const surface = this.observationSurface(context.platform)
     const entry = this.entries.get(context.platform)
-    if (!entry || !surface.available || surface.paused) throw new Error('Capture unavailable')
+    if (!entry || !surface.available || surface.paused || this.assetScans.has(context.platform)) throw new Error('Capture unavailable')
     const roi = normalizedToPixel(context.bounds, surface.bounds.width, surface.bounds.height)
     const x = Math.floor(roi.x), y = Math.floor(roi.y)
     const image = await entry.view.webContents.capturePage({ x, y,
@@ -134,9 +135,50 @@ export class PlatformBrowserManager {
     const size = resized.getSize()
     return normalizeBitmap(resized.toBitmap(), size.width, size.height)
   }
+  async captureAssetLabel(platform: Platform, slotId: number, calibration: CalibrationSlot[]): Promise<NormalizedImage> {
+    const surface = this.observationSurface(platform), entry = this.entries.get(platform)
+    const slot = calibration.find(candidate => candidate.id === slotId)
+    if (!entry || !surface.available || surface.paused || !slot || this.assetScans.has(platform))
+      throw new Error('Asset label capture unavailable')
+    const left = Math.min(...calibration.map(candidate => candidate.bounds.x))
+    const top = Math.min(...calibration.map(candidate => candidate.bounds.y))
+    const right = Math.max(...calibration.map(candidate => candidate.bounds.x + candidate.bounds.width))
+    const bottom = Math.max(...calibration.map(candidate => candidate.bounds.y + candidate.bounds.height))
+    const grid = normalizedToPixel({ x: left, y: top, width: right - left, height: bottom - top },
+      surface.bounds.width, surface.bounds.height)
+    const target = normalizedToPixel(slot.bounds, surface.bounds.width, surface.bounds.height)
+    const firstWidth = Math.min(...calibration.map(candidate => candidate.bounds.width)) * surface.bounds.width
+    const firstHeight = Math.min(...calibration.map(candidate => candidate.bounds.height)) * surface.bounds.height
+    const click = (x: number, y: number): void => {
+      const point = { x: Math.round(x), y: Math.round(y) }
+      entry.view.webContents.sendInputEvent({ type: 'mouseMove', ...point })
+      entry.view.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point })
+      entry.view.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
+    }
+    const wait = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds))
+    this.assetScans.add(platform)
+    try {
+      // Both supported canvas layouts expose a visible maximize control in the chart's upper-left.
+      click(target.x + target.width * .058, target.y + target.height * .31)
+      await wait(420)
+      const x = Math.round(grid.x + firstWidth * .18), y = Math.round(grid.y)
+      const width = Math.max(1, Math.min(surface.bounds.width - x, Math.round(firstWidth * .9)))
+      const height = Math.max(1, Math.min(surface.bounds.height - y, Math.round(firstHeight * .27)))
+      const image = await entry.view.webContents.capturePage({ x, y, width, height })
+      if (image.isEmpty()) throw new Error('Empty asset label capture')
+      const resized = image.resize({ width: Math.min(760, width * 2), height: Math.min(96, height * 2) })
+      const size = resized.getSize()
+      return normalizeBitmap(resized.toBitmap(), size.width, size.height)
+    } finally {
+      // In the compact grid this point is below the maximize control, so recovery is harmless if expansion missed.
+      click(grid.x + firstWidth * .058, grid.y + grid.height * .145)
+      await wait(300)
+      this.assetScans.delete(platform)
+    }
+  }
   async readSlotDOM(context: ObservationContext): Promise<ParsedFields> {
     const entry = this.entries.get(context.platform), surface = this.observationSurface(context.platform)
-    if (!entry || !surface.available || surface.paused) throw new Error('DOM unavailable')
+    if (!entry || !surface.available || surface.paused || this.assetScans.has(context.platform)) throw new Error('DOM unavailable')
     // Fixed selectors only; no input fields, page state, attributes, cookies, or network inspection.
     // ROI is normalized in viewport CSS pixels, which accounts for browser zoom.
     const script = `(() => {

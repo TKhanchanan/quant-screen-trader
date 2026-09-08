@@ -2,11 +2,11 @@
 
 import asyncio
 import time
-from typing import Literal, cast
+from typing import Annotated, Literal, Self, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from quant_engine.configuration import Model, Platform
 from quant_engine.market_builder import TimeSeriesBuilder
@@ -34,6 +34,24 @@ class BatchResult(Model):
     queueDepth: int
     rejected: int
     slots: list[SlotSeriesStatus]
+
+
+type SlotId = Annotated[int, Field(ge=1, le=9, strict=True)]
+
+
+class ResetSlotsRequest(Model):
+    platform: Platform
+    slotIds: list[SlotId] = Field(min_length=1, max_length=9)
+
+    @model_validator(mode="after")
+    def unique_slots(self) -> Self:
+        if len(set(self.slotIds)) != len(self.slotIds):
+            raise ValueError("Slot IDs must be unique")
+        return self
+
+
+class ResetSlotsResult(Model):
+    reset: int = Field(ge=0, le=9)
 
 
 class MarketEngine:
@@ -70,6 +88,10 @@ class MarketEngine:
             record = builder.emitted[0]
             self.storage.append("candles" if isinstance(record, Candle) else "seconds", record)
             builder.emitted.popleft()
+
+    def reset_slots(self, platform: Platform, slot_ids: list[int]) -> int:
+        """Drop live series immediately when their configured identity changes."""
+        return sum(self.builders.pop((platform, slot_id), None) is not None for slot_id in slot_ids)
 
     def status(self) -> list[SlotSeriesStatus]:
         slots = []
@@ -123,6 +145,19 @@ async def observations(batch: ObservationBatch, request: Request) -> BatchResult
     except Exception as error:
         engine.storage_error = True
         raise HTTPException(503, "Market storage unavailable") from error
+    finally:
+        engine.busy = False
+
+
+@router.post("/api/market/slots/reset")
+async def reset_slots(command: ResetSlotsRequest, request: Request) -> ResetSlotsResult:
+    local_only(request)
+    engine = cast(MarketEngine, request.app.state.market)
+    if engine.busy:
+        raise HTTPException(429, "Engine busy")
+    engine.busy = True
+    try:
+        return ResetSlotsResult(reset=engine.reset_slots(command.platform, command.slotIds))
     finally:
         engine.busy = False
 

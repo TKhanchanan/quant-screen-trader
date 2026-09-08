@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+
 from quant_engine.app import create_app
 from quant_engine.market_api import MarketEngine, ObservationBatch
 from quant_engine.market_builder import TimeSeriesBuilder
@@ -174,6 +175,24 @@ def test_replay_equivalence_and_isolation(tmp_path: Path) -> None:
     assert len(engine.builders) == 3
 
 
+def test_reset_slots_clears_only_requested_live_series(tmp_path: Path) -> None:
+    engine = MarketEngine(ParquetStorage(tmp_path))
+    batch = ObservationBatch(observations=[observation(0), observation(0, slotId=2)])
+    assert engine.ingest(batch, 0) == 2
+
+    assert engine.reset_slots("capitalbear", [1]) == 1
+    assert ("capitalbear", 1) not in engine.builders
+    assert ("capitalbear", 2) in engine.builders
+    assert engine.reset_slots("capitalbear", [1]) == 0
+    assert (
+        engine.ingest(
+            ObservationBatch(observations=[observation(0, assetName="GBP/USD", contextId=uuid4())]),
+            0,
+        )
+        == 1
+    )
+
+
 def test_market_api_batch_validation_and_browser_rejection(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path)
     with TestClient(app) as client:
@@ -192,8 +211,35 @@ def test_market_api_batch_validation_and_browser_rejection(tmp_path: Path) -> No
             == 422
         )
         assert client.get("/api/market/state").json()["slots"][0]["slotId"] == 1
+        reset = client.post(
+            "/api/market/slots/reset", json={"platform": "capitalbear", "slotIds": [1]}
+        )
+        assert reset.json() == {"reset": 1}
+        assert client.get("/api/market/state").json()["slots"] == []
+        assert (
+            client.post(
+                "/api/market/slots/reset",
+                json={"platform": "capitalbear", "slotIds": [1]},
+                headers={"origin": "https://capitalbear.com"},
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/api/market/slots/reset",
+                json={"platform": "capitalbear", "slotIds": [1, 1]},
+            ).status_code
+            == 422
+        )
         app.state.market.busy = True
         assert client.post("/api/market/observations", json=body).status_code == 429
+        assert (
+            client.post(
+                "/api/market/slots/reset",
+                json={"platform": "capitalbear", "slotIds": [1]},
+            ).status_code
+            == 429
+        )
         app.state.market.busy = False
 
 

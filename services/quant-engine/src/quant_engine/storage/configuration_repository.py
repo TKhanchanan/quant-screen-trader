@@ -158,7 +158,23 @@ def execute_configuration(path: Path, request: ConfigurationRequest) -> dict[str
                 ],
             )
         elif isinstance(request, SlotsRequest):
-            _save_slots(db, workspace, request.slots)
+            modes = {
+                row["slot_number"]: row["asset_mode"]
+                for row in db.execute(
+                    "SELECT slot_number,asset_mode FROM slot_profiles WHERE workspace_id=?",
+                    (workspace,),
+                )
+            }
+            _save_slots(
+                db,
+                workspace,
+                [
+                    slot
+                    if "assetMode" in slot.model_fields_set
+                    else slot.model_copy(update={"assetMode": modes[slot.id]})
+                    for slot in request.slots
+                ],
+            )
         elif isinstance(request, (PresetRequest, CalibrationRequest)):
             preset = isinstance(request, PresetRequest)
             # Table names below are internal constants, never user input.

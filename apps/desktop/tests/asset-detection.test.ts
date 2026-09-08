@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AssetDetectionResultSchema, defaultCalibration, type Platform } from '@quant-screen-trader/shared-types'
 import { CapitalBearAssetDetector, IQOptionAssetDetector, mapChartLabels, normalizeAsset, type ChartLabel } from '../electron/main/asset-detector'
 import { AssetStability } from '../electron/main/asset-sync'
+import { parseOCRFields } from '../electron/main/market-ocr'
 import { createPlaceholderSlots } from '../src/renderer/src/features/slots/createPlaceholderSlots'
 const chart = (id: number, label: string): ChartLabel => ({ bounds: defaultCalibration()[id - 1]!.bounds, label, tooltip: null })
 for (const platform of ['capitalbear', 'iqoption'] as const) describe(`${platform} asset detection`, () => {
@@ -19,6 +20,9 @@ for (const platform of ['capitalbear', 'iqoption'] as const) describe(`${platfor
     const result = mapChartLabels(platform, [{ ...chart(1, 'Injective (OT...'), tooltip: 'Injective (OTC)' }], defaultCalibration())
     expect(result.slots[0]?.assetName).toBe('Injective OTC')
     expect(result.slots[0]?.evidenceType).toBe('LABEL_TOOLTIP')
+    const extended = mapChartLabels(platform, [{ ...chart(1, 'EUR / USD'), tooltip: 'EUR/USD (OTC)' }], defaultCalibration())
+    expect(extended.slots[0]?.assetName).toBe('EUR/USD OTC')
+    expect(extended.slots[0]?.evidenceType).toBe('LABEL_TOOLTIP')
     expect(mapChartLabels(platform, [chart(1, 'Injective (OT...')], defaultCalibration()).slots[0]?.state).toBe('UNCERTAIN')
     expect(mapChartLabels(platform, [chart(1, 'EUR/USD'), chart(1, 'GBP/USD')], defaultCalibration()).slots[0]?.state).toBe('UNCERTAIN')
     expect(normalizeAsset('EUR/US? O?C')).toBeNull()
@@ -30,6 +34,14 @@ for (const platform of ['capitalbear', 'iqoption'] as const) describe(`${platfor
     expect((await adapter.detectAssets(defaultCalibration())).slots[0]?.assetName).toBe('EUR/USD')
     await expect(new Adapter(async () => [{ ...chart(1, 'EUR/USD'), cookies: 'forbidden' }]).detectAssets()).rejects.toThrow()
   })
+})
+it('accepts a safe single-name OCR asset and rejects account or numeric text', () => {
+  expect(parseOCRFields('Apple\n1.23456\n82%\n00:59', .98).asset).toBe('Apple')
+  expect(parseOCRFields('Account balance\n1.23456', .98).asset).toBeUndefined()
+  expect(parseOCRFields('12345\n1.23456', .98).asset).toBeUndefined()
+  const title = [{ text: 'Apple v', confidence: 40, words: [{ text: 'Apple', confidence: 99 }, { text: 'v', confidence: 1 }] }]
+  expect(parseOCRFields('Apple\nv', .4, title).confidence).toBe(.99)
+  expect(parseOCRFields('Apple\n1.23456', .4, title).confidence).toBe(.4)
 })
 it('debounces stable changes, preserves uncertain and locked slots, and resets on new context', () => {
   const platform: Platform = 'capitalbear'

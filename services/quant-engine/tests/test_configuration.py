@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+
 from quant_engine.app import create_app
 from quant_engine.storage.database import initialize_database
 
@@ -233,6 +234,24 @@ def test_asset_sync_compare_and_swap_and_manual_presets(tmp_path: Path) -> None:
             s["assetName"] == ""
             for s in command(client, "get", "iqoption")["configuration"]["slots"]
         )
+
+
+def test_legacy_slots_preserve_persisted_asset_modes(tmp_path: Path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        current = assets()
+        current[0]["assetMode"] = "MANUAL"
+        command(client, "slots", slots=current)
+
+        legacy = assets()
+        legacy[0]["assetName"] = "Legacy rename"
+        saved = command(client, "slots", slots=legacy)["configuration"]["slots"]
+        assert saved[0]["assetName"] == "Legacy rename"
+        assert saved[0]["assetMode"] == "MANUAL"
+        assert all(slot["assetMode"] == "AUTO" for slot in saved[1:])
+
+        legacy[0]["assetMode"] = "AUTO"
+        unlocked = command(client, "slots", slots=legacy)["configuration"]["slots"]
+        assert unlocked[0]["assetMode"] == "AUTO"
 
 
 def test_asset_sync_rejects_changed_calibration(tmp_path: Path) -> None:

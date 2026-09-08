@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from quant_engine.__main__ import build_parser
 
 

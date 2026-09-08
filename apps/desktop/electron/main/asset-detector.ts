@@ -15,9 +15,11 @@ export function emptyAsset(platform: Platform, slotId: number, state: DetectedAs
 }
 function fullLabel(chart: ChartLabel): { label: string; tooltip: boolean } | null {
   const visible = normalizeAsset(chart.label)
+  const tooltip = chart.tooltip ? normalizeAsset(chart.tooltip) : null
+  if (visible && tooltip && tooltip !== visible && tooltip.startsWith(`${visible} `)) return { label: chart.tooltip!, tooltip: true }
   if (visible) return { label: chart.label, tooltip: false }
   const prefix = chart.label.replace(/(?:\.{2,}|…).*/, '').trim()
-  if (prefix.length >= 3 && chart.tooltip?.startsWith(prefix) && normalizeAsset(chart.tooltip)) return { label: chart.tooltip, tooltip: true }
+  if (prefix.length >= 3 && chart.tooltip?.startsWith(prefix) && tooltip) return { label: chart.tooltip, tooltip: true }
   return null
 }
 export function mapChartLabels(platform: Platform, input: ChartLabel[], calibration?: CalibrationSlot[]): AssetDetectionResult {
