@@ -14,4 +14,7 @@ Configuration/preset/profile changes invalidate in-flight results while retainin
 
 Slot cards display observation state, source, accepted price, quality, age, one-second buffer count and M1 sample/state progress. Developer diagnostics show the typed observations, parser and calibration context, normalized/pixel ROI, capture/parse latency, queue lag and drops. No screenshot preview/export or retention subsystem is needed because images are never stored. There is no trading-signal UI.
 
-Run `node scripts/market-smoke.mjs` for an isolated native synthetic-text capture and real local OCR check. It uses a temporary OS profile and no account. Its temporary profile is outside the repository. No screenshots are written.
+Run `node scripts/market-smoke.mjs` for an isolated native synthetic-text capture and real local OCR check. It uses a temporary OS profile and no account. Its temporary profile is outside the repository and is deleted by the parent harness after Electron exits. No screenshots are written.
+
+
+Capture rate is the workspace's completed provider-observation count divided by elapsed time in the current observation context. It excludes the other platform, resets on context changes, and is zero when stopped. Stop/start also clears displayed one-second/M1 progress until the new context is acknowledged by the engine.

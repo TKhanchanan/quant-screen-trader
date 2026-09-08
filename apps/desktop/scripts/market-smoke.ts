@@ -1,13 +1,12 @@
 /** Account-free native capture + local OCR check. Run via scripts/market-smoke.mjs. */
 import { app, BrowserWindow } from 'electron'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import { TesseractOCRProvider } from '../electron/main/market-ocr'
 import { normalizeBitmap } from '../electron/main/market-providers'
 
-app.setPath('userData', mkdtempSync(join(tmpdir(), 'qst-ocr-smoke-')))
+const profile = process.env.QST_SMOKE_DATA_DIR
+if (!profile) throw new Error('Run with scripts/market-smoke.mjs')
+app.setPath('userData', profile)
 void app.whenReady().then(async () => {
   const window = new BrowserWindow({ width: 600, height: 500, show: true,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })

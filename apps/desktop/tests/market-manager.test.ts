@@ -51,3 +51,53 @@ it('discards captures across configuration, resize and navigation changes', asyn
   await vi.advanceTimersByTimeAsync(1)
   expect(manager.command({ platform: 'capitalbear', operation: 'state' }).slots[0]?.observation).toBeNull()
 })
+it('keeps capture rate platform-scoped and clears series progress when stopped', async () => {
+  const surface = { available: true, paused: false, revision: 0, bounds: { x: 0, y: 0, width: 900, height: 600 } }
+  const read = async (c: { assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => ({ asset: c.assetName, price: '1.2', confidence: 1 })
+  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+    const { observations } = JSON.parse(String(init.body)) as { observations: { platform: Platform; slotId: number; contextId: string }[] }
+    return new Response(JSON.stringify({ accepted: observations.length, rejected: 0, queueDepth: 0,
+      slots: observations.map(o => ({ platform: o.platform, slotId: o.slotId, contextId: o.contextId, secondSamples: 5, m1Samples: 6, m1State: 'FORMING' })) }))
+  }))
+  manager = new MarketManager({ observationSurface: () => surface, readSlotDOM: read } as unknown as PlatformBrowserManager,
+    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
+  manager.configure(config('capitalbear', 1)); manager.configure(config('iqoption', 0))
+  manager.command({ platform: 'capitalbear', operation: 'start' })
+  await vi.advanceTimersByTimeAsync(1000)
+  const capital = manager.command({ platform: 'capitalbear', operation: 'state' })
+  expect(capital.captureRate).toBeGreaterThan(0)
+  expect(capital.slots[0]?.m1Samples).toBe(6)
+  expect(manager.command({ platform: 'iqoption', operation: 'state' }).captureRate).toBe(0)
+  const stopped = manager.command({ platform: 'capitalbear', operation: 'stop' })
+  expect(stopped.slots[0]?.m1Samples).toBe(0)
+  expect(stopped.slots[0]?.secondSamples).toBe(0)
+  expect(stopped.captureRate).toBe(0)
+})
+it('recovers from ingestion failure with fresh observations and isolates parser errors', async () => {
+  let offline = true
+  const delivered: number[] = []
+  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+    if (offline) return new Response('', { status: 503 })
+    const { observations } = JSON.parse(String(init.body)) as { observations: { observedAt: string }[] }
+    delivered.push(...observations.map(o => Date.parse(o.observedAt)))
+    return new Response(JSON.stringify({ accepted: observations.length, rejected: 0, queueDepth: 0, slots: [] }))
+  }))
+  const surface = { available: true, paused: false, revision: 0, bounds: { x: 0, y: 0, width: 900, height: 600 } }
+  const read = async (c: { slotId: number; assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => {
+    if (c.slotId === 2) throw new Error('Isolated fixture parser failure')
+    return { asset: c.assetName, price: '1.2', confidence: 1 }
+  }
+  manager = new MarketManager({ observationSurface: () => surface, readSlotDOM: read } as unknown as PlatformBrowserManager,
+    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
+  manager.configure(config('capitalbear', 2)); manager.command({ platform: 'capitalbear', operation: 'start', intervalMs: 250 })
+  await vi.advanceTimersByTimeAsync(3000)
+  const failed = manager.command({ platform: 'capitalbear', operation: 'state' })
+  expect(failed.dropped).toBeGreaterThan(0); expect(failed.engineAvailable).toBe(false)
+  expect(failed.queueDepth).toBeLessThanOrEqual(18)
+  expect(failed.slots[1]?.state).toBe('ERROR')
+  const recoveredAt = Date.now(); offline = false
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(delivered.length).toBeGreaterThan(0)
+  expect(delivered.every(t => t >= recoveredAt)).toBe(true)
+  expect(manager.command({ platform: 'capitalbear', operation: 'state' }).engineAvailable).toBe(true)
+})

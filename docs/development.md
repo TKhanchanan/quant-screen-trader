@@ -96,3 +96,20 @@ Reinstall the editable engine dependencies after updating (DuckDB is now require
 On macOS ARM64, the native synthetic OCR check read asset, price, payout and timer at 0.95 reported confidence: capture 188 ms, cold OCR 506 ms, warm OCR 107 ms in one run. The builder processed 21,618 fixture observations in 3.45 seconds (6264/s), 3.43 CPU seconds and 69 MB peak traced Python memory. These are synthetic local measurements, not live broker rates or OCR accuracy. Serial per-platform OCR is the expected bottleneck with nine visual slots; requested sampling targets are not guaranteed.
 
 Authenticated Google-session preservation and broker chart accuracy must be manually checked with both platforms on the target OS. Windows native capture/OCR has not been exercised in this session. Do not mark Phase 4 accepted merely because fixtures pass. Phase 6 remains out of scope.
+
+
+### Acceptance continuation — 2026-09-08
+
+Started from clean `main` at `a9c8bf162fcbca0703003fd5ffdbc4842ad1409d`. The baseline passed lint, TypeScript/mypy, 77 TypeScript tests, 44 Python tests and production build.
+
+The current 18-slot benchmark processed **21,618 observations in 1.724 seconds** (12,539/s), using 1.723 CPU seconds and 69,069,107 peak traced Python bytes. Each slot retained 1201 samples during the 10-minute simulated workload. These fresh measurements supersede the earlier single-run performance figures for this continuation.
+
+The current native synthetic-text OCR check measured capture **58.5 ms**, cold OCR **423.5 ms**, warm OCR **59.1 ms**, and 0.95 OCR confidence. The harness now removes its own temporary browser profile along with its temporary build directory after Electron exits. No account screenshots are written.
+
+The interrupted temporary-profile verification is complete: both unauthenticated broker pages loaded, each started with nine disabled slots and zero observation work, calibration paused the enabled test slot, and workspace resizing worked. The existing authenticated profiles were not opened or modified. Loopback ingestion accepted 10,818 explicitly SYNTHETIC observations across all 18 slots in 4.66 seconds. Every slot produced 600 one-second records and a closed M10 candle. Normal shutdown flushed storage; typed Parquet reload verified 10,818 observations, 10,818 samples, 10,800 second records and 2394 candles, all with SYNTHETIC provenance. SQLite migrations 1 and 2 were present. Only the test directory `/private/tmp/qst-phase45-gui` was removed after engine shutdown and storage verification.
+
+Continuation regressions found and fixed: capture-rate diagnostics previously combined both platforms, and stop/start could retain stale series progress. Rates are now per workspace/current context; progress clears when the context stops or restarts. Tests additionally confirm ingestion-failure recovery sends fresh observations, bounds the queue, counts drops and isolates a failing slot parser.
+
+Final continuation validation passed lint, TypeScript/mypy, **79 TypeScript tests and 44 Python tests (123 total)**, and production build.
+
+**Authenticated extraction acceptance remains pending for both brokers.** No live price, payout, timer, consecutive OCR accuracy or live S5/M1 candle was verified during these account-free checks. Manual participation is required before using the user's real sessions. Phase 4 remains 🟡; Phase 5's deterministic and synthetic integrated validation passes. Phase 6 has not started.

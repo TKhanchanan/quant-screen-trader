@@ -9,7 +9,7 @@ import type { EngineConnectionConfig } from './engine-config'
 interface WorkspaceData {
   snapshot: MarketSnapshot; config: ConfigurationResult; contextId: string; scheduler: CaptureScheduler;
   dom: DOMMarketDataProvider; visual: VisualMarketDataProvider; ocr: TesseractOCRProvider;
-  signature: string; cursor: number; busy: boolean
+  signature: string; cursor: number; busy: boolean; count: number; started: number
 }
 export class MarketManager {
   private readonly workspaces = new Map<Platform, WorkspaceData>()
@@ -17,8 +17,6 @@ export class MarketManager {
   private sending = false
   private readonly timer: ReturnType<typeof setInterval>
   private readonly flushTimer: ReturnType<typeof setInterval>
-  private count = 0
-  private started = Date.now()
   constructor(private readonly browsers: PlatformBrowserManager, private readonly connection: EngineConnectionConfig) {
     this.timer = setInterval(() => this.tick(), 50)
     this.flushTimer = setInterval(() => { void this.flush() }, 250)
@@ -33,7 +31,7 @@ export class MarketManager {
     const visual = new VisualMarketDataProvider(c => this.browsers.captureSlot(c), ocr)
     dom.start(); visual.start()
     const next: WorkspaceData = { config, ocr, dom, visual, contextId: randomUUID(), scheduler: previous?.scheduler ?? new CaptureScheduler(),
-      signature: '', cursor: 0, busy: previous?.busy ?? false, snapshot: { running: previous?.snapshot.running ?? false,
+      signature: '', cursor: 0, count: 0, started: Date.now(), busy: previous?.busy ?? false, snapshot: { running: previous?.snapshot.running ?? false,
         intervalMs: previous?.snapshot.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000),
         slots: config.configuration.slots.map(s => ({ slotId: s.id, state: s.enabled ? 'WAITING' : 'DISABLED', secondSamples: 0, m1Samples: 0, m1State: null, observation: null, dropped: 0, pixelBounds: null })),
         dropped: 0, queueDepth: 0, queueLagMs: 0, captureRate: 0, engineAvailable: false } }
@@ -46,12 +44,14 @@ export class MarketManager {
     if (command.intervalMs !== undefined) workspace.snapshot.intervalMs = command.intervalMs
     if (command.operation !== 'state') {
       workspace.snapshot.running = command.operation === 'start'
+      workspace.count = 0; workspace.started = Date.now()
+      workspace.snapshot.engineAvailable = false; workspace.snapshot.queueLagMs = 0
       workspace.scheduler.invalidate(); workspace.contextId = randomUUID()
       for (const key of this.queue.keys()) if (key.startsWith(command.platform + ':')) this.queue.delete(key)
-      for (const slot of workspace.snapshot.slots) { slot.observation = null; if (slot.state !== 'DISABLED') slot.state = workspace.snapshot.running ? 'WAITING' : 'PAUSED' }
+      for (const slot of workspace.snapshot.slots) { slot.observation = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null; if (slot.state !== 'DISABLED') slot.state = workspace.snapshot.running ? 'WAITING' : 'PAUSED' }
     }
     workspace.snapshot.queueDepth = this.queue.size
-    workspace.snapshot.captureRate = this.count / Math.max(1, (Date.now() - this.started) / 1000)
+    workspace.snapshot.captureRate = workspace.snapshot.running ? workspace.count / Math.max(1, (Date.now() - workspace.started) / 1000) : 0
     return workspace.snapshot
   }
   private tick(): void {
@@ -59,6 +59,7 @@ export class MarketManager {
       const surface = this.browsers.observationSurface(platform)
       const signature = JSON.stringify(surface)
       if (w.signature !== signature) {
+        w.count = 0; w.started = Date.now()
         w.signature = signature; w.contextId = randomUUID(); w.scheduler.invalidate()
         for (const key of this.queue.keys()) if (key.startsWith(platform + ':')) this.queue.delete(key)
         for (const slot of w.snapshot.slots) { slot.observation = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null }
@@ -92,7 +93,7 @@ export class MarketManager {
         if (JSON.stringify(this.browsers.observationSurface(platform)) !== signature) return
         slot.observation = value
         slot.state = value.dataQuality.state === 'GOOD' ? 'READY' : value.dataQuality.state === 'STALE' ? 'STALE' : 'DATA_UNCERTAIN'
-        this.count++
+        w.count++
         if (this.queue.has(key)) { w.snapshot.dropped++; slot.dropped++ }
         this.queue.set(key, value)
       }, () => { slot.state = 'ERROR' }).finally(() => { w.busy = false })

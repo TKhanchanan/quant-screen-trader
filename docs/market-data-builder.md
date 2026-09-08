@@ -34,3 +34,6 @@ Canonical asset names and provenance are columns, not inferred from path names. 
 Retention defaults to retaining all data. `retention(before=...)` previews matching files by file modification time; deletion additionally requires `delete=True`. There is no automatic deletion job. Batch size and buffer capacity are constructor configuration; sampling interval is workspace runtime configuration.
 
 Tests cover deterministic trends, rapid movement, gaps, duplicate/out-of-order timestamps, uncertainty, asset/calibration/source changes, no look-ahead, all candle boundaries, bounded memory, Parquet round trips and replay equivalence. `node scripts/python.mjs services/quant-engine/tests/benchmark_market.py` measures an account-free 18-slot workload.
+
+
+The continuation's isolated loopback integration check verified all 18 streams with explicitly SYNTHETIC observations, completed M10 candles and typed Parquet reload after normal shutdown. This establishes integrated builder/storage behavior without claiming a real authenticated price feed; see the dated [development verification](development.md#acceptance-continuation--2026-09-08).
