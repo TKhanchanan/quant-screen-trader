@@ -18,3 +18,6 @@ Run `node scripts/market-smoke.mjs` for an isolated native synthetic-text captur
 
 
 Capture rate is the workspace's completed provider-observation count divided by elapsed time in the current observation context. It excludes the other platform, resets on context changes, and is zero when stopped. Stop/start also clears displayed one-second/M1 progress until the new context is acknowledged by the engine.
+
+
+Asset synchronization precedes price observation when slots are unassigned. Its separate, slower OCR worker reads calibrated label strips and never uses instrument-tab order. Unchanged default browser-grid regions are rejected. See [automatic asset synchronization](asset-detection.md). Safe whitespace and OTC formatting normalization is shared between detected identity and price-observation matching.

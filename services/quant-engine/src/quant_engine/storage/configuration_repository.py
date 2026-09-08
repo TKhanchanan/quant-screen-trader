@@ -17,6 +17,7 @@ from quant_engine.configuration import (
     RecordRequest,
     Slot,
     SlotsRequest,
+    SyncSlotsRequest,
 )
 from quant_engine.storage.database import connect_database
 
@@ -44,9 +45,9 @@ def _workspace(db: sqlite3.Connection, platform: Platform) -> int:
 
 def _save_slots(db: sqlite3.Connection, workspace: int, slots: list[Slot]) -> None:
     db.executemany(
-        "UPDATE slot_profiles SET asset_name=?,display_name=?,enabled=?,"
+        "UPDATE slot_profiles SET asset_name=?,display_name=?,enabled=?,asset_mode=?,"
         "updated_at=CURRENT_TIMESTAMP WHERE workspace_id=? AND slot_number=?",
-        [(s.assetName, s.displayName, s.enabled, workspace, s.id) for s in slots],
+        [(s.assetName, s.displayName, s.enabled, s.assetMode, workspace, s.id) for s in slots],
     )
 
 
@@ -56,6 +57,7 @@ def _assets(rows: list[sqlite3.Row], platform: Platform) -> list[dict[str, Any]]
             id=r["slot_number"],
             platform=platform,
             assetName=r["asset_name"],
+            assetMode=r["asset_mode"],
             enabled=bool(r["enabled"]),
             **({"displayName": r["display_name"]} if r["display_name"] is not None else {}),
         )
@@ -134,7 +136,28 @@ def execute_configuration(path: Path, request: ConfigurationRequest) -> dict[str
         db.execute("BEGIN IMMEDIATE")
         workspace = _workspace(db, request.platform)
         now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        if isinstance(request, SlotsRequest):
+        if isinstance(request, SyncSlotsRequest):
+            before = _snapshot(db, request.platform, workspace)
+            current = [Slot.model_validate(s) for s in before["configuration"]["slots"]]
+            profile = next(
+                (p for p in before["calibrations"] if p["id"] == before["activeCalibrationId"]),
+                None,
+            )
+            version = f"{profile['id']}:{profile['updatedAt']}" if profile else None
+            if current != request.expectedSlots or version != request.expectedCalibrationVersion:
+                raise LookupError("Configuration changed during asset detection")
+            proposed = {s.id: s for s in request.slots}
+            _save_slots(
+                db,
+                workspace,
+                [
+                    s
+                    if s.assetMode == "MANUAL"
+                    else proposed[s.id].model_copy(update={"assetMode": "AUTO"})
+                    for s in current
+                ],
+            )
+        elif isinstance(request, SlotsRequest):
             _save_slots(db, workspace, request.slots)
         elif isinstance(request, (PresetRequest, CalibrationRequest)):
             preset = isinstance(request, PresetRequest)
@@ -173,9 +196,9 @@ def execute_configuration(path: Path, request: ConfigurationRequest) -> dict[str
             if isinstance(request, PresetRequest):
                 db.execute("DELETE FROM asset_preset_slots WHERE preset_id=?", (record_id,))
                 db.executemany(
-                    "INSERT INTO asset_preset_slots VALUES (?,?,?,?,?)",
+                    "INSERT INTO asset_preset_slots VALUES (?,?,?,?,?,?)",
                     [
-                        (record_id, s.id, s.assetName, s.displayName, s.enabled)
+                        (record_id, s.id, s.assetName, s.displayName, s.enabled, s.assetMode)
                         for s in request.slots
                     ],
                 )

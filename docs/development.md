@@ -113,3 +113,12 @@ Continuation regressions found and fixed: capture-rate diagnostics previously co
 Final continuation validation passed lint, TypeScript/mypy, **79 TypeScript tests and 44 Python tests (123 total)**, and production build.
 
 **Authenticated extraction acceptance remains pending for both brokers.** No live price, payout, timer, consecutive OCR accuracy or live S5/M1 candle was verified during these account-free checks. Manual participation is required before using the user's real sessions. Phase 4 remains 🟡; Phase 5's deterministic and synthetic integrated validation passes. Phase 6 has not started.
+
+
+### Asset synchronization continuation
+
+Migration 0003 adds AUTO/MANUAL modes for slots and presets, preserving existing named slots as MANUAL. Restart the engine to apply it. The workspace and preload gain validated asset-sync commands; both app and engine must be restarted after updating.
+
+`node scripts/market-smoke.mjs --assets` validates the actual rendered-DOM extraction script for both adapters in an isolated Electron profile, without authenticated pages or screenshots. In one run it detected nine generated instruments per adapter, measuring 40.8 ms for the first adapter and 1.9 ms for the second warmed DOM evaluation. These are fixture timings, not live OCR rates.
+
+Live inspection found that both user-opened trading pages expose one full-page canvas and no instrument-label DOM. Both stored calibrations were the unchanged 3×3 browser grid. OCR sync now refuses these unverified regions to avoid assigning toolbar/tab labels to chart slots. Actual broker asset mapping, consecutive price reads and live candles remain pending. No account images were saved during this inspection. Live acceptance requires verified chart-label ROIs.

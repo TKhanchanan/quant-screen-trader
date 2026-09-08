@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { AssetSyncCommand, AssetSyncState } from './assets'
 import type { MarketCommand, MarketSnapshot } from './market'
 
 export const PlatformSchema = z.enum(['capitalbear', 'iqoption'])
@@ -19,6 +20,7 @@ export const PlatformSlotSchema = z.object({
   id: SlotIdSchema,
   enabled: z.boolean(),
   assetName: z.string().trim().max(120),
+  assetMode: z.enum(['AUTO', 'MANUAL']).optional(),
   displayName: z.string().trim().max(120).optional(),
   platform: PlatformSchema,
   normalizedBounds: NormalizedBoundsSchema.optional(),
@@ -50,12 +52,13 @@ export const EngineHealthSnapshotSchema = z.object({
 export type EngineHealthSnapshot = z.infer<typeof EngineHealthSnapshotSchema>
 
 export const IPC_CHANNELS = {
-  getEngineHealth: 'engine:get-health', market: 'market:command',
+  getEngineHealth: 'engine:get-health', market: 'market:command', assetSync: 'assets:sync',
   openWorkspace: 'workspace:open',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
 
 export interface DesktopBridge {
+  assetSync: (request: AssetSyncCommand) => Promise<AssetSyncState>
   market: (request: MarketCommand) => Promise<MarketSnapshot>
   getEngineHealth: () => Promise<EngineHealthSnapshot>
   openWorkspace: (platform: Platform) => Promise<void>
@@ -98,13 +101,14 @@ const RecordInput = { platform: PlatformSchema, id: z.uuid().optional(), name: z
 export const ConfigurationRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('get'), platform: PlatformSchema }),
   z.object({ operation: z.literal('slots'), ...SlotConfigurationSchema.shape }),
+  z.object({ operation: z.literal('syncAssets'), ...SlotConfigurationSchema.shape, expectedSlots: z.array(PlatformSlotSchema).length(9), expectedCalibrationVersion: z.string().max(128).nullable() }),
   z.object({ operation: z.literal('savePreset'), ...RecordInput, slots: z.array(PlatformSlotSchema).length(9) }),
   z.object({ operation: z.literal('saveCalibration'), ...RecordInput,
     ...CalibrationProfileSchema.omit({ id: true, createdAt: true, updatedAt: true }).shape }),
   z.object({ operation: z.enum(['deletePreset', 'loadPreset', 'deleteCalibration', 'loadCalibration']),
     platform: PlatformSchema, id: z.uuid() })
 ]).superRefine((request, ctx) => {
-  if ((request.operation === 'slots' || request.operation === 'savePreset') &&
+  if ((request.operation === 'slots' || request.operation === 'savePreset' || request.operation === 'syncAssets') &&
       !SlotConfigurationSchema.safeParse(request).success)
     ctx.addIssue({ code: 'custom', message: 'Invalid nine-slot configuration' })
 })
@@ -152,3 +156,5 @@ export function adjustBounds(bounds: NormalizedBounds, dx: number, dy: number, r
 }
 
 export * from './market'
+
+export * from './assets'

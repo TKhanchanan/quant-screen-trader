@@ -190,5 +190,72 @@ def test_upgrade_phase_one_preserves_existing_data(tmp_path: Path) -> None:
     initialize_database(path)
     initialize_database(path)
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT asset_name FROM slot_profiles").fetchone()[0] == "Existing asset"
-        assert db.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
+        assert db.execute("SELECT asset_name,asset_mode FROM slot_profiles").fetchone() == (
+            "Existing asset",
+            "MANUAL",
+        )
+        assert db.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 3
+
+
+def test_asset_sync_compare_and_swap_and_manual_presets(tmp_path: Path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        slots = assets()
+        slots[0]["assetMode"] = "MANUAL"
+        before = command(client, "slots", slots=slots)
+        expected = before["configuration"]["slots"]
+        desired = [dict(s, assetName="EUR/USD OTC", enabled=True) for s in expected]
+        result = command(
+            client,
+            "syncAssets",
+            slots=desired,
+            expectedSlots=expected,
+            expectedCalibrationVersion=None,
+        )
+        assert result["configuration"]["slots"][0]["assetName"] == slots[0]["assetName"]
+        assert result["configuration"]["slots"][1]["assetName"] == "EUR/USD OTC"
+        stale = client.post(
+            "/api/workspaces/capitalbear/configuration",
+            json=dict(
+                platform="capitalbear",
+                operation="syncAssets",
+                slots=desired,
+                expectedSlots=expected,
+                expectedCalibrationVersion=None,
+            ),
+        )
+        assert stale.status_code == 404
+        saved = command(client, "savePreset", name="Locks", slots=result["configuration"]["slots"])
+        command(client, "slots", slots=assets())
+        loaded = command(client, "loadPreset", id=saved["presets"][0]["id"])
+        assert loaded["configuration"]["slots"][0]["assetMode"] == "MANUAL"
+        assert loaded["configuration"]["slots"][1]["assetMode"] == "AUTO"
+        assert all(
+            s["assetName"] == ""
+            for s in command(client, "get", "iqoption")["configuration"]["slots"]
+        )
+
+
+def test_asset_sync_rejects_changed_calibration(tmp_path: Path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        before = command(client, "get")
+        command(
+            client,
+            "saveCalibration",
+            name="New ROI",
+            referenceBrowserWidth=900,
+            referenceBrowserHeight=600,
+            zoomFactor=1,
+            slots=geometry(),
+        )
+        response = client.post(
+            "/api/workspaces/capitalbear/configuration",
+            json=dict(
+                operation="syncAssets",
+                platform="capitalbear",
+                slots=assets(),
+                expectedSlots=before["configuration"]["slots"],
+                expectedCalibrationVersion=None,
+            ),
+        )
+        assert response.status_code == 404
+        assert not any(s["enabled"] for s in command(client, "get")["configuration"]["slots"])

@@ -101,3 +101,24 @@ it('recovers from ingestion failure with fresh observations and isolates parser 
   expect(delivered.every(t => t >= recoveredAt)).toBe(true)
   expect(manager.command({ platform: 'capitalbear', operation: 'state' }).engineAvailable).toBe(true)
 })
+it('resets only the changed instrument and preserves other slot contexts', async () => {
+  const surface = { available: true, paused: false, revision: 0, bounds: { x: 0, y: 0, width: 900, height: 600 } }
+  const read = async (c: { assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => ({ asset: c.assetName, price: '1.2', confidence: 1 })
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  manager = new MarketManager({ observationSurface: () => surface, readSlotDOM: read } as unknown as PlatformBrowserManager,
+    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
+  const before = config('capitalbear', 2)
+  manager.configure(before); manager.command({ platform: 'capitalbear', operation: 'start' })
+  await vi.advanceTimersByTimeAsync(600)
+  const original = manager.command({ platform: 'capitalbear', operation: 'state' }).slots.map(s => s.observation?.contextId)
+  manager.configure({ ...before, configuration: { ...before.configuration,
+    slots: before.configuration.slots.map(s => s.id === 1 ? { ...s, assetName: 'NEW OTC' } : s) } })
+  const immediately = manager.command({ platform: 'capitalbear', operation: 'state' })
+  expect(immediately.slots[0]?.observation).toBeNull()
+  expect(immediately.slots[1]?.observation?.contextId).toBe(original[1])
+  await vi.advanceTimersByTimeAsync(600)
+  const after = manager.command({ platform: 'capitalbear', operation: 'state' })
+  expect(after.slots[0]?.observation?.contextId).not.toBe(original[0])
+  expect(after.slots[0]?.observation?.assetName).toBe('NEW OTC')
+  expect(after.slots[1]?.observation?.contextId).toBe(original[1])
+})

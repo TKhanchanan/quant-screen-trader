@@ -7,7 +7,11 @@ from importlib import resources
 from pathlib import Path
 
 BUSY_TIMEOUT_MILLISECONDS = 5_000
-MIGRATION_FILES = ("0001_initial.sql", "0002_calibration_and_presets.sql")
+MIGRATION_FILES = (
+    "0001_initial.sql",
+    "0002_calibration_and_presets.sql",
+    "0003_asset_sync_modes.sql",
+)
 MIGRATIONS_PACKAGE = "quant_engine.storage.migrations"
 
 

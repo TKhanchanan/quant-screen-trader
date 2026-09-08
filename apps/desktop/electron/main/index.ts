@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { app, BrowserWindow, ipcMain, WebContentsView, type IpcMainInvokeEvent } from 'electron'
 import {
-  IPC_CHANNELS, MarketCommandSchema,
+  IPC_CHANNELS, MarketCommandSchema, AssetSyncCommandSchema,
   PlatformSchema,
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS,
   type Platform
@@ -12,6 +12,7 @@ import { EngineProcessManager } from './engine-process'
 import { fetchEngineHealth } from './health-client'
 import { PlatformWindowRegistry } from './window-registry'
 import { PlatformBrowserManager } from './platform-browser'
+import { AssetSyncManager } from './asset-sync'
 import { MarketManager } from './market-manager'
 import { requestConfiguration } from './configuration-client'
 import { requireScope, type RendererScope } from './ipc-scope'
@@ -41,6 +42,7 @@ const browsers = new PlatformBrowserManager((platform) => {
 let dashboardWindow: BrowserWindow | null = null
 let engineProcess: EngineProcessManager | null = null
 let market: MarketManager | null = null
+let assetSync: AssetSyncManager | null = null
 
 function rendererLocation(): { devServerUrl?: string; file: string } {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
@@ -165,6 +167,18 @@ void app.whenReady().then(() => {
   })
   engineProcess.start()
   market = new MarketManager(browsers, connection)
+  assetSync = new AssetSyncManager(browsers, async (platform, before, slots) => {
+    const profile = before.calibrations.find(p => p.id === before.activeCalibrationId)
+    const result = await requestConfiguration(connection, { operation: 'syncAssets', platform, slots,
+      expectedSlots: before.configuration.slots, expectedCalibrationVersion: profile ? `${profile.id}:${profile.updatedAt}` : null })
+    market!.configure(result)
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.assetSync, (event, input: unknown) => {
+    const command = AssetSyncCommandSchema.parse(input)
+    if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot sync assets')
+    return assetSync!.command(command)
+  })
   ipcMain.handle(IPC_CHANNELS.market, (event, input: unknown) => {
     const command = MarketCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot observe')
@@ -188,6 +202,7 @@ void app.whenReady().then(() => {
     if (authorize(event, request.platform).overlay) throw new Error('Overlay cannot persist configuration')
     const result = await requestConfiguration(connection, request)
     market!.configure(result)
+    assetSync!.configure(result)
     return result
   })
 
@@ -197,7 +212,7 @@ void app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => { market?.stop(); engineProcess?.stop() })
+app.on('before-quit', () => { assetSync?.stop(); market?.stop(); engineProcess?.stop() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

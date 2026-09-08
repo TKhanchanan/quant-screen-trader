@@ -32,6 +32,7 @@ class Slot(Model):
     platform: Platform
     enabled: bool = Field(strict=True)
     assetName: str = Field(max_length=120)
+    assetMode: Literal["AUTO", "MANUAL"] = "AUTO"
     displayName: str | None = Field(default=None, max_length=120)
 
     @model_validator(mode="after")
@@ -83,6 +84,17 @@ class SlotsRequest(Slots):
     operation: Literal["slots"]
 
 
+class SyncSlotsRequest(Slots):
+    operation: Literal["syncAssets"]
+    expectedSlots: list[Slot] = Field(min_length=9, max_length=9)
+    expectedCalibrationVersion: str | None = Field(max_length=128)
+
+    @model_validator(mode="after")
+    def expected_valid(self) -> Self:
+        Slots(platform=self.platform, slots=self.expectedSlots)
+        return self
+
+
 class PresetRequest(Slots):
     operation: Literal["savePreset"]
     id: UUID | None = None
@@ -101,5 +113,10 @@ class RecordRequest(Model):
 
 
 type ConfigurationRequest = (
-    GetRequest | SlotsRequest | PresetRequest | CalibrationRequest | RecordRequest
+    GetRequest
+    | SlotsRequest
+    | SyncSlotsRequest
+    | PresetRequest
+    | CalibrationRequest
+    | RecordRequest
 )

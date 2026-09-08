@@ -11,3 +11,6 @@ The visual adapter crops the owned platform WebContentsView using normalized cal
 Provenance is mandatory: platform, slot, configured asset, source enum, observation and parse timestamps, context UUID, calibration UUID, parser version, confidence and latency. Unknown observation fields are rejected. Raw DOM text, HTML, OCR output and images are never part of the engine contract. The source enum always distinguishes DOM, VISUAL, REPLAY and SYNTHETIC. Source changes also create separate series identities.
 
 The portable OCR adapter has passed a native Electron synthetic-image check for asset, price, payout and timer. Neither broker's authenticated chart extraction has been validated in this change. Do not interpret fixture confidence as live-market accuracy.
+
+
+Instrument discovery now uses platform-specific `AssetDetector` adapters before price providers. They return a strict nine-slot detection result with source, evidence, confidence and timestamp. A rendered-DOM check against the user-opened broker pages found one canvas per page and no instrument-label DOM nodes. The DOM adapters are validated with synthetic chart-container fixtures; authenticated canvas extraction still requires correctly aligned OCR label regions. See [asset detection](asset-detection.md).

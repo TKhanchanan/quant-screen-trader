@@ -13,7 +13,7 @@ export function parseOCRFields(text: string, confidence: number): ParsedFields {
   const price = unique(s => parsePrice(s) !== null)
   const payout = unique(s => parsePayout(s) !== null)
   const timer = unique(s => parseTimer(s) !== null)
-  const asset = unique(s => /^[A-Z][A-Z0-9 /.-]{2,40}(?: OTC)?$/.test(s))
+  const asset = unique(s => /^(?:[A-Z0-9]{2,10}\s*\/\s*[A-Z0-9]{2,10}(?:\s*(?:\(OTC\)|OTC))?|[A-Za-z][A-Za-z0-9 /&+._-]{1,80}\s*(?:\(OTC\)| OTC))$/.test(s))
   return { confidence, ...(price ? { price } : {}), ...(payout ? { payout } : {}),
     ...(timer ? { timer } : {}), ...(asset ? { asset } : {}) }
 }

@@ -23,10 +23,11 @@ export function AssetSetup({ platform, initialSlots, onClose }: {
     <div className="toolbar"><h2>Configure assets</h2><button onClick={onClose}>Cancel / Close</button></div>
     <p>These names label charts; they do not select instruments on the platform. Login and chart selection remain manual.</p>
     <fieldset disabled={busy}>
-      <table className="asset-table"><thead><tr><th>Slot</th><th>Enabled</th><th>Asset name</th><th>Display name (optional)</th></tr></thead>
+      <table className="asset-table"><thead><tr><th>Slot</th><th>Enabled</th><th>Asset mode</th><th>Asset name</th><th>Display name (optional)</th></tr></thead>
         <tbody>{slots.map((slot) => <tr key={slot.id}><th>{slot.id}</th>
-          <td><input aria-label={`Enable slot ${slot.id}`} type="checkbox" checked={slot.enabled} onChange={(e) => edit(slot.id, { enabled: e.target.checked })} /></td>
-          <td><input aria-label={`Slot ${slot.id} asset`} maxLength={120} value={slot.assetName} onChange={(e) => edit(slot.id, { assetName: e.target.value })} /></td>
+          <td><input aria-label={`Enable slot ${slot.id}`} type="checkbox" checked={slot.enabled} onChange={(e) => edit(slot.id, { enabled: e.target.checked, assetMode: 'MANUAL' })} /></td>
+          <td><select aria-label={`Slot ${slot.id} asset mode`} value={slot.assetMode ?? 'AUTO'} onChange={e => edit(slot.id, { assetMode: e.target.value as 'AUTO' | 'MANUAL' })}><option value="AUTO">AUTO</option><option value="MANUAL">MANUAL / locked</option></select></td>
+          <td><input aria-label={`Slot ${slot.id} asset`} maxLength={120} value={slot.assetName} onChange={(e) => edit(slot.id, { assetName: e.target.value, assetMode: 'MANUAL' })} /></td>
           <td><input aria-label={`Slot ${slot.id} display name`} maxLength={120} value={slot.displayName ?? ''} onChange={(e) => edit(slot.id, { displayName: e.target.value })} /></td>
         </tr>)}</tbody></table>
       {!valid && <p role="alert">Every enabled slot needs an asset name.</p>}

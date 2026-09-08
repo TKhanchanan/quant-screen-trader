@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
-  IPC_CHANNELS, MarketCommandSchema, MarketSnapshotSchema,
+  IPC_CHANNELS, AssetSyncCommandSchema, AssetSyncStateSchema, MarketCommandSchema, MarketSnapshotSchema,
   PlatformSchema,
   PlatformCommandSchema, BrowserSnapshotSchema, ConfigurationRequestSchema, ConfigurationResultSchema,
   type DesktopBridge,
@@ -9,6 +9,7 @@ import {
 } from '@quant-screen-trader/shared-types'
 
 const bridge: DesktopBridge = {
+  assetSync: async (request) => AssetSyncStateSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.assetSync, AssetSyncCommandSchema.parse(request))),
   market: async (request) => MarketSnapshotSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.market, MarketCommandSchema.parse(request))),
   platformCommand: async (request) => BrowserSnapshotSchema.parse(await ipcRenderer.invoke(
     IPC_CHANNELS.platformCommand, PlatformCommandSchema.parse(request))),

@@ -10,7 +10,7 @@ try {
   const target = join(directory, 'smoke.cjs')
   const profile = join(directory, 'profile')
   mkdirSync(profile)
-  await build({ entryPoints: ['apps/desktop/scripts/market-smoke.ts'], outfile: target, bundle: true,
+  await build({ entryPoints: [process.argv.includes('--assets') ? 'apps/desktop/scripts/asset-smoke.ts' : 'apps/desktop/scripts/market-smoke.ts'], outfile: target, bundle: true,
     platform: 'node', format: 'cjs', external: ['electron'], plugins: [{ name: 'local-ocr', setup(b) { b.onResolve({ filter: /^tesseract\.js$/ }, () => ({ path: require.resolve('tesseract.js'), external: true })) } }],
     alias: { '@quant-screen-trader/shared-types': resolve('packages/shared-types/src/index.ts') } })
   const env = { ...process.env, NODE_PATH: resolve('node_modules'), QST_SMOKE_DATA_DIR: profile }

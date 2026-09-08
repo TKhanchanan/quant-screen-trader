@@ -1,3 +1,5 @@
+import { CapitalBearAssetDetector, IQOptionAssetDetector, normalizeAsset } from './asset-detector'
+import { type AssetDetectionResult, type CalibrationSlot } from '@quant-screen-trader/shared-types'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
 import { normalizedToPixel } from '@quant-screen-trader/shared-types'
 import { WebContentsView, BrowserWindow, type WebContents } from 'electron'
@@ -110,6 +112,12 @@ export class PlatformBrowserManager {
       allowedNavigation(getPlatformConfig(platform), entry.view.webContents.getURL()),
       paused: !!entry?.overlay, revision: entry?.revision ?? 0, bounds: entry?.snapshot.bounds ?? { x: 0, y: 0, width: 1, height: 1 } }
   }
+  async detectAssets(platform: Platform, calibration?: CalibrationSlot[]): Promise<AssetDetectionResult> {
+    const entry = this.entries.get(platform), surface = this.observationSurface(platform)
+    if (!entry || !surface.available || surface.paused) throw new Error('Platform unavailable for asset detection')
+    const evaluate = (script: string): Promise<unknown> => entry.view.webContents.executeJavaScript(script)
+    return (platform === 'capitalbear' ? new CapitalBearAssetDetector(evaluate) : new IQOptionAssetDetector(evaluate)).detectAssets(calibration)
+  }
   async captureSlot(context: ObservationContext): Promise<NormalizedImage> {
     const surface = this.observationSurface(context.platform)
     const entry = this.entries.get(context.platform)
@@ -143,7 +151,8 @@ export class PlatformBrowserManager {
         });
         return nodes.length === 1 ? nodes[0].innerText?.trim().slice(0, 120) : undefined;
       };
-      const asset = read('[data-testid="asset-name"], .asset-name, .instrument-name');
+      const rawAsset = read('[data-testid="asset-name"], .asset-name, .instrument-name');
+      const asset = rawAsset?.replace(/\\s+/g, ' ').replace(/\\s*\\/\\s*/g, '/').replace(/\\s*\\(OTC\\)$/i, ' OTC');
       const price = read('[data-testid="current-price"], .current-price');
       const payout = read('[data-testid="payout"], .payout-value');
       const timer = read('[data-testid="expiry-timer"], .expiry-timer');
@@ -156,7 +165,7 @@ export class PlatformBrowserManager {
     if (!result || typeof result !== 'object') return { confidence: 0 }
     const value = result as Record<string, unknown>
     return { confidence: .9,
-      ...(typeof value.asset === 'string' && value.asset === context.assetName ? { asset: value.asset } : {}),
+      ...(typeof value.asset === 'string' && normalizeAsset(value.asset) === normalizeAsset(context.assetName) ? { asset: value.asset } : {}),
       ...(typeof value.price === 'string' && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value.price) ? { price: value.price } : {}),
       ...(typeof value.payout === 'string' && /^\d{1,3}%$/.test(value.payout) ? { payout: value.payout } : {}),
       ...(typeof value.timer === 'string' && /^\d{1,3}:[0-5]\d$/.test(value.timer) ? { timer: value.timer } : {}) }

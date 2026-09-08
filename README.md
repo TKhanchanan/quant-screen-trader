@@ -116,3 +116,10 @@ See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/captu
 
 
 The interrupted temporary-profile acceptance check is complete, including both unauthenticated workspaces, idle disabled slots, calibration pause and 18-stream synthetic HTTP/Parquet validation. Real authenticated broker extraction remains pending for both platforms. See the [2026-09-08 verification results](docs/development.md#acceptance-continuation--2026-09-08).
+
+
+## Asset synchronization
+
+Workspaces now offer **Sync Assets** and **Auto Sync Assets**, with AUTO/MANUAL locks in Asset Setup. Confident, correctly mapped detections populate and enable AUTO slots; uncertain reads preserve existing values. Auto changes create per-slot series boundaries. See [Asset detection](docs/asset-detection.md) for mapping, confidence and debounce rules.
+
+The inspected live broker pages render their trading UI into a single canvas. Their current default full-browser grid must be aligned with chart regions before safe OCR synchronization; authenticated asset/price extraction is still pending. DOM fixture success does not establish support for these canvas layouts.

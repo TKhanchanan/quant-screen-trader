@@ -7,7 +7,7 @@ import type { PlatformBrowserManager } from './platform-browser'
 import type { EngineConnectionConfig } from './engine-config'
 
 interface WorkspaceData {
-  snapshot: MarketSnapshot; config: ConfigurationResult; contextId: string; scheduler: CaptureScheduler;
+  snapshot: MarketSnapshot; config: ConfigurationResult; contextIds: Map<number, string>; scheduler: CaptureScheduler;
   dom: DOMMarketDataProvider; visual: VisualMarketDataProvider; ocr: TesseractOCRProvider;
   signature: string; cursor: number; busy: boolean; count: number; started: number
 }
@@ -25,15 +25,21 @@ export class MarketManager {
     const platform = config.configuration.platform, previous = this.workspaces.get(platform)
     if (previous && JSON.stringify(previous.config) === JSON.stringify(config)) return
     if (previous) { previous.scheduler.invalidate(); previous.dom.stop(); previous.visual.stop(); void previous.ocr.stop().catch(() => {}) }
-    for (const key of this.queue.keys()) if (key.startsWith(platform + ':')) this.queue.delete(key)
+    const profile = (value: ConfigurationResult): string => JSON.stringify(value.calibrations.find(p => p.id === value.activeCalibrationId) ?? null)
+    const resetAll = !previous || profile(previous.config) !== profile(config)
+    const changed = new Set(config.configuration.slots.filter(s => {
+      const old = previous?.config.configuration.slots.find(o => o.id === s.id)
+      return resetAll || !old || old.assetName !== s.assetName || old.enabled !== s.enabled
+    }).map(s => s.id))
+    for (const id of changed) this.queue.delete(`${platform}:${id}`)
     const ocr = new TesseractOCRProvider()
     const dom = new DOMMarketDataProvider(c => this.browsers.readSlotDOM(c))
     const visual = new VisualMarketDataProvider(c => this.browsers.captureSlot(c), ocr)
     dom.start(); visual.start()
-    const next: WorkspaceData = { config, ocr, dom, visual, contextId: randomUUID(), scheduler: previous?.scheduler ?? new CaptureScheduler(),
-      signature: '', cursor: 0, count: 0, started: Date.now(), busy: previous?.busy ?? false, snapshot: { running: previous?.snapshot.running ?? false,
+    const next: WorkspaceData = { config, ocr, dom, visual, contextIds: new Map(config.configuration.slots.map(s => [s.id, changed.has(s.id) ? randomUUID() : previous!.contextIds.get(s.id)!])), scheduler: previous?.scheduler ?? new CaptureScheduler(),
+      signature: previous?.signature ?? '', cursor: 0, count: 0, started: Date.now(), busy: previous?.busy ?? false, snapshot: { running: previous?.snapshot.running ?? false,
         intervalMs: previous?.snapshot.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000),
-        slots: config.configuration.slots.map(s => ({ slotId: s.id, state: s.enabled ? 'WAITING' : 'DISABLED', secondSamples: 0, m1Samples: 0, m1State: null, observation: null, dropped: 0, pixelBounds: null })),
+        slots: config.configuration.slots.map(s => !changed.has(s.id) && previous ? previous.snapshot.slots.find(old => old.slotId === s.id)! : ({ slotId: s.id, state: s.enabled ? 'WAITING' : 'DISABLED', secondSamples: 0, m1Samples: 0, m1State: null, observation: null, dropped: 0, pixelBounds: null })),
         dropped: 0, queueDepth: 0, queueLagMs: 0, captureRate: 0, engineAvailable: false } }
     if (previous) Object.assign(previous, next)
     this.workspaces.set(platform, previous ?? next)
@@ -46,7 +52,7 @@ export class MarketManager {
       workspace.snapshot.running = command.operation === 'start'
       workspace.count = 0; workspace.started = Date.now()
       workspace.snapshot.engineAvailable = false; workspace.snapshot.queueLagMs = 0
-      workspace.scheduler.invalidate(); workspace.contextId = randomUUID()
+      workspace.scheduler.invalidate(); workspace.contextIds = new Map(workspace.snapshot.slots.map(s => [s.slotId, randomUUID()]))
       for (const key of this.queue.keys()) if (key.startsWith(command.platform + ':')) this.queue.delete(key)
       for (const slot of workspace.snapshot.slots) { slot.observation = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null; if (slot.state !== 'DISABLED') slot.state = workspace.snapshot.running ? 'WAITING' : 'PAUSED' }
     }
@@ -60,7 +66,7 @@ export class MarketManager {
       const signature = JSON.stringify(surface)
       if (w.signature !== signature) {
         w.count = 0; w.started = Date.now()
-        w.signature = signature; w.contextId = randomUUID(); w.scheduler.invalidate()
+        w.signature = signature; w.contextIds = new Map(w.snapshot.slots.map(s => [s.slotId, randomUUID()])); w.scheduler.invalidate()
         for (const key of this.queue.keys()) if (key.startsWith(platform + ':')) this.queue.delete(key)
         for (const slot of w.snapshot.slots) { slot.observation = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null }
       }
@@ -80,7 +86,7 @@ export class MarketManager {
       const slot = w.snapshot.slots.find(s => s.slotId === configured.id)!
       slot.pixelBounds = normalizedToPixel(bounds, surface.bounds.width, surface.bounds.height)
       const context: ObservationContext = { platform, slotId: configured.id, assetName: configured.assetName,
-        contextId: w.contextId, calibrationProfileId: profile.id, bounds }
+        contextId: w.contextIds.get(configured.id)!, calibrationProfileId: profile.id, bounds }
       const key = `${platform}:${configured.id}`
       w.busy = true
       void w.scheduler.run(key, true, w.snapshot.intervalMs, async () => {
@@ -114,7 +120,7 @@ export class MarketManager {
       for (const status of result.slots) {
         const w = this.workspaces.get(status.platform)
         const slot = w?.snapshot.slots.find(s => s.slotId === status.slotId)
-        if (slot && w?.contextId === status.contextId) {
+        if (slot && w?.contextIds.get(status.slotId) === status.contextId) {
           slot.secondSamples = status.secondSamples; slot.m1Samples = status.m1Samples; slot.m1State = status.m1State
         }
       }

@@ -23,7 +23,7 @@ def test_migration_is_idempotent_and_enables_sqlite_safety(tmp_path: Path) -> No
         assert busy_timeout is not None and busy_timeout[0] == 5_000
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
-        ] == [1, 2]
+        ] == [1, 2, 3]
 
         tables = {
             row[0]

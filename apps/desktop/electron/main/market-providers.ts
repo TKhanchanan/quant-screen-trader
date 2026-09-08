@@ -1,3 +1,4 @@
+import { normalizeAsset } from './asset-detector'
 import { randomUUID } from 'node:crypto'
 import { MarketObservationSchema, type MarketObservation, type NormalizedBounds, type Platform, type SourceType } from '@quant-screen-trader/shared-types'
 
@@ -31,7 +32,7 @@ export function parseTimer(text: string | undefined): number | null {
 export function observation(context: ObservationContext, sourceType: SourceType, fields: ParsedFields,
   observedAt: number, captureLatencyMs = 0): MarketObservation {
   const parsedAt = Date.now(), parseLatencyMs = Math.max(0, parsedAt - observedAt - captureLatencyMs)
-  const matched = fields.asset === context.assetName
+  const matched = !!fields.asset && normalizeAsset(fields.asset) === normalizeAsset(context.assetName)
   const confidence = matched ? fields.confidence : 0
   const price = parsePrice(fields.price), payout = parsePayout(fields.payout), timerSeconds = parseTimer(fields.timer)
   const latencyMs = Math.max(0, parsedAt - observedAt)

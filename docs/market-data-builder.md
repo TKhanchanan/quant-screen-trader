@@ -37,3 +37,6 @@ Tests cover deterministic trends, rapid movement, gaps, duplicate/out-of-order t
 
 
 The continuation's isolated loopback integration check verified all 18 streams with explicitly SYNTHETIC observations, completed M10 candles and typed Parquet reload after normal shutdown. This establishes integrated builder/storage behavior without claiming a real authenticated price feed; see the dated [development verification](development.md#acceptance-continuation--2026-09-08).
+
+
+Auto asset synchronization updates configuration through an atomic expected-slots/calibration-version check. Only the changed slot receives a new context and queue reset; unchanged slots retain their histories. Manual locks survive preset save/load. Asset discovery does not modify any stored historical identity or duplicate candle logic.
