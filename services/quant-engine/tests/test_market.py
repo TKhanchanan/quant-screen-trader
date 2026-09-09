@@ -6,7 +6,6 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-
 from quant_engine.app import create_app
 from quant_engine.market_api import MarketEngine, ObservationBatch
 from quant_engine.market_builder import TimeSeriesBuilder

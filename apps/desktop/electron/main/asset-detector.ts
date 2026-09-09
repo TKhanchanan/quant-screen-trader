@@ -5,8 +5,12 @@ const Rect = z.strictObject({ x: z.number().min(0).max(1), y: z.number().min(0).
 export const ChartLabelSchema = z.strictObject({ bounds: Rect, label: z.string().max(120), tooltip: z.string().max(120).nullable() })
 export type ChartLabel = z.infer<typeof ChartLabelSchema>
 export function normalizeAsset(label: string): string | null {
-  const value = label.trim().replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/').replace(/\s*\(OTC\)$/i, ' OTC')
-  if (!/^[\p{L}][\p{L}\p{N} /&+()._-]{1,119}$/u.test(value) || /[.…]{2}|…|\?/.test(value) || /(?:balance|account|deposit|withdraw|password)/i.test(value)) return null
+  const value = label.trim().replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
+    .replace(/\s+(?:Digital|Binary)$/i, '')
+    .replace(/\s*\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)\s*\)?$/i, ' OTC')
+    .replace(/\s*\(OTC\)$/i, ' OTC')
+  if (!/^[\p{L}][\p{L}\p{N} /&+()._-]{1,119}$/u.test(value) || /(?:\.{2,}|…|\?)/.test(value) ||
+    /(?:balance|account|deposit|withdraw|password)/i.test(value)) return null
   return value
 }
 export function emptyAsset(platform: Platform, slotId: number, state: DetectedAsset['state'] = 'NOT_FOUND'): DetectedAsset {
@@ -16,6 +20,7 @@ export function emptyAsset(platform: Platform, slotId: number, state: DetectedAs
 function fullLabel(chart: ChartLabel): { label: string; tooltip: boolean } | null {
   const visible = normalizeAsset(chart.label)
   const tooltip = chart.tooltip ? normalizeAsset(chart.tooltip) : null
+  if (visible && tooltip === visible && /(?:\.{2,}|…)/.test(chart.label)) return { label: chart.tooltip!, tooltip: true }
   if (visible && tooltip && tooltip !== visible && tooltip.startsWith(`${visible} `)) return { label: chart.tooltip!, tooltip: true }
   if (visible) return { label: chart.label, tooltip: false }
   const prefix = chart.label.replace(/(?:\.{2,}|…).*/, '').trim()

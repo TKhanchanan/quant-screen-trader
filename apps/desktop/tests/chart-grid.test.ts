@@ -14,6 +14,8 @@ describe('chart grid geometry', () => {
     expect(grid.slots.map(slot => slot.slotId)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
     expect(grid.slots[3]!.chartBounds.x).toBe(grid.slots[0]!.chartBounds.x)
     expect(grid.slots[3]!.chartBounds.y).toBeGreaterThan(grid.slots[0]!.chartBounds.y)
+    expect(grid.slots[0]!.priceBounds).toMatchObject({ x: .183, y: .1304, width: .13933333333333334 })
+    expect(grid.slots[0]!.priceBounds!.height).toBeCloseTo(.2392)
   })
   it('scales with current browser dimensions without changing persisted normalized coordinates', () => {
     const grid = new IQOptionChartGridResolver().resolve({ width: 1000, height: 600 })

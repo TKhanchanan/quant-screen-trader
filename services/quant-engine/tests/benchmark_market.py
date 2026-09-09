@@ -4,9 +4,8 @@ import json
 import time
 import tracemalloc
 
-from test_market import observation
-
 from quant_engine.market_builder import TimeSeriesBuilder
+from test_market import observation
 
 
 def main() -> None:

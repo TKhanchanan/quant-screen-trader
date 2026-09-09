@@ -1,7 +1,6 @@
 import { CapitalBearAssetDetector, IQOptionAssetDetector, normalizeAsset } from './asset-detector'
-import { chartGridBounds, type AssetDetectionResult, type CalibrationSlot } from '@quant-screen-trader/shared-types'
+import { normalizedToPixel, type AssetDetectionResult, type CalibrationSlot } from '@quant-screen-trader/shared-types'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
-import { normalizedToPixel } from '@quant-screen-trader/shared-types'
 import { WebContentsView, BrowserWindow, type WebContents } from 'electron'
 import { type BrowserSnapshot, type Platform, type PlatformCommand } from '@quant-screen-trader/shared-types'
 import { allowedLoginNavigation, allowedNavigation, getPlatformConfig, safeOrigin } from '../platforms/config'
@@ -31,6 +30,12 @@ export function chartSurfaceActivity(image: NormalizedImage): { middle: number; 
   const middle = imageActivity(image, .18, .58), lower = imageActivity(image, .68, .88)
   return { middle, lower, portfolioOpen: middle >= 2.5 && lower < 1.5 }
 }
+
+const ASSET_TAB_LAYOUT = {
+  iqoption: { x: .155, y: .01, width: .525, height: .105 },
+  capitalbear: { x: .238, y: .01, width: .415, height: .105 }
+} satisfies Record<Platform, { x: number; y: number; width: number; height: number }>
+
 export class PlatformBrowserManager {
   private readonly entries = new Map<Platform, Entry>()
   private readonly assetScans = new Set<Platform>()
@@ -147,20 +152,8 @@ export class PlatformBrowserManager {
       await wait(500); image = await capture(); activity = chartSurfaceActivity(image)
     }
     if (activity.middle < 2.5) throw new Error('Chart grid preparation failed: the visible trading grid did not become ready.')
-    if (activity.portfolioOpen) {
-      entry.window.show(); entry.window.focus(); entry.view.webContents.focus()
-      const point = { x: Math.round(surface.bounds.width * .982),
-        y: Math.round(surface.bounds.height * (platform === 'capitalbear' ? .625 : .631)) }
-      entry.view.webContents.sendInputEvent({ type: 'mouseMove', ...point })
-      entry.view.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point })
-      entry.view.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
-      for (let attempt = 0; attempt < 10; attempt++) {
-        await wait(attempt ? 500 : 800); image = await capture(); activity = chartSurfaceActivity(image)
-        if (activity.middle >= 2.5 && activity.lower >= 1.5) break
-      }
-      if (activity.middle < 2.5 || activity.lower < 1.5)
-        throw new Error('Chart grid preparation failed: the open portfolio panel could not be collapsed safely.')
-    }
+    if (activity.portfolioOpen)
+      throw new Error('Chart grid preparation failed: collapse the portfolio panel manually, then retry.')
     entry.preparedRevision = entry.revision
   }
   observationSurface(platform: Platform): { available: boolean; paused: boolean; revision: number; bounds: BrowserSnapshot['bounds'] } {
@@ -192,90 +185,33 @@ export class PlatformBrowserManager {
     const scale = Math.min(2, 1024 / roi.width, 1024 / roi.height)
     const resized = image.resize({ width: Math.max(1, Math.round(roi.width * scale)), height: Math.max(1, Math.round(roi.height * scale)) })
     const size = resized.getSize()
-    return normalizeBitmap(resized.toBitmap(), size.width, size.height)
+    return normalizeBitmap(resized.toBitmap(), size.width, size.height, undefined, false)
   }
   async captureAssetLabel(platform: Platform, slotId: number, calibration: CalibrationSlot[],
-    recognize: (image: NormalizedImage) => Promise<ParsedFields>): Promise<ParsedFields> {
+    recognize: (image: NormalizedImage) => Promise<ParsedFields>
+  ): Promise<ParsedFields> {
     const surface = this.observationSurface(platform), entry = this.entries.get(platform)
-    const slot = calibration.find(candidate => candidate.id === slotId)
-    if (!entry || !surface.available || surface.paused || !slot || this.assetScans.has(platform))
+    const configuredSlot = calibration.find(slot => slot.id === slotId)
+    if (!entry || !surface.available || surface.paused || !configuredSlot || this.assetScans.has(platform))
       throw new Error('Asset label capture unavailable')
-    const grid = normalizedToPixel(chartGridBounds(calibration), surface.bounds.width, surface.bounds.height)
-    const target = normalizedToPixel(slot.bounds, surface.bounds.width, surface.bounds.height)
-    const firstWidth = Math.min(...calibration.map(candidate => candidate.bounds.width)) * surface.bounds.width
-    const firstHeight = Math.min(...calibration.map(candidate => candidate.bounds.height)) * surface.bounds.height
-    const click = (x: number, y: number): void => {
-      const point = { x: Math.round(x), y: Math.round(y) }
-      entry.view.webContents.sendInputEvent({ type: 'mouseMove', ...point })
-      entry.view.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point })
-      entry.view.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
-    }
-    const wait = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds))
-    const captureTitle = async (): Promise<NormalizedImage> => {
-      const x = Math.round(grid.x + firstWidth * .2), y = Math.round(grid.y)
-      const width = Math.max(1, Math.min(surface.bounds.width - x, Math.round(firstWidth * .78)))
-      const height = Math.max(1, Math.min(surface.bounds.height - y, Math.round(firstHeight * .25)))
-      const image = await entry.view.webContents.capturePage({ x, y, width, height })
-      if (image.isEmpty()) throw new Error('Empty asset title capture')
-      const resized = image.resize({ width: Math.min(760, width * 2), height: Math.min(96, height * 2) })
-      const size = resized.getSize()
-      return { ...normalizeBitmap(resized.toBitmap(), size.width, size.height, undefined, false),
-        purpose: 'ASSET', png: resized.toPNG() }
-    }
-    const difference = (a: NormalizedImage, b: NormalizedImage): number => {
-      if (a.width !== b.width || a.height !== b.height) return 1
-      let total = 0
-      for (let index = 0; index < a.grayscale.length; index++) total += Math.abs(a.grayscale[index]! - b.grayscale[index]!)
-      return total / a.grayscale.length / 255
-    }
-    const visibleAsset = (fields: ParsedFields): string | null => fields.asset ? normalizeAsset(fields.asset) : null
+    const layout = ASSET_TAB_LAYOUT[platform]
+    const tabWidth = layout.width / 9
+    const roi = normalizedToPixel({
+      x: layout.x + (slotId - 1) * tabWidth + tabWidth * .2,
+      y: layout.y + layout.height * .12,
+      width: tabWidth * .76,
+      height: layout.height * .5
+    }, surface.bounds.width, surface.bounds.height)
+    const x = Math.max(0, Math.floor(roi.x)), y = Math.max(0, Math.floor(roi.y))
+    const width = Math.max(1, Math.min(surface.bounds.width - x, Math.ceil(roi.width)))
+    const height = Math.max(1, Math.min(surface.bounds.height - y, Math.ceil(roi.height)))
     this.assetScans.add(platform)
     try {
-      entry.window.show(); entry.window.focus(); entry.view.webContents.focus()
-      const baseline = await captureTitle(), baselineFields = await recognize(baseline)
-      let expanded: NormalizedImage | null = null, fields: ParsedFields | null = null
-      for (let attempt = 0; attempt < 2; attempt++) {
-        click(target.x + target.width * .058, target.y + target.height * .31)
-        await wait(420)
-        const samples: { image: NormalizedImage; fields: ParsedFields; asset: string | null }[] = []
-        for (let read = 0; read < 4; read++) {
-          if (read) await wait(160)
-          const image = await captureTitle(), parsed = await recognize(image)
-          samples.push({ image, fields: parsed, asset: visibleAsset(parsed) })
-          const names = samples.map(sample => sample.asset).filter((name): name is string => !!name)
-          const stable = names.find(name => names.filter(candidate => candidate === name).length >= 2)
-          if (stable && difference(baseline, image) >= .015) {
-            const matching = samples.filter(sample => sample.asset === stable)
-            expanded = image; fields = { ...matching.at(-1)!.fields,
-              confidence: Math.max(...matching.map(sample => sample.fields.confidence), .96) }; break
-          }
-        }
-        if (expanded && fields) break
-        const confirmation = samples.at(-1)!
-        if (difference(baseline, confirmation.image) >= .015) {
-          const names = samples.map(sample => sample.asset ?? 'not found').join(' / ')
-          entry.view.webContents.reload()
-          throw new Error(`Slot ${slotId} expansion changed the canvas but its title was not stable (${names}); the platform was reloaded and no asset was applied.`)
-        }
-      }
-      if (!expanded || !fields) throw new Error(`Slot ${slotId} expand control was not reached after 2 bounded attempts.`)
-      const asset = visibleAsset(fields)!
-      // The expanded chart keeps its toggle at the first cell's original control point.
-      const baselineAsset = visibleAsset(baselineFields)
-      let restoredLayout = false
-      for (let attempt = 0; attempt < 3; attempt++) {
-        click(grid.x + firstWidth * .058, grid.y + firstHeight * .5)
-        await wait(360)
-        const restored = await captureTitle(), restoredFields = await recognize(restored)
-        const restoredAsset = visibleAsset(restoredFields)
-        if (restoredAsset !== asset || (baselineAsset === asset && difference(baseline, restored) < .06 &&
-          difference(expanded, restored) >= .015)) { restoredLayout = true; break }
-      }
-      if (!restoredLayout) {
-        entry.view.webContents.reload()
-        throw new Error(`Chart grid restoration failed after Slot ${slotId}; the platform was reloaded, scan stopped, and configuration was preserved.`)
-      }
-      return fields
+      const image = await entry.view.webContents.capturePage({ x, y, width, height })
+      if (image.isEmpty()) throw new Error(`Empty asset tab capture for Slot ${slotId}`)
+      const resized = image.resize({ width: width * 4, height: height * 4 })
+      const size = resized.getSize()
+      return recognize({ ...normalizeBitmap(resized.toBitmap(), size.width, size.height, 145, true), purpose: 'ASSET' })
     } finally { this.assetScans.delete(platform) }
   }
   async readSlotDOM(context: ObservationContext): Promise<ParsedFields> {

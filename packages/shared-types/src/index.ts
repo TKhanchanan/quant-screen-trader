@@ -176,7 +176,7 @@ export function deriveChartGrid(platform: Platform, bounds: NormalizedBounds, so
     })
     return { slotId: index + 1, chartBounds,
       assetTitleBounds: region(.02, .02, .5, .18),
-      priceBounds: region(.45, .02, .52, .94),
+      priceBounds: region(.42, .04, .44, .92),
       timerBounds: region(.72, .25, .25, .5),
       payoutBounds: region(.72, .02, .25, .2) }
   })

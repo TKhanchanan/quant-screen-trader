@@ -162,53 +162,49 @@ describe('embedded browser lifecycle', () => {
     expect(manager.command({ operation: 'endCalibration', platform: 'capitalbear' }).draft).toBeNull()
     expect(views[1]?.webContents.close).toHaveBeenCalledOnce()
   })
-  const bitmap = (value: number) => ({ isEmpty: () => false, resize() { return this }, getSize: () => ({ width: 2, height: 1 }),
-    toBitmap: () => new Uint8Array([value, value, value, 255, value, value, value, 255]),
-    toPNG: () => new Uint8Array([value]) })
-  const ready = (): { manager: InstanceType<typeof PlatformBrowserManager>; contents: Contents } => {
+  const bitmap = (value: number, width = 2, height = 1): Electron.NativeImage => {
+    const resize = vi.fn((size: Electron.ResizeOptions) => bitmap(value, size.width, size.height))
+    return { isEmpty: () => false, resize, getSize: () => ({ width, height }),
+      toBitmap: () => new Uint8Array(width * height * 4).map((_, index) => index % 4 === 3 ? 255 : value) } as unknown as Electron.NativeImage
+  }
+  const ready = (platform: 'capitalbear' | 'iqoption' = 'capitalbear'):
+  { manager: InstanceType<typeof PlatformBrowserManager>; contents: Contents } => {
     const manager = new PlatformBrowserManager(() => new View() as never)
     const window = new Window()
-    manager.attach('capitalbear', window as unknown as BrowserWindow)
+    manager.attach(platform, window as unknown as BrowserWindow)
     const contents = views[0]!.webContents
-    contents.url = 'https://capitalbear.com/'
+    contents.url = `https://${platform}.com/`
     contents.emit('did-finish-load')
-    manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { x: 0, y: 200, width: 900, height: 600 }, visible: true })
+    manager.command({ operation: 'layout', platform, bounds: { x: 0, y: 200, width: 900, height: 600 }, visible: true })
     return { manager, contents }
   }
-  it('verifies expansion and restoration before returning an OCR asset', async () => {
-    vi.useFakeTimers()
-    const { manager, contents } = ready()
-    contents.capturePage.mockResolvedValueOnce(bitmap(10)).mockResolvedValueOnce(bitmap(200))
-      .mockResolvedValueOnce(bitmap(200)).mockResolvedValueOnce(bitmap(10))
-    const recognize = vi.fn(async (image: { grayscale: Uint8Array }) => image.grayscale[0] === 200
-      ? { asset: 'EUR/USD (OTC)', confidence: .98 } : { confidence: 0 })
-    const pending = manager.captureAssetLabel('capitalbear', 2, defaultCalibration(), recognize)
-    await vi.runAllTimersAsync()
-    await expect(pending).resolves.toMatchObject({ asset: 'EUR/USD (OTC)' })
-    expect(contents.sendInputEvent).toHaveBeenCalledTimes(6)
-    vi.useRealTimers()
+  it.each([
+    ['capitalbear', { x: 264, y: 13, width: 32, height: 32 }, { width: 128, height: 128 }],
+    ['iqoption', { x: 202, y: 13, width: 40, height: 32 }, { width: 160, height: 128 }]
+  ] as const)('captures the %s asset tab without broker input', async (platform, bounds, size) => {
+    const { manager, contents } = ready(platform)
+    contents.capturePage.mockResolvedValue(bitmap(200))
+    const recognize = vi.fn(async () => ({ asset: 'EUR/USD (OTC)', confidence: .98 }))
+    await expect(manager.captureAssetLabel(platform, 2, defaultCalibration(platform), recognize))
+      .resolves.toMatchObject({ asset: 'EUR/USD (OTC)' })
+    expect(contents.capturePage).toHaveBeenCalledWith(bounds)
+    expect(recognize).toHaveBeenCalledWith(expect.objectContaining({ ...size, purpose: 'ASSET' }))
+    expect(contents.sendInputEvent).not.toHaveBeenCalled()
   })
-  it('does not send a restore click when all bounded expand attempts miss', async () => {
-    vi.useFakeTimers()
+  it('requires manual portfolio collapse without broker input', async () => {
     const { manager, contents } = ready()
-    contents.capturePage.mockResolvedValue(bitmap(10))
-    const pending = manager.captureAssetLabel('capitalbear', 2, defaultCalibration(), async () => ({ confidence: 0 }))
-    const rejected = expect(pending).rejects.toThrow('expand control was not reached after 2 bounded attempts')
-    await vi.runAllTimersAsync(); await rejected
-    expect(contents.sendInputEvent).toHaveBeenCalledTimes(6)
-    vi.useRealTimers()
-  })
-  it('stops with an exact error when restoration cannot be verified', async () => {
-    vi.useFakeTimers()
-    const { manager, contents } = ready()
-    contents.capturePage.mockResolvedValueOnce(bitmap(10)).mockResolvedValue(bitmap(200))
-    const recognize = async (image: { grayscale: Uint8Array }): Promise<{ asset?: string; confidence: number }> =>
-      image.grayscale[0] === 200 ? { asset: 'EUR/USD (OTC)', confidence: .98 } : { confidence: 0 }
-    const pending = manager.captureAssetLabel('capitalbear', 2, defaultCalibration(), recognize)
-    const rejected = expect(pending).rejects.toThrow('Chart grid restoration failed after Slot 2')
-    await vi.runAllTimersAsync(); await rejected
-    expect(contents.sendInputEvent).toHaveBeenCalledTimes(12)
-    vi.useRealTimers()
+    const width = 100, height = 100, pixels = new Uint8Array(width * height * 4)
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const value = y >= 18 && y < 58 && x >= 6 && x < 98 ? (x + y) % 2 ? 24 : 112 : 32
+      const index = (y * width + x) * 4
+      pixels[index] = value; pixels[index + 1] = value; pixels[index + 2] = value; pixels[index + 3] = 255
+    }
+    contents.capturePage.mockResolvedValue({ isEmpty: () => false, getSize: () => ({ width, height }),
+      toBitmap: () => pixels } as unknown as Electron.NativeImage)
+    await expect(manager.captureSlot({ platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD', contextId: 'test',
+      calibrationProfileId: null, bounds: { x: .05, y: .12, width: .3, height: .26 } }))
+      .rejects.toThrow('Chart grid preparation failed: collapse the portfolio panel manually, then retry.')
+    expect(contents.sendInputEvent).not.toHaveBeenCalled()
   })
 })
 describe('visible chart surface preparation', () => {

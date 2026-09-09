@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-
 from quant_engine.app import create_app
 from quant_engine.storage.database import initialize_database
 
@@ -203,21 +202,39 @@ def test_upgrade_migrates_only_the_legacy_full_browser_grid(tmp_path: Path) -> N
     initialize_database(path)
     with sqlite3.connect(path) as db:
         db.execute("DELETE FROM schema_migrations WHERE version = 4")
-        db.execute("INSERT INTO calibration_profiles VALUES ('legacy','capitalbear','Legacy',900,600,1,'x','x')")
-        db.execute("INSERT INTO calibration_profiles VALUES ('manual','capitalbear','Manual',900,600,1,'x','x')")
+        db.execute(
+            "INSERT INTO calibration_profiles VALUES ('legacy','capitalbear','Legacy',900,600,1,'x','x')"
+        )
+        db.execute(
+            "INSERT INTO calibration_profiles VALUES ('manual','capitalbear','Manual',900,600,1,'x','x')"
+        )
         for slot in range(1, 10):
             column, row = (slot - 1) % 3, (slot - 1) // 3
-            db.execute("INSERT INTO calibration_slots VALUES (?,?,?,?,?,?)",
-                       ('legacy', slot, column / 3, row / 3, 1 / 3, 1 / 3))
-            db.execute("INSERT INTO calibration_slots VALUES (?,?,?,?,?,?)",
-                       ('manual', slot, .06 + column * .3, .13 + row * .25, .3, .25))
-        migration = resources.files("quant_engine.storage.migrations").joinpath("0004_inner_chart_grid.sql").read_text()
+            db.execute(
+                "INSERT INTO calibration_slots VALUES (?,?,?,?,?,?)",
+                ("legacy", slot, column / 3, row / 3, 1 / 3, 1 / 3),
+            )
+            db.execute(
+                "INSERT INTO calibration_slots VALUES (?,?,?,?,?,?)",
+                ("manual", slot, 0.06 + column * 0.3, 0.13 + row * 0.25, 0.3, 0.25),
+            )
+        migration = (
+            resources.files("quant_engine.storage.migrations")
+            .joinpath("0004_inner_chart_grid.sql")
+            .read_text()
+        )
         db.executescript(migration)
-        legacy = db.execute("SELECT x,y,width,height FROM calibration_slots WHERE profile_id='legacy' ORDER BY slot_number").fetchall()
-        manual = db.execute("SELECT x,y,width,height FROM calibration_slots WHERE profile_id='manual' ORDER BY slot_number").fetchall()
-        assert legacy[0] == pytest.approx((.05, .12, .95 / 3, .78 / 3))
-        assert legacy[8] == pytest.approx((.05 + 2 * .95 / 3, .12 + 2 * .78 / 3, .95 / 3, .78 / 3))
-        assert manual[0] == pytest.approx((.06, .13, .3, .25))
+        legacy = db.execute(
+            "SELECT x,y,width,height FROM calibration_slots WHERE profile_id='legacy' ORDER BY slot_number"
+        ).fetchall()
+        manual = db.execute(
+            "SELECT x,y,width,height FROM calibration_slots WHERE profile_id='manual' ORDER BY slot_number"
+        ).fetchall()
+        assert legacy[0] == pytest.approx((0.05, 0.12, 0.95 / 3, 0.78 / 3))
+        assert legacy[8] == pytest.approx(
+            (0.05 + 2 * 0.95 / 3, 0.12 + 2 * 0.78 / 3, 0.95 / 3, 0.78 / 3)
+        )
+        assert manual[0] == pytest.approx((0.06, 0.13, 0.3, 0.25))
 
 
 def test_asset_sync_compare_and_swap_and_manual_presets(tmp_path: Path) -> None:
