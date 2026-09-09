@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { MarketObservationSchema, normalizedToPixel } from '@quant-screen-trader/shared-types'
-import { DOMMarketDataProvider, ReplayMarketDataProvider, SyntheticMarketDataProvider, normalizeBitmap,
-  observation, parsePayout, parsePrice, parseTimer, type ObservationContext } from '../electron/main/market-providers'
+import { DOMMarketDataProvider, ReplayMarketDataProvider, SyntheticMarketDataProvider, VisualMarketDataProvider,
+  isolateBrightPriceLabel, normalizeBitmap, observation, parsePayout, parsePrice, parseTimer,
+  type NormalizedImage, type ObservationContext } from '../electron/main/market-providers'
 import { CaptureScheduler } from '../electron/main/market-scheduler'
 
 const context: ObservationContext = { platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD OTC',
@@ -27,6 +28,15 @@ describe('strict UI parsers', () => {
     expect(bitmap[0]).toBe(20)
     expect(() => normalizeBitmap(bitmap, 10, 10)).toThrow()
   })
+  it('isolates the single bright current-price callout from the targeted chart ROI', () => {
+    const grayscale = new Uint8Array(100 * 50).fill(10)
+    for (let y = 18; y < 32; y++) for (let x = 20; x < 80; x++) grayscale[y * 100 + x] = 230
+    for (let y = 21; y < 29; y++) for (let x = 35; x < 38; x++) grayscale[y * 100 + x] = 20
+    const result = isolateBrightPriceLabel({ width: 100, height: 50, grayscale })
+    expect(result.purpose).toBe('PRICE')
+    expect(result.width).toBeLessThan(75)
+    expect(result.height).toBeLessThan(25)
+  })
 })
 describe('provenance and confidence', () => {
   it('rejects arbitrary metadata and session fields', () => {
@@ -49,6 +59,21 @@ describe('provenance and confidence', () => {
     }
     const replay = new ReplayMarketDataProvider([fixture()]); replay.start()
     await expect(replay.observe({ ...context, platform: 'iqoption' })).rejects.toThrow()
+  })
+  it('binds a visually isolated price to its calibrated slot identity and preserves uncertainty', async () => {
+    const grayscale = new Uint8Array(100 * 50).fill(10)
+    for (let y = 18; y < 32; y++) for (let x = 20; x < 80; x++) grayscale[y * 100 + x] = 230
+    const capture = async (): Promise<NormalizedImage> => ({ width: 100, height: 50, grayscale })
+    const confident = new VisualMarketDataProvider(capture, { parseText: async image => {
+      expect(image.purpose).toBe('PRICE'); return { price: '1.23456', confidence: .94 }
+    } })
+    confident.start()
+    const value = await confident.observe(context)
+    expect(value).toMatchObject({ platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD OTC', price: 1.23456,
+      sourceType: 'VISUAL', dataQuality: { state: 'GOOD' } })
+    const uncertain = new VisualMarketDataProvider(capture, { parseText: async () => ({ price: '1.23457', confidence: .4 }) })
+    uncertain.start()
+    expect((await uncertain.observe({ ...context, platform: 'iqoption', slotId: 2 })).dataQuality.state).toBe('UNCERTAIN')
   })
 })
 describe('bounded scheduler', () => {

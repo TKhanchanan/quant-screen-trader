@@ -81,6 +81,27 @@ export const CalibrationSlotSchema = z.object({ id: SlotIdSchema, bounds: Normal
 export const CalibrationSlotsSchema = z.array(CalibrationSlotSchema).length(9)
   .refine((slots) => new Set(slots.map((s) => s.id)).size === 9, 'Exactly slots 1–9 are required')
 export type CalibrationSlot = z.infer<typeof CalibrationSlotSchema>
+export const ChartGeometrySourceSchema = z.enum(['AUTO', 'MANUAL', 'LEGACY'])
+export type ChartGeometrySource = z.infer<typeof ChartGeometrySourceSchema>
+export const ChartSlotGeometrySchema = z.object({
+  slotId: SlotIdSchema,
+  chartBounds: NormalizedBoundsSchema,
+  assetTitleBounds: NormalizedBoundsSchema.optional(),
+  priceBounds: NormalizedBoundsSchema.optional(),
+  timerBounds: NormalizedBoundsSchema.optional(),
+  payoutBounds: NormalizedBoundsSchema.optional()
+})
+export type ChartSlotGeometry = z.infer<typeof ChartSlotGeometrySchema>
+export const ChartGridGeometrySchema = z.object({
+  platform: PlatformSchema,
+  bounds: NormalizedBoundsSchema,
+  source: ChartGeometrySourceSchema,
+  confidence: z.number().min(0).max(1),
+  slots: z.array(ChartSlotGeometrySchema).length(9)
+    .refine(slots => slots.map(slot => slot.slotId).join(',') === '1,2,3,4,5,6,7,8,9',
+      'Chart slots must be in row-major Slot 1–9 order')
+})
+export type ChartGridGeometry = z.infer<typeof ChartGridGeometrySchema>
 const NamedRecord = { id: z.uuid(), platform: PlatformSchema, name: z.string().trim().min(1).max(120),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime() }
 export const CalibrationProfileSchema = z.object({ ...NamedRecord,
@@ -115,7 +136,7 @@ export const ConfigurationRequestSchema = z.discriminatedUnion('operation', [
 export type ConfigurationRequest = z.infer<typeof ConfigurationRequestSchema>
 export const PlatformSessionStateSchema = z.object({
   platform: PlatformSchema,
-  state: z.enum(['STARTING', 'LOADING', 'LOGIN_REQUIRED', 'READY', 'DISCONNECTED', 'ERROR']),
+  state: z.enum(['STARTING', 'LOADING', 'LOGIN_REQUIRED', 'UNKNOWN', 'READY', 'DISCONNECTED', 'ERROR']),
   loadState: z.enum(['idle', 'loading', 'loaded', 'failed']),
   currentUrl: z.url().refine((url) => new URL(url).origin === url && new URL(url).protocol === 'https:',
     'Only a sanitized HTTPS origin may be exposed').optional(), lastUpdatedAt: z.iso.datetime(),
@@ -141,9 +162,58 @@ export const BrowserSnapshotSchema = z.object({ session: PlatformSessionStateSch
   zoomFactor: z.number().min(0.25).max(5) })
 export type BrowserSnapshot = z.infer<typeof BrowserSnapshotSchema>
 
-export function defaultCalibration(): CalibrationSlot[] {
-  return Array.from({ length: 9 }, (_, i) => ({ id: i + 1,
-    bounds: { x: (i % 3) / 3, y: Math.floor(i / 3) / 3, width: 1 / 3, height: 1 / 3 } }))
+const AUTO_GRID_BOUNDS: NormalizedBounds = { x: .05, y: .12, width: .95, height: .78 }
+export function deriveChartGrid(platform: Platform, bounds: NormalizedBounds, source: ChartGeometrySource = 'AUTO',
+  confidence = source === 'AUTO' ? .96 : 1): ChartGridGeometry {
+  NormalizedBoundsSchema.parse(bounds)
+  const width = bounds.width / 3, height = bounds.height / 3
+  const slots = Array.from({ length: 9 }, (_, index): ChartSlotGeometry => {
+    const column = index % 3, row = Math.floor(index / 3)
+    const chartBounds = { x: bounds.x + column * width, y: bounds.y + row * height, width, height }
+    const region = (x: number, y: number, regionWidth: number, regionHeight: number): NormalizedBounds => ({
+      x: chartBounds.x + chartBounds.width * x, y: chartBounds.y + chartBounds.height * y,
+      width: chartBounds.width * regionWidth, height: chartBounds.height * regionHeight
+    })
+    return { slotId: index + 1, chartBounds,
+      assetTitleBounds: region(.02, .02, .5, .18),
+      priceBounds: region(.45, .02, .52, .94),
+      timerBounds: region(.72, .25, .25, .5),
+      payoutBounds: region(.72, .02, .25, .2) }
+  })
+  return ChartGridGeometrySchema.parse({ platform, bounds, source, confidence, slots })
+}
+export function chartGridBounds(slots: CalibrationSlot[]): NormalizedBounds {
+  CalibrationSlotsSchema.parse(slots)
+  const left = Math.min(...slots.map(slot => slot.bounds.x)), top = Math.min(...slots.map(slot => slot.bounds.y))
+  const right = Math.max(...slots.map(slot => slot.bounds.x + slot.bounds.width))
+  const bottom = Math.max(...slots.map(slot => slot.bounds.y + slot.bounds.height))
+  return NormalizedBoundsSchema.parse({ x: left, y: top, width: right - left, height: bottom - top })
+}
+export function calibrationToChartGrid(platform: Platform, slots: CalibrationSlot[], source: ChartGeometrySource = 'MANUAL'): ChartGridGeometry {
+  const bounds = chartGridBounds(slots)
+  const regular = deriveChartGrid(platform, bounds, source)
+  const ordered = [...CalibrationSlotsSchema.parse(slots)].sort((a, b) => a.id - b.id)
+  return ChartGridGeometrySchema.parse({ ...regular, slots: ordered.map((slot, index) => {
+    const auto = regular.slots[index]!, chartBounds = slot.bounds
+    const remap = (region: NormalizedBounds | undefined): NormalizedBounds | undefined => region && ({
+      x: chartBounds.x + (region.x - auto.chartBounds.x) / auto.chartBounds.width * chartBounds.width,
+      y: chartBounds.y + (region.y - auto.chartBounds.y) / auto.chartBounds.height * chartBounds.height,
+      width: region.width / auto.chartBounds.width * chartBounds.width,
+      height: region.height / auto.chartBounds.height * chartBounds.height
+    })
+    return { slotId: slot.id, chartBounds, assetTitleBounds: remap(auto.assetTitleBounds),
+      priceBounds: remap(auto.priceBounds), timerBounds: remap(auto.timerBounds), payoutBounds: remap(auto.payoutBounds) }
+  }) })
+}
+export function defaultChartGrid(platform: Platform): ChartGridGeometry {
+  return deriveChartGrid(platform, AUTO_GRID_BOUNDS, 'AUTO')
+}
+export function defaultCalibration(platform: Platform = 'capitalbear'): CalibrationSlot[] {
+  return defaultChartGrid(platform).slots.map(slot => ({ id: slot.slotId, bounds: slot.chartBounds }))
+}
+export function legacyDefaultCalibration(): CalibrationSlot[] {
+  return Array.from({ length: 9 }, (_, index) => ({ id: index + 1,
+    bounds: { x: (index % 3) / 3, y: Math.floor(index / 3) / 3, width: 1 / 3, height: 1 / 3 } }))
 }
 export function normalizedToPixel(bounds: NormalizedBounds, width: number, height: number): NormalizedBounds {
   return { x: bounds.x * width, y: bounds.y * height, width: bounds.width * width, height: bounds.height * height }

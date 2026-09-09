@@ -7,14 +7,14 @@ export function CalibrationControls({ platform, onClose, onError }: {
 }): JSX.Element {
   const { data, execute, busy } = useWorkspaceStore()
   const [selected, setSelected] = useState(data?.activeCalibrationId ?? '')
-  const [name, setName] = useState(data?.calibrations.find((p) => p.id === selected)?.name ?? 'Default 3×3')
+  const [name, setName] = useState(data?.calibrations.find((p) => p.id === selected)?.name ?? 'Chart Area 3×3')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const profile = data?.calibrations.find((p) => p.id === selected)
   const run = (action: () => Promise<void>): void => { void action().catch(() => onError('Calibration operation failed. Your saved profile is unchanged.')) }
   const begin = async (reset = false): Promise<void> => {
     if (!data) return
     await window.quantScreenTrader.platformCommand({ operation: 'beginCalibration', platform,
-      draft: { assets: data.configuration, slots: reset ? defaultCalibration() : profile?.slots ?? defaultCalibration(), zoomFactor: profile?.zoomFactor ?? 1 } })
+      draft: { assets: data.configuration, slots: reset ? defaultCalibration(platform) : profile?.slots ?? defaultCalibration(platform), zoomFactor: profile?.zoomFactor ?? 1 } })
   }
   const save = async (update: boolean, renameOnly = false): Promise<void> => {
     const snapshot = await window.quantScreenTrader.platformCommand({ operation: 'state', platform })
@@ -40,9 +40,9 @@ export function CalibrationControls({ platform, onClose, onError }: {
       <button disabled={!profile || !name.trim()} onClick={() => run(() => save(false, true))}>Duplicate</button>
       <button disabled={!profile} onClick={() => setConfirmDelete(true)}>Delete</button>
       {confirmDelete && profile && <button onClick={() => run(async () => { if (await execute({ operation: 'deleteCalibration', platform, id: profile.id })) { setSelected(''); setConfirmDelete(false) } })}>Confirm delete profile</button>}
-      <button onClick={() => run(() => begin(true))}>Reset 3×3</button>
+      <button onClick={() => run(() => begin(true))}>Reset Auto Chart Area</button>
       <button onClick={onClose}>Cancel / Close</button>
     </div>
-    <p>Drag the labeled handles; resize from ↘. Arrow keys move; Shift+arrows resize. Save explicitly; Cancel discards unsaved geometry.</p>
+    <p>Adjust one outer rectangle around the 3×3 chart area. Slots 1–9 are derived automatically in row-major order. Arrow keys move; Shift+arrows resize.</p>
   </fieldset>
 }

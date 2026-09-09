@@ -16,6 +16,9 @@ class Contents extends EventEmitter {
   isDestroyed = (): boolean => this.destroyed
   setZoomFactor = vi.fn()
   setWindowOpenHandler = vi.fn()
+  sendInputEvent = vi.fn()
+  focus = vi.fn()
+  capturePage = vi.fn()
 }
 const views: View[] = []
 class View {
@@ -32,9 +35,11 @@ class Popup extends EventEmitter {
   constructor(readonly options: Electron.BrowserWindowConstructorOptions) { super(); popups.push(this) }
 }
 vi.mock('electron', () => ({ WebContentsView: View, BrowserWindow: Popup }))
-const { PlatformBrowserManager } = await import('../electron/main/platform-browser')
+const { PlatformBrowserManager, chartSurfaceActivity } = await import('../electron/main/platform-browser')
 class Window extends EventEmitter {
   contentView = { addChildView: vi.fn(), removeChildView: vi.fn() }
+  show = vi.fn()
+  focus = vi.fn()
   isDestroyed = (): boolean => false
   getContentSize = (): number[] => [1320, 900]
 }
@@ -113,7 +118,7 @@ describe('embedded browser lifecycle', () => {
     contents.url = 'https://capitalbear.com/private?token=secret'
     contents.emit('did-finish-load')
     const snapshot = manager.command({ operation: 'state', platform: 'capitalbear' })
-    expect(snapshot.session.state).toBe('LOGIN_REQUIRED')
+    expect(snapshot.session.state).toBe('UNKNOWN')
     expect(snapshot.session.currentUrl).toBe('https://capitalbear.com')
     const preventDefault = vi.fn()
     contents.emit('will-navigate', { preventDefault }, 'https://unrelated.test')
@@ -156,6 +161,66 @@ describe('embedded browser lifecycle', () => {
     expect(() => manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { ...bounds, height: 900 }, visible: true })).toThrow()
     expect(manager.command({ operation: 'endCalibration', platform: 'capitalbear' }).draft).toBeNull()
     expect(views[1]?.webContents.close).toHaveBeenCalledOnce()
+  })
+  const bitmap = (value: number) => ({ isEmpty: () => false, resize() { return this }, getSize: () => ({ width: 2, height: 1 }),
+    toBitmap: () => new Uint8Array([value, value, value, 255, value, value, value, 255]),
+    toPNG: () => new Uint8Array([value]) })
+  const ready = (): { manager: InstanceType<typeof PlatformBrowserManager>; contents: Contents } => {
+    const manager = new PlatformBrowserManager(() => new View() as never)
+    const window = new Window()
+    manager.attach('capitalbear', window as unknown as BrowserWindow)
+    const contents = views[0]!.webContents
+    contents.url = 'https://capitalbear.com/'
+    contents.emit('did-finish-load')
+    manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { x: 0, y: 200, width: 900, height: 600 }, visible: true })
+    return { manager, contents }
+  }
+  it('verifies expansion and restoration before returning an OCR asset', async () => {
+    vi.useFakeTimers()
+    const { manager, contents } = ready()
+    contents.capturePage.mockResolvedValueOnce(bitmap(10)).mockResolvedValueOnce(bitmap(200))
+      .mockResolvedValueOnce(bitmap(200)).mockResolvedValueOnce(bitmap(10))
+    const recognize = vi.fn(async (image: { grayscale: Uint8Array }) => image.grayscale[0] === 200
+      ? { asset: 'EUR/USD (OTC)', confidence: .98 } : { confidence: 0 })
+    const pending = manager.captureAssetLabel('capitalbear', 2, defaultCalibration(), recognize)
+    await vi.runAllTimersAsync()
+    await expect(pending).resolves.toMatchObject({ asset: 'EUR/USD (OTC)' })
+    expect(contents.sendInputEvent).toHaveBeenCalledTimes(6)
+    vi.useRealTimers()
+  })
+  it('does not send a restore click when all bounded expand attempts miss', async () => {
+    vi.useFakeTimers()
+    const { manager, contents } = ready()
+    contents.capturePage.mockResolvedValue(bitmap(10))
+    const pending = manager.captureAssetLabel('capitalbear', 2, defaultCalibration(), async () => ({ confidence: 0 }))
+    const rejected = expect(pending).rejects.toThrow('expand control was not reached after 2 bounded attempts')
+    await vi.runAllTimersAsync(); await rejected
+    expect(contents.sendInputEvent).toHaveBeenCalledTimes(6)
+    vi.useRealTimers()
+  })
+  it('stops with an exact error when restoration cannot be verified', async () => {
+    vi.useFakeTimers()
+    const { manager, contents } = ready()
+    contents.capturePage.mockResolvedValueOnce(bitmap(10)).mockResolvedValue(bitmap(200))
+    const recognize = async (image: { grayscale: Uint8Array }): Promise<{ asset?: string; confidence: number }> =>
+      image.grayscale[0] === 200 ? { asset: 'EUR/USD (OTC)', confidence: .98 } : { confidence: 0 }
+    const pending = manager.captureAssetLabel('capitalbear', 2, defaultCalibration(), recognize)
+    const rejected = expect(pending).rejects.toThrow('Chart grid restoration failed after Slot 2')
+    await vi.runAllTimersAsync(); await rejected
+    expect(contents.sendInputEvent).toHaveBeenCalledTimes(12)
+    vi.useRealTimers()
+  })
+})
+describe('visible chart surface preparation', () => {
+  const image = (lowerTexture: boolean) => {
+    const width = 100, height = 100, grayscale = new Uint8Array(width * height).fill(32)
+    for (let y = 18; y < 58; y++) for (let x = 6; x < 98; x++) grayscale[y * width + x] = (x + y) % 2 ? 24 : 112
+    if (lowerTexture) for (let y = 68; y < 88; y++) for (let x = 6; x < 98; x++) grayscale[y * width + x] = (x + y) % 2 ? 20 : 100
+    return { width, height, grayscale }
+  }
+  it('distinguishes an open empty portfolio panel from a collapsed chart grid', () => {
+    expect(chartSurfaceActivity(image(false))).toMatchObject({ portfolioOpen: true })
+    expect(chartSurfaceActivity(image(true))).toMatchObject({ portfolioOpen: false })
   })
 })
 describe('IPC sender scope', () => {

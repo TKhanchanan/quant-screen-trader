@@ -39,6 +39,8 @@ it('discards captures across configuration, resize and navigation changes', asyn
   let finish!: (value: { asset: string; price: string; confidence: number }) => void
   const read = vi.fn(() => new Promise<{ asset: string; price: string; confidence: number }>(r => { finish = r }))
   const surface = { available: true, paused: false, revision: 0, bounds: { x: 0, y: 0, width: 900, height: 600 } }
+  vi.stubGlobal('fetch', vi.fn(async (url: URL | string) => String(url).endsWith('/api/market/slots/reset')
+    ? new Response(JSON.stringify({ reset: 1 })) : new Promise<Response>(() => {})))
   manager = new MarketManager({ observationSurface: () => surface, readSlotDOM: read } as unknown as PlatformBrowserManager,
     { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
   manager.configure(config('capitalbear', 1)); manager.command({ platform: 'capitalbear', operation: 'start' })
@@ -104,7 +106,14 @@ it('recovers from ingestion failure with fresh observations and isolates parser 
 it('resets only the changed instrument and preserves other slot contexts', async () => {
   const surface = { available: true, paused: false, revision: 0, bounds: { x: 0, y: 0, width: 900, height: 600 } }
   const read = async (c: { assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => ({ asset: c.assetName, price: '1.2', confidence: 1 })
-  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  let resetBody: unknown
+  const fetcher = vi.fn(async (url: URL | string, init?: RequestInit) => {
+    if (String(url).endsWith('/api/market/slots/reset')) {
+      resetBody = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ reset: 1 }))
+    }
+    return new Promise<Response>(() => {})
+  })
+  vi.stubGlobal('fetch', fetcher)
   manager = new MarketManager({ observationSurface: () => surface, readSlotDOM: read } as unknown as PlatformBrowserManager,
     { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
   const before = config('capitalbear', 2)
@@ -113,6 +122,8 @@ it('resets only the changed instrument and preserves other slot contexts', async
   const original = manager.command({ platform: 'capitalbear', operation: 'state' }).slots.map(s => s.observation?.contextId)
   manager.configure({ ...before, configuration: { ...before.configuration,
     slots: before.configuration.slots.map(s => s.id === 1 ? { ...s, assetName: 'NEW OTC' } : s) } })
+  await vi.advanceTimersByTimeAsync(1)
+  expect(resetBody).toEqual({ platform: 'capitalbear', slotIds: [1] })
   const immediately = manager.command({ platform: 'capitalbear', operation: 'state' })
   expect(immediately.slots[0]?.observation).toBeNull()
   expect(immediately.slots[1]?.observation?.contextId).toBe(original[1])

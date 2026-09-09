@@ -24,7 +24,7 @@ function assetLineConfidence(asset: string, lines: OCRLine[]): number | null {
   return matches.length === 1 ? matches[0]! : null
 }
 export function parseOCRFields(text: string, confidence: number, layoutLines: OCRLine[] = []): ParsedFields {
-  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+  const lines = text.split(/\r?\n/).map(s => s.trim().replace(/\s+[vV]$/, '').trim()).filter(Boolean)
   const unique = (test: (s: string) => boolean): string | undefined => {
     const values = lines.filter(test)
     return values.length === 1 ? values[0] : undefined
@@ -51,10 +51,12 @@ export class TesseractOCRProvider implements OCRProvider {
         cacheMethod: 'none', gzip: true, logger: () => {}, errorHandler: () => {}
       }).catch(() => { this.worker = null; throw new Error('OCR unavailable') })
       const worker = await this.worker
-      await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT })
+      await worker.setParameters({ tessedit_pageseg_mode: image.purpose ? PSM.SINGLE_LINE : PSM.SPARSE_TEXT,
+        tessedit_char_whitelist: image.purpose === 'PRICE' ? '0123456789.' : image.purpose === 'ASSET'
+          ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 /&+()._-' : '' })
       const bitmap = Buffer.alloc(image.width * image.height * 4)
       image.grayscale.forEach((v, i) => { bitmap[i * 4] = v; bitmap[i * 4 + 1] = v; bitmap[i * 4 + 2] = v; bitmap[i * 4 + 3] = 255 })
-      const png = nativeImage.createFromBitmap(bitmap, { width: image.width, height: image.height }).toPNG()
+      const png = image.png ? Buffer.from(image.png) : nativeImage.createFromBitmap(bitmap, { width: image.width, height: image.height }).toPNG()
       const result = await worker.recognize(png, {}, { blocks: true })
       const lines = result.data.blocks?.flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines)) ?? []
       return parseOCRFields(result.data.text, result.data.confidence / 100, lines)

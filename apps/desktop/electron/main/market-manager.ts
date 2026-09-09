@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { MarketBatchResultSchema, normalizedToPixel, type ConfigurationResult, type MarketCommand, type MarketObservation, type MarketSnapshot, type Platform } from '@quant-screen-trader/shared-types'
+import { calibrationToChartGrid, MarketBatchResultSchema, normalizedToPixel, type ConfigurationResult, type MarketCommand, type MarketObservation, type MarketSnapshot, type Platform } from '@quant-screen-trader/shared-types'
 import { DOMMarketDataProvider, VisualMarketDataProvider, type ObservationContext } from './market-providers'
 import { TesseractOCRProvider } from './market-ocr'
 import { CaptureScheduler } from './market-scheduler'
@@ -9,7 +9,8 @@ import type { EngineConnectionConfig } from './engine-config'
 interface WorkspaceData {
   snapshot: MarketSnapshot; config: ConfigurationResult; contextIds: Map<number, string>; scheduler: CaptureScheduler;
   dom: DOMMarketDataProvider; visual: VisualMarketDataProvider; ocr: TesseractOCRProvider;
-  signature: string; cursor: number; busy: boolean; count: number; started: number
+  signature: string; cursor: number; busy: boolean; count: number; started: number;
+  resetting: Set<number>; resetRevision: number
 }
 export class MarketManager {
   private readonly workspaces = new Map<Platform, WorkspaceData>()
@@ -31,18 +32,25 @@ export class MarketManager {
       const old = previous?.config.configuration.slots.find(o => o.id === s.id)
       return resetAll || !old || old.assetName !== s.assetName || old.enabled !== s.enabled
     }).map(s => s.id))
+    const reset = previous ? new Set(config.configuration.slots.filter(slot => {
+      const old = previous.config.configuration.slots.find(candidate => candidate.id === slot.id)
+      return resetAll || old?.assetName !== slot.assetName
+    }).map(slot => slot.id)) : new Set<number>()
     for (const id of changed) this.queue.delete(`${platform}:${id}`)
     const ocr = new TesseractOCRProvider()
     const dom = new DOMMarketDataProvider(c => this.browsers.readSlotDOM(c))
     const visual = new VisualMarketDataProvider(c => this.browsers.captureSlot(c), ocr)
     dom.start(); visual.start()
     const next: WorkspaceData = { config, ocr, dom, visual, contextIds: new Map(config.configuration.slots.map(s => [s.id, changed.has(s.id) ? randomUUID() : previous!.contextIds.get(s.id)!])), scheduler: previous?.scheduler ?? new CaptureScheduler(),
-      signature: previous?.signature ?? '', cursor: 0, count: 0, started: Date.now(), busy: previous?.busy ?? false, snapshot: { running: previous?.snapshot.running ?? false,
+      signature: previous?.signature ?? '', cursor: 0, count: 0, started: Date.now(), busy: previous?.busy ?? false,
+      resetting: reset, resetRevision: (previous?.resetRevision ?? 0) + 1, snapshot: { running: previous?.snapshot.running ?? false,
         intervalMs: previous?.snapshot.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000),
         slots: config.configuration.slots.map(s => !changed.has(s.id) && previous ? previous.snapshot.slots.find(old => old.slotId === s.id)! : ({ slotId: s.id, state: s.enabled ? 'WAITING' : 'DISABLED', secondSamples: 0, m1Samples: 0, m1State: null, observation: null, dropped: 0, pixelBounds: null })),
         dropped: 0, queueDepth: 0, queueLagMs: 0, captureRate: 0, engineAvailable: false } }
     if (previous) Object.assign(previous, next)
-    this.workspaces.set(platform, previous ?? next)
+    const workspace = previous ?? next
+    this.workspaces.set(platform, workspace)
+    if (reset.size) void this.resetSlots(platform, [...reset], workspace.resetRevision)
   }
   command(command: MarketCommand): MarketSnapshot {
     const workspace = this.workspaces.get(command.platform)
@@ -74,19 +82,22 @@ export class MarketManager {
       for (const slot of w.snapshot.slots) {
         const configured = w.config.configuration.slots.find(s => s.id === slot.slotId)!
         if (!configured.enabled) { slot.state = 'DISABLED'; continue }
+        if (w.resetting.has(configured.id)) { slot.state = 'WAITING'; continue }
         if (!w.snapshot.running || surface.paused) { slot.state = 'PAUSED'; continue }
         if (!surface.available || !profile) { slot.state = 'WAITING'; continue }
         if (slot.observation && Date.now() - Date.parse(slot.observation.observedAt) > 3000) slot.state = 'STALE'
       }
       if (!w.snapshot.running || !surface.available || surface.paused || !profile || w.busy) continue
-      const enabled = w.config.configuration.slots.filter(s => s.enabled)
+      const enabled = w.config.configuration.slots.filter(s => s.enabled && !w.resetting.has(s.id))
       if (!enabled.length) continue
       const configured = enabled[w.cursor++ % enabled.length]!
-      const bounds = profile.slots.find(s => s.id === configured.id)!.bounds
+      const geometry = calibrationToChartGrid(platform, profile.slots, 'LEGACY').slots.find(candidate => candidate.slotId === configured.id)!
+      const bounds = geometry.chartBounds
       const slot = w.snapshot.slots.find(s => s.slotId === configured.id)!
       slot.pixelBounds = normalizedToPixel(bounds, surface.bounds.width, surface.bounds.height)
       const context: ObservationContext = { platform, slotId: configured.id, assetName: configured.assetName,
-        contextId: w.contextIds.get(configured.id)!, calibrationProfileId: profile.id, bounds }
+        contextId: w.contextIds.get(configured.id)!, calibrationProfileId: profile.id, bounds,
+        ...(geometry.priceBounds ? { priceBounds: geometry.priceBounds } : {}) }
       const key = `${platform}:${configured.id}`
       w.busy = true
       void w.scheduler.run(key, true, w.snapshot.intervalMs, async () => {
@@ -103,6 +114,31 @@ export class MarketManager {
         if (this.queue.has(key)) { w.snapshot.dropped++; slot.dropped++ }
         this.queue.set(key, value)
       }, () => { slot.state = 'ERROR' }).finally(() => { w.busy = false })
+    }
+  }
+  private async resetSlots(platform: Platform, slotIds: number[], revision: number): Promise<void> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const workspace = this.workspaces.get(platform)
+      if (!workspace || workspace.resetRevision !== revision) return
+      try {
+        const response = await fetch(new URL('/api/market/slots/reset', this.connection.healthUrl), {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ platform, slotIds }),
+          signal: AbortSignal.timeout(2000), redirect: 'error' })
+        if (response.status === 429) throw new Error('Engine busy')
+        if (!response.ok) throw new Error('Engine reset unavailable')
+        const value: unknown = await response.json()
+        if (!value || typeof value !== 'object' || typeof (value as { reset?: unknown }).reset !== 'number') throw new Error('Invalid reset response')
+        if (workspace.resetRevision === revision) for (const slotId of slotIds) workspace.resetting.delete(slotId)
+        return
+      } catch {
+        if (attempt === 3) {
+          const current = this.workspaces.get(platform)
+          if (current?.resetRevision === revision)
+            for (const slot of current.snapshot.slots) if (slotIds.includes(slot.slotId)) slot.state = 'ERROR'
+          return
+        }
+        await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)))
+      }
     }
   }
   private async flush(): Promise<void> {

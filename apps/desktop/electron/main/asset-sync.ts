@@ -1,4 +1,4 @@
-import { defaultCalibration, type AssetDetectionResult, type AssetSyncCommand, type AssetSyncState, type ConfigurationResult, type Platform, type PlatformSlot } from '@quant-screen-trader/shared-types'
+import { type AssetDetectionResult, type AssetSyncCommand, type AssetSyncState, type ConfigurationResult, type Platform, type PlatformSlot } from '@quant-screen-trader/shared-types'
 import { normalizeAsset } from './asset-detector'
 import { TesseractOCRProvider } from './market-ocr'
 import type { PlatformBrowserManager } from './platform-browser'
@@ -67,7 +67,6 @@ export class AssetSyncManager {
     if (!surface.available || surface.paused) { entry.state.error = 'Asset sync paused: show the platform and close calibration.'; return }
     const generation = entry.generation, before = entry.config
     const profile = before.calibrations.find(p => p.id === before.activeCalibrationId)
-    const calibrated = profile && !profile.slots.every(s => { const initial = defaultCalibration().find(d => d.id === s.id)!.bounds; return (['x', 'y', 'width', 'height'] as const).every(k => Math.abs(initial[k] - s.bounds[k]) < 1e-8) })
     entry.state.busy = true; entry.state.error = null; entry.state.applied = 0
     try {
       const start = Date.now(), result = await this.browsers.detectAssets(platform, profile?.slots)
@@ -76,28 +75,25 @@ export class AssetSyncManager {
       const checked = new Set(result.slots.filter(s => s.state === 'DETECTED').map(s => s.slotId))
       const fallbacks = once ? missing : missing.slice(entry.ocrCursor % Math.max(1, missing.length), entry.ocrCursor % Math.max(1, missing.length) + 1)
       entry.ocrCursor++
-      if (missing.length && !calibrated) entry.state.error = 'No mapped DOM chart labels. Align calibration regions with individual charts; the default full-browser grid is not a verified chart mapping.'
-      if (once && fallbacks.length && profile && calibrated && this.ocrBusy) entry.state.error = 'Asset OCR is busy in the other workspace. Sync again shortly.'
-      if (fallbacks.length && profile && calibrated && !this.ocrBusy) {
+      if (missing.length && !profile) entry.state.error = 'No chart grid profile is active. Sync Assets can create an Auto Chart Grid from the workspace first.'
+      if (once && fallbacks.length && profile && this.ocrBusy) entry.state.error = 'Asset OCR is busy in the other workspace. Sync again shortly.'
+      if (fallbacks.length && profile && !this.ocrBusy) {
         this.ocrBusy = true
         try {
           for (const fallback of fallbacks) {
             if (entry.generation !== generation || JSON.stringify(this.browsers.observationSurface(platform)) !== signature) return
             checked.add(fallback.slotId)
             try {
-              const bounds = profile.slots.find(s => s.id === fallback.slotId)!.bounds
-              const initial = defaultCalibration().find(s => s.id === fallback.slotId)!.bounds
-              if ((['x', 'y', 'width', 'height'] as const).every(k => Math.abs(bounds[k] - initial[k]) < 1e-8)) {
-                Object.assign(fallback, { state: 'UNCERTAIN', confidence: 0 }); continue
-              }
-              const image = await this.browsers.captureAssetLabel(platform, fallback.slotId, profile.slots)
-              const text = await this.ocr.parseText(image), name = text.asset ? normalizeAsset(text.asset) : null
+              const text = await this.browsers.captureAssetLabel(platform, fallback.slotId, profile.slots,
+                image => this.ocr.parseText(image))
+              const name = text.asset ? normalizeAsset(text.asset) : null
               Object.assign(fallback, { source: 'OCR', evidenceType: 'CALIBRATED_OCR', confidence: text.confidence,
                 detectedAt: new Date().toISOString(), state: name && text.confidence >= .95 ? 'DETECTED' : 'UNCERTAIN',
                 assetName: name && text.confidence >= .95 ? name : null,
                 displayName: name && text.confidence >= .95 ? text.asset : null,
                 canonicalAssetId: name && text.confidence >= .95 ? `${platform}:${name}` : null })
-            } catch {
+            } catch (error) {
+              if (error instanceof Error && (error.message.startsWith('Chart grid restoration failed') || error.message.includes('platform was reloaded'))) throw error
               Object.assign(fallback, { source: 'OCR', state: 'UNCERTAIN', confidence: 0, evidenceType: 'CALIBRATED_OCR' })
             }
           }
@@ -117,7 +113,9 @@ export class AssetSyncManager {
         entry.config = saved; entry.state.applied = changed; entry.state.revision++
         this.apply(saved)
       }
-    } catch { entry.state.error = 'Asset detection unavailable. Existing assets were preserved.' }
+    } catch (error) { entry.state.error = error instanceof Error &&
+      (error.message.startsWith('Chart grid restoration failed') || error.message.startsWith('Chart grid preparation failed') || error.message.includes('platform was reloaded'))
+      ? error.message : 'Asset detection unavailable. Existing assets were preserved.' }
     finally { entry.state.busy = false; entry.next = Date.now() + entry.state.intervalMs }
   }
   stop(): void { clearInterval(this.timer); for (const e of this.entries.values()) e.generation++; void this.ocr.stop().catch(() => {}) }

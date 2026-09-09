@@ -67,11 +67,17 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
     if (!data) return
     const profile = data.calibrations.find((p) => p.id === data.activeCalibrationId)
     void window.quantScreenTrader.platformCommand({ operation: 'beginCalibration', platform,
-      draft: { assets: data.configuration, slots: profile?.slots ?? defaultCalibration(), zoomFactor: profile?.zoomFactor ?? 1 } })
+      draft: { assets: data.configuration, slots: profile?.slots ?? defaultCalibration(platform), zoomFactor: profile?.zoomFactor ?? 1 } })
       .then(() => setMode('calibration')).catch(() => setActionError('Could not open calibration'))
   }
   const syncOnce = async (): Promise<void> => {
     try {
+      const current = await execute({ operation: 'get', platform })
+      if (current && !current.activeCalibrationId) {
+        const browser = await window.quantScreenTrader.platformCommand({ operation: 'state', platform })
+        await execute({ operation: 'saveCalibration', platform, name: 'Auto Chart Grid', slots: defaultCalibration(platform),
+          referenceBrowserWidth: browser.bounds.width, referenceBrowserHeight: browser.bounds.height, zoomFactor: browser.zoomFactor })
+      }
       const result = await window.quantScreenTrader.assetSync({ platform, operation: 'sync' })
       setSync(result); await execute({ operation: 'get', platform })
     } catch { setActionError('Asset sync unavailable. Existing assets were preserved.') }
@@ -90,7 +96,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       <div className="toolbar"><h1>{details.name}</h1><EngineStatus health={engineHealth} />
         <span>Session: {session?.state ?? 'STARTING'} · Load: {session?.loadState ?? 'idle'}</span>
         <button onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'reload', platform }).catch(() => setActionError('Reload failed'))}>Reload Platform</button>
-        <button disabled={!data || busy || mode !== 'browser'} onClick={calibrate}>Calibrate Slots</button>
+        <button disabled={!data || busy || mode !== 'browser'} onClick={calibrate}>Calibrate Chart Area</button>
         <button disabled={!data || busy || mode !== 'browser'} onClick={() => setMode('assets')}>Asset Setup</button>
         <button disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void syncOnce()}>Sync Assets</button>
         <label><input type="checkbox" checked={sync?.auto ?? false} onChange={e => void window.quantScreenTrader.assetSync({ platform, operation: 'auto', enabled: e.target.checked }).then(setSync).catch(() => setActionError('Auto Sync unavailable'))} /> Auto Sync Assets</label>
@@ -103,7 +109,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
         <label><input type="checkbox" checked={developer} onChange={e => setDeveloper(e.target.checked)} /> Developer diagnostics</label>
         <span>Enabled {data?.configuration.slots.filter(s => s.enabled).length ?? 0} · Healthy {market?.slots.filter(s => s.state === 'READY').length ?? 0} · Uncertain {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0} · Stale {market?.slots.filter(s => s.state === 'STALE').length ?? 0} · {market?.captureRate.toFixed(1) ?? 0} obs/s · Queue {market?.queueDepth ?? 0} · Engine {market?.engineAvailable ? 'receiving' : 'waiting'}</span>
       </div>
-      <p>Login manually in the platform. Login status is unverified; READY is never inferred from page load.</p>
+      <p>Login manually in the platform. Authentication remains UNKNOWN unless visible UI evidence can prove it.</p>
       {sync?.detection && <p role="status">Asset sync: Detected {sync.detection.slots.filter(s => s.state === 'DETECTED').length} · Uncertain {sync.detection.slots.filter(s => s.state === 'UNCERTAIN').length} · Not found {sync.detection.slots.filter(s => s.state === 'NOT_FOUND').length} · Applied {sync.applied} · Manual slots preserved {sync.manualPreserved}</p>}
       {sync?.error && <p role="alert">{sync.error}</p>}
       {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}

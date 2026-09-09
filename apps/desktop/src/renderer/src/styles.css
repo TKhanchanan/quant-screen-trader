@@ -356,6 +356,10 @@ input, select { color: #edf3ff; background: #101c30; border: 1px solid #3a4c69; 
 .overlay-document, .overlay-document body, .overlay-document #root { background: transparent !important; width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .calibration-canvas { position: relative; width: 100vw; height: 100vh; }
 .calibration-box { position: absolute; border: 2px solid #8cbcff; color: white; touch-action: none; overflow: hidden; min-width: 0; }
+.chart-grid-box { display: grid; grid-template-rows: auto 1fr; }
+.chart-grid-preview { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); min-height: 0; pointer-events: none; }
+.chart-grid-preview > span { display: grid; place-content: center; border: 1px solid rgb(145 190 255 / 82%); color: white; font-size: clamp(0.65rem, 1.3vw, 1rem); font-weight: 800; text-align: center; text-shadow: 0 1px 3px #000; }
+.chart-grid-preview small { display: block; max-width: 12rem; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .calibration-box small { display: block; font-size: 10px; background: #0d172bc9; width: fit-content; pointer-events: none; }
 .drag-handle { cursor: move; background: #0d172be8; color: white; padding: 5px; max-width: 100%; text-align: left; font-size: 11px; }
 .resize-handle { position: absolute; right: 0; bottom: 0; width: 26px; height: 26px; cursor: nwse-resize; background: #76a5ff; color: #07101e; }

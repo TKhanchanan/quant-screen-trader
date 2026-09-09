@@ -4,7 +4,7 @@ import { MarketObservationSchema, type MarketObservation, type NormalizedBounds,
 
 export interface ObservationContext {
   platform: Platform; slotId: number; assetName: string; contextId: string;
-  calibrationProfileId: string | null; bounds: NormalizedBounds
+  calibrationProfileId: string | null; bounds: NormalizedBounds; priceBounds?: NormalizedBounds
 }
 export interface ParsedFields { asset?: string; price?: string; payout?: string; timer?: string; confidence: number }
 export interface MarketDataProvider {
@@ -62,9 +62,9 @@ export class DOMMarketDataProvider extends Provider {
     return observation(context, this.sourceType, fields, start, Date.now() - start)
   }
 }
-export interface NormalizedImage { width: number; height: number; grayscale: Uint8Array }
+export interface NormalizedImage { width: number; height: number; grayscale: Uint8Array; purpose?: 'ASSET' | 'PRICE'; png?: Uint8Array }
 export interface OCRProvider { parseText(image: NormalizedImage): Promise<ParsedFields> }
-export function normalizeBitmap(bitmap: Uint8Array, width: number, height: number, threshold?: number): NormalizedImage {
+export function normalizeBitmap(bitmap: Uint8Array, width: number, height: number, threshold?: number, stretch = true): NormalizedImage {
   if (width < 1 || height < 1 || bitmap.length !== width * height * 4) throw new Error('Invalid bitmap')
   const grayscale = new Uint8Array(width * height)
   let min = 255, max = 0
@@ -73,19 +73,53 @@ export function normalizeBitmap(bitmap: Uint8Array, width: number, height: numbe
     grayscale[i] = gray; min = Math.min(min, gray); max = Math.max(max, gray)
   }
   for (let i = 0; i < grayscale.length; i++) {
-    const value = max > min ? Math.round((grayscale[i]! - min) * 255 / (max - min)) : grayscale[i]!
+    const value = stretch && max > min ? Math.round((grayscale[i]! - min) * 255 / (max - min)) : grayscale[i]!
     grayscale[i] = threshold === undefined ? value : value >= threshold ? 255 : 0
   }
   return { width, height, grayscale }
+}
+export function isolateBrightPriceLabel(image: NormalizedImage): NormalizedImage {
+  const mask = new Uint8Array(image.grayscale.length), seen = new Uint8Array(mask.length)
+  for (let index = 0; index < mask.length; index++) if (image.grayscale[index]! >= 185) mask[index] = 1
+  let best: { x: number; y: number; width: number; height: number; count: number } | null = null
+  for (let index = 0; index < mask.length; index++) {
+    if (!mask[index] || seen[index]) continue
+    const queue = [index]; seen[index] = 1
+    let cursor = 0, count = 0, minX = index % image.width, maxX = minX, minY = Math.floor(index / image.width), maxY = minY
+    while (cursor < queue.length) {
+      const point = queue[cursor++]!, x = point % image.width, y = Math.floor(point / image.width)
+      count++; minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y)
+      for (const neighbour of [point - 1, point + 1, point - image.width, point + image.width]) {
+        if (neighbour >= 0 && neighbour < mask.length && mask[neighbour] && !seen[neighbour] &&
+          Math.abs(neighbour % image.width - x) <= 1) { seen[neighbour] = 1; queue.push(neighbour) }
+      }
+    }
+    const width = maxX - minX + 1, height = maxY - minY + 1, fill = count / (width * height)
+    if (width < image.width * .2 || width > image.width * .9 || height < image.height * .05 || height > image.height * .35 ||
+      width / height < 2.2 || width / height > 9 || fill < .55) continue
+    if (!best || count > best.count) best = { x: minX, y: minY, width, height, count }
+  }
+  if (!best) throw new Error('Live price callout was not isolated')
+  const padding = Math.max(2, Math.round(best.height * .12)), x = Math.max(0, best.x - padding), y = Math.max(0, best.y - padding)
+  const width = Math.min(image.width - x, best.width + padding * 2), height = Math.min(image.height - y, best.height + padding * 2)
+  const grayscale = new Uint8Array(width * height)
+  let min = 255, max = 0
+  for (let row = 0; row < height; row++) for (let column = 0; column < width; column++) {
+    const value = image.grayscale[(y + row) * image.width + x + column]!
+    grayscale[row * width + column] = value; min = Math.min(min, value); max = Math.max(max, value)
+  }
+  for (let index = 0; index < grayscale.length; index++)
+    grayscale[index] = max > min ? Math.round((grayscale[index]! - min) * 255 / (max - min)) : grayscale[index]!
+  return { width, height, grayscale, purpose: 'PRICE' }
 }
 export class VisualMarketDataProvider extends Provider {
   readonly sourceType = 'VISUAL' as const
   constructor(private readonly capture: (context: ObservationContext) => Promise<NormalizedImage>, private readonly ocr: OCRProvider) { super() }
   async observe(context: ObservationContext): Promise<MarketObservation> {
     if (!this.active) throw new Error('Provider stopped')
-    const start = Date.now(), image = await this.capture(context), latency = Date.now() - start
+    const start = Date.now(), image = isolateBrightPriceLabel(await this.capture(context)), latency = Date.now() - start
     const fields = await this.ocr.parseText(image)
-    return observation(context, this.sourceType, fields, start, latency)
+    return observation(context, this.sourceType, { ...fields, ...(fields.price ? { asset: context.assetName } : {}) }, start, latency)
   }
 }
 export class ReplayMarketDataProvider extends Provider {

@@ -45,7 +45,7 @@ describe('platform configuration and IPC contracts', () => {
     expect(PlatformCommandSchema.safeParse({ operation: 'reload', platform: 'bad' }).success).toBe(false)
     expect(ConfigurationRequestSchema.safeParse({ operation: 'sql', platform: 'iqoption' }).success).toBe(false)
   })
-  it.each(['STARTING', 'LOADING', 'LOGIN_REQUIRED', 'READY', 'DISCONNECTED', 'ERROR'])('validates %s state', (state) => {
+  it.each(['STARTING', 'LOADING', 'LOGIN_REQUIRED', 'UNKNOWN', 'READY', 'DISCONNECTED', 'ERROR'])('validates %s state', (state) => {
     expect(PlatformSessionStateSchema.safeParse({ platform: 'iqoption', state, loadState: 'idle', lastUpdatedAt: '2026-01-01T00:00:00Z' }).success).toBe(true)
   })
 })

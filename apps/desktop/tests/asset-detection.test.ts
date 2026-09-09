@@ -41,6 +41,7 @@ it('accepts a safe single-name OCR asset and rejects account or numeric text', (
   expect(parseOCRFields('12345\n1.23456', .98).asset).toBeUndefined()
   const title = [{ text: 'Apple v', confidence: 40, words: [{ text: 'Apple', confidence: 99 }, { text: 'v', confidence: 1 }] }]
   expect(parseOCRFields('Apple\nv', .4, title).confidence).toBe(.99)
+  expect(parseOCRFields('EUR/USD (OTC) v', .98).asset).toBe('EUR/USD (OTC)')
   expect(parseOCRFields('Apple\n1.23456', .4, title).confidence).toBe(.4)
 })
 it('debounces stable changes, preserves uncertain and locked slots, and resets on new context', () => {
