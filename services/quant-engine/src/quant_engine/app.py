@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from quant_engine import __version__
 from quant_engine.configuration_api import router as configuration_router
+from quant_engine.feature_api import router as feature_router
 from quant_engine.market_api import MarketEngine
 from quant_engine.market_api import router as market_router
 from quant_engine.market_storage import ParquetStorage
@@ -110,6 +111,7 @@ def create_app(
     )
     application.include_router(configuration_router)
     application.include_router(market_router)
+    application.include_router(feature_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

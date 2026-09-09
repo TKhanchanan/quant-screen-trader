@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -11,10 +11,32 @@ from uuid import uuid4
 
 import duckdb
 
-from quant_engine.market_models import Candle, MarketObservation, PriceSample
+from quant_engine.features.models import FeatureSnapshot
+from quant_engine.market_models import TIMEFRAMES, Candle, MarketObservation, PriceSample, Timeframe
 
-type Category = Literal["observations", "samples", "seconds", "candles"]
-type Record = MarketObservation | PriceSample | Candle
+type Category = Literal["observations", "samples", "seconds", "candles", "features"]
+type Record = MarketObservation | PriceSample | Candle | FeatureSnapshot
+
+LIVE_SOURCES = ("DOM", "VISUAL")
+HISTORY_LIMIT = 256
+
+
+def asset_partition(asset_name: str) -> str:
+    """Sanitized, collision-resistant folder name. Raw asset text never reaches the path."""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", asset_name)[:60]
+    return safe + "-" + hashlib.sha256(asset_name.encode()).hexdigest()[:12]
+
+
+def record_stamp(record: Record) -> datetime:
+    if isinstance(record, MarketObservation):
+        return record.observedAt.astimezone(UTC)
+    if isinstance(record, Candle):
+        millis = record.openTime
+    elif isinstance(record, FeatureSnapshot):
+        millis = record.featureTime
+    else:
+        millis = record.timestamp
+    return datetime.fromtimestamp(millis / 1000, UTC)
 
 
 class MarketStorage(Protocol):
@@ -38,16 +60,8 @@ class ParquetStorage:
     def flush(self) -> None:
         groups: dict[Path, list[Record]] = defaultdict(list)
         for category, record in self.pending:
-            stamp = (
-                record.observedAt.astimezone(UTC)
-                if isinstance(record, MarketObservation)
-                else datetime.fromtimestamp(
-                    (record.openTime if isinstance(record, Candle) else record.timestamp) / 1000,
-                    UTC,
-                )
-            )
-            asset = re.sub(r"[^A-Za-z0-9_-]", "_", record.assetName)[:60]
-            asset += "-" + hashlib.sha256(record.assetName.encode()).hexdigest()[:12]
+            stamp = record_stamp(record)
+            asset = asset_partition(record.assetName)
             folder = (
                 self.root
                 / category
@@ -92,11 +106,13 @@ class ParquetStorage:
         files = list((self.root / category).rglob("*.parquet"))
         if not files:
             return []
-        model = (
+        model: type[Record] = (
             MarketObservation
             if category == "observations"
             else Candle
             if category == "candles"
+            else FeatureSnapshot
+            if category == "features"
             else PriceSample
         )
         with duckdb.connect() as connection:
@@ -118,6 +134,55 @@ class ParquetStorage:
             records.append(model.model_validate(values))
         return records
 
+    def load_history(
+        self,
+        platform: str,
+        asset_name: str,
+        timeframe: Timeframe,
+        *,
+        before: int,
+        limit: int = HISTORY_LIMIT,
+    ) -> list[Candle]:
+        """Trusted earlier candles for one exact series, for indicator warm-up only.
+
+        Only CLOSED candles that already closed at or before ``before`` are returned, only from
+        live capture sources, and only the contiguous tail: a gap ends the history rather than
+        being bridged. The exact asset name is matched, so OTC and non-OTC never mix.
+        """
+        folder = (
+            self.root / "candles" / f"platform={platform}" / f"asset={asset_partition(asset_name)}"
+        )
+        files = sorted(str(path) for path in folder.rglob("*.parquet"))
+        if not files:
+            return []
+        with duckdb.connect() as connection:
+            rows = (
+                connection.read_parquet(files, hive_partitioning=False, union_by_name=True)
+                .set_alias("r")
+                .project("to_json(r)")
+                .fetchall()
+            )
+        best: dict[int, Candle] = {}
+        for row in rows:
+            try:
+                candle = Candle.model_validate(json.loads(row[0]))
+            except ValueError:
+                continue
+            if (
+                candle.platform != platform
+                or candle.assetName != asset_name
+                or candle.timeframe != timeframe
+                or candle.state != "CLOSED"
+                or candle.sourceType not in LIVE_SOURCES
+                or candle.closeTime > before
+            ):
+                continue
+            previous = best.get(candle.openTime)
+            if previous is None or _preference(candle) > _preference(previous):
+                best[candle.openTime] = candle
+        ordered = [best[key] for key in sorted(best)]
+        return _contiguous_tail(ordered, TIMEFRAMES[timeframe] * 1000)[-limit:]
+
     def retention(self, before: datetime | None = None, *, delete: bool = False) -> list[Path]:
         """Default retains everything. Explicit cutoff, preview unless delete=True."""
         if before is None:
@@ -131,3 +196,19 @@ class ParquetStorage:
             for path in candidates:
                 path.unlink()
         return candidates
+
+
+def _preference(candle: Candle) -> tuple[int, float, int]:
+    """Deterministic winner for duplicate open times: quality, then coverage, then samples."""
+    return (1 if candle.quality == "GOOD" else 0, candle.coverage, candle.sampleCount)
+
+
+def _contiguous_tail(candles: list[Candle], duration_ms: int) -> list[Candle]:
+    if not candles:
+        return []
+    tail: deque[Candle] = deque([candles[-1]])
+    for candle in reversed(candles[:-1]):
+        if tail[0].openTime - candle.openTime != duration_ms:
+            break
+        tail.appendleft(candle)
+    return list(tail)

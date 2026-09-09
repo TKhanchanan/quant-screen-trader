@@ -9,8 +9,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field, model_validator
 
 from quant_engine.configuration import Model, Platform
+from quant_engine.features import FeatureEngine
 from quant_engine.market_builder import TimeSeriesBuilder
-from quant_engine.market_models import Candle, MarketObservation
+from quant_engine.market_models import Candle, MarketObservation, Timeframe
 from quant_engine.market_storage import ParquetStorage
 
 router = APIRouter()
@@ -60,9 +61,20 @@ class MarketEngine:
     def __init__(self, storage: ParquetStorage) -> None:
         self.storage = storage
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
+        self.features = FeatureEngine(hydrator=self._history)
         self.busy = False
         self.rejected = 0
         self.storage_error = False
+
+    def _history(
+        self, platform: Platform, asset_name: str, timeframe: Timeframe, before: int
+    ) -> list[Candle]:
+        """Best-effort warm-up source. WARMING is always a valid outcome, so a storage
+        problem must never stop live ingestion."""
+        try:
+            return self.storage.load_history(platform, asset_name, timeframe, before=before)
+        except Exception:
+            return []
 
     def ingest(self, batch: ObservationBatch, now: int) -> int:
         accepted = 0
@@ -86,13 +98,22 @@ class MarketEngine:
         return accepted
 
     def persist_events(self, builder: TimeSeriesBuilder) -> None:
+        """Canonical Phase 5 events feed the feature engine exactly once, as they are stored."""
         while builder.emitted:
             record = builder.emitted[0]
-            self.storage.append("candles" if isinstance(record, Candle) else "seconds", record)
+            if isinstance(record, Candle):
+                self.storage.append("candles", record)
+                snapshot = self.features.ingest_candle(record)
+                if snapshot is not None:
+                    self.storage.append("features", snapshot)
+            else:
+                self.storage.append("seconds", record)
+                self.features.ingest_second(record)
             builder.emitted.popleft()
 
     def reset_slots(self, platform: Platform, slot_ids: list[int]) -> int:
-        """Drop live series immediately when their configured identity changes."""
+        """Drop live series and every derived feature when a configured identity changes."""
+        self.features.reset_slot(platform, slot_ids)
         return sum(self.builders.pop((platform, slot_id), None) is not None for slot_id in slot_ids)
 
     def status(self) -> list[SlotSeriesStatus]:

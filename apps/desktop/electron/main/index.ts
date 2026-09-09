@@ -4,7 +4,7 @@ import { app, BrowserWindow, ipcMain, WebContentsView, type IpcMainInvokeEvent }
 import {
   IPC_CHANNELS, MarketCommandSchema, AssetSyncCommandSchema,
   PlatformSchema,
-  PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS,
+  PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureStateSchema,
   type Platform
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
@@ -199,6 +199,20 @@ void app.whenReady().then(() => {
     return market!.command(command)
   })
 
+  ipcMain.handle(IPC_CHANNELS.features, async (event, input: unknown) => {
+    // Read-only Phase 6 diagnostics. Unavailable features are reported, never invented.
+    const platform = PlatformSchema.parse(input)
+    authorize(event, platform)
+    try {
+      const response = await fetch(new URL('/api/features/state', connection.healthUrl),
+        { signal: AbortSignal.timeout(2000), redirect: 'error' })
+      if (!response.ok) throw new Error('Feature state unavailable')
+      const value = FeatureStateSchema.omit({ available: true }).parse(await response.json())
+      return { ...value, available: true, slots: value.slots.filter(s => s.platform === platform) }
+    } catch {
+      return { featureVersion: 'unknown', available: false, slots: [] }
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })
   ipcMain.handle(IPC_CHANNELS.openWorkspace, (event, input: unknown) => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')

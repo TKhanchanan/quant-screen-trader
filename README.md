@@ -90,7 +90,11 @@ Phase 2 ✅ Isolated embedded sessions; login is manual and authentication state
 
 Phase 3 ✅ Asset configuration, presets, and calibration. See the verification notes and limitations in the guides below.
 
-Phase 4 capture/parser implementation is available; authenticated broker extraction acceptance is pending. Phase 5 data-builder tests pass. Signal generation, trading and installer packaging remain unimplemented.
+Phase 4 ✅ Authenticated nine-slot capture verified live on both platforms.
+
+Phase 5 ✅ Deterministic market data builder.
+
+Phase 6 ✅ Quantitative feature engine. Signal generation, trading and installer packaging remain unimplemented.
 
 ## Workspace workflow
 
@@ -108,14 +112,16 @@ Contributions follow [Conventional Commits](CONTRIBUTING.md). The design and pro
 
 Load an asset configuration and calibration profile, then choose **Start observation** in a workspace. Disabled slots stay idle. Observation status, source, quality, age and series progress appear on each slot. Sampling targets are configurable per workspace; developer diagnostics expose timings, ROI and queue drops. Images are never stored.
 
-Phase 4 implementation is available with account-free native OCR and scheduler tests. Authenticated broker selector/OCR accuracy still requires live verification; ambiguous chart text produces DATA_UNCERTAIN rather than a fabricated price. Phase 4 is not marked complete pending that acceptance check.
+Phase 4 ✅ Acceptance ran against both real authenticated sessions on 2026-09-09: nine opened tabs detected in physical order, the 3×3 canvas grid resolved from the actual screenshot, and each tab's own chart read live. Ambiguous chart text still produces DATA_UNCERTAIN rather than a fabricated price.
 
-Phase 5 ✅ Deterministic samples, one-second selection, S5/M1/M5/M10 OHLC, forming/closed state, gaps, bounded buffers and Parquet/replay tests. Phase 6 has not started.
+Phase 5 ✅ Deterministic samples, one-second selection, S5/M1/M5/M10 OHLC, forming/closed state, gaps, bounded buffers and Parquet/replay tests.
 
-See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
+Phase 6 ✅ Deterministic, no-lookahead quantitative features over the canonical series: price action, trend, momentum, volatility, structure, noise, one-second micro state and per-timeframe snapshots with explicit readiness. Closed candles only; nothing repaints. Phase 6 produces facts, not signals — direction, ranking and strategy belong to Phase 7, which has not started.
+
+See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
 
 
-The interrupted temporary-profile acceptance check is complete, including both unauthenticated workspaces, idle disabled slots, calibration pause and 18-stream synthetic HTTP/Parquet validation. Real authenticated broker extraction remains pending for both platforms. See the [2026-09-08 verification results](docs/development.md#acceptance-continuation--2026-09-08).
+The interrupted temporary-profile acceptance check is complete, including both unauthenticated workspaces, idle disabled slots, calibration pause and 18-stream synthetic HTTP/Parquet validation. Real authenticated broker extraction has since been verified on both platforms. See the [2026-09-08 verification results](docs/development.md#acceptance-continuation--2026-09-08).
 
 
 ## Asset synchronization

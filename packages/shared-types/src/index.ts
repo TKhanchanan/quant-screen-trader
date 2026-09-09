@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { AssetSyncCommand, AssetSyncState } from './assets'
+import type { FeatureState } from './features'
 import type { MarketCommand, MarketSnapshot } from './market'
 
 export const PlatformSchema = z.enum(['capitalbear', 'iqoption'])
@@ -53,6 +54,7 @@ export type EngineHealthSnapshot = z.infer<typeof EngineHealthSnapshotSchema>
 
 export const IPC_CHANNELS = {
   getEngineHealth: 'engine:get-health', market: 'market:command', assetSync: 'assets:sync',
+  features: 'features:state',
   openWorkspace: 'workspace:open',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
@@ -64,6 +66,7 @@ export interface DesktopBridge {
   openWorkspace: (platform: Platform) => Promise<void>
   platformCommand: (request: PlatformCommand) => Promise<BrowserSnapshot>
   configuration: (request: ConfigurationRequest) => Promise<ConfigurationResult>
+  features: (platform: Platform) => Promise<FeatureState>
 }
 
 export const PLATFORM_DETAILS = {
@@ -237,3 +240,5 @@ export function adjustBounds(bounds: NormalizedBounds, dx: number, dy: number, r
 export * from './market'
 
 export * from './assets'
+
+export * from './features'
