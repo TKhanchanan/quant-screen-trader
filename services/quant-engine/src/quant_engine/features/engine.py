@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from quant_engine.configuration import Platform
-from quant_engine.features.math import bps, finite, safe_div
+from quant_engine.features.math import BPS, bps, finite, safe_div
 from quant_engine.features.micro import MicroState
 from quant_engine.features.models import (
     FEATURE_VERSION,
@@ -189,7 +189,7 @@ class TimeframeState:
             upperWickToRange=safe_div(upper_wick, span),
             lowerWickToRange=safe_div(lower_wick, span),
             closeLocation=safe_div(candle.close - candle.low, span),
-            trueRangeBps=safe_div(self._ranges[-1], candle.close),
+            trueRangeBps=_scale_bps(self._ranges[-1], candle.close),
             gapFromPreviousCloseBps=(
                 None if previous_close is None else bps(candle.open, previous_close)
             ),
@@ -241,7 +241,7 @@ class TimeframeState:
         bands = bollinger(self._closes)
         return VolatilityFeatures(
             atr14=atr,
-            atr14Bps=None if atr is None else safe_div(atr, close),
+            atr14Bps=_scale_bps(atr, close),
             realizedVol10Bps=realized_volatility_bps(self._closes, 10),
             realizedVol20Bps=realized_volatility_bps(self._closes, 20),
             bbMiddle=bands.middle,
@@ -333,7 +333,7 @@ class TimeframeState:
 def _log_bps(current: float, previous: float) -> float | None:
     if current <= 0 or previous <= 0:
         return None
-    return finite(math.log(current / previous) * 10_000.0)
+    return finite(math.log(current / previous) * BPS)
 
 
 def _pair_bps(close: float, level: float | None) -> float | None:
@@ -345,9 +345,10 @@ def _both_bps(first: float | None, second: float | None) -> float | None:
 
 
 def _scale_bps(value: float | None, close: float) -> float | None:
+    """A price-sized quantity as a share of the current close, in basis points."""
     if value is None:
         return None
-    return None if close == 0 else finite(value / close * 10_000.0)
+    return None if close == 0 else finite(value / close * BPS)
 
 
 def _timeframe_diagnostics(timeframe: Timeframe, state: TimeframeState) -> TimeframeDiagnostics:

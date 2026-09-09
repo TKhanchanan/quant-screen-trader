@@ -24,7 +24,7 @@ Swing pivots are confirmed, never provisional. A candidate at the centre of a fi
 
 ## Feature catalog
 
-Distances are basis points, `bps(a, b) = (a / b - 1) * 10000`, so features stay comparable across a 0.58 currency cross and an 8800 index. Nothing hard-codes decimal precision. Every division is guarded: a zero or invalid denominator yields `None`, never `0`, and NaN and infinity are rejected by the models themselves.
+Distances are basis points, `bps(a, b) = (a / b - 1) * 10000`, so features stay comparable across a 0.58 currency cross and an 8800 index. A quantity that is itself a price span rather than a distance between two prices — true range, ATR, the MACD lines — is normalized as `value / close * 10000`, which is also basis points. Anything named `…Bps` is basis points; a bare ratio would be four orders of magnitude smaller and silently understate volatility. Nothing hard-codes decimal precision. Every division is guarded: a zero or invalid denominator yields `None`, never `0`, and NaN and infinity are rejected by the models themselves.
 
 **Price action** — `return1Bps`, `return3Bps`, `return5Bps`, `logReturn1Bps`, `bodyBps`, `rangeBps`, `bodyToRange`, `upperWickToRange`, `lowerWickToRange`, `closeLocation`, `trueRangeBps`, `gapFromPreviousCloseBps`. Body is `close - open`, range is `high - low`, `closeLocation` is `(close - low) / (high - low)` and stays in `0..1`. True range is `max(high - low, |high - prevClose|, |low - prevClose|)`; the first bar of a series has no previous close and uses `high - low`.
 

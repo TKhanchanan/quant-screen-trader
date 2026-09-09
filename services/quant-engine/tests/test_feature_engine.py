@@ -50,6 +50,19 @@ def test_warming_reports_missing_indicators_as_none_never_zero() -> None:
     assert latest.trend.ema5 is not None  # a five-bar EMA can already exist
 
 
+def test_basis_point_features_are_basis_points_not_bare_ratios() -> None:
+    # A 1% true range on a 100 close is 100 bps. Reporting the 0.01 ratio under a Bps name
+    # silently understates volatility by four orders of magnitude.
+    engine = FeatureEngine()
+    feed(engine, [candle(index, 100.0, 100.5, 99.5, 100.0) for index in range(20)])
+    latest = engine.latest_snapshot("capitalbear", 1, "M1")
+    assert latest is not None
+    assert latest.priceAction.trueRangeBps == pytest.approx(100.0)
+    assert latest.volatility.atr14 == pytest.approx(1.0)
+    assert latest.volatility.atr14Bps == pytest.approx(100.0)
+    assert latest.priceAction.rangeBps == pytest.approx((100.5 / 99.5 - 1) * 10_000)
+
+
 def test_a_clean_history_becomes_ready_with_every_indicator_present() -> None:
     engine = FeatureEngine()
     latest = feed(engine, walk(60))[-1]

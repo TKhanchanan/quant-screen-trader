@@ -168,3 +168,12 @@ def test_feature_api_is_local_only_and_reports_state(tmp_path: Path) -> None:
         assert set(single["snapshots"]) == {"S5"}
         assert client.get("/api/features/capitalbear/9").status_code == 404
         assert client.get("/api/features/capitalbear/0").status_code == 422
+        # Feature state is read straight off the live engine, so it must refuse to read it
+        # while an ingestion thread owns it rather than iterate a mutating structure.
+        engine.busy = True
+        try:
+            assert client.get("/api/features/state").status_code == 429
+            assert client.get("/api/features/capitalbear/1").status_code == 429
+        finally:
+            engine.busy = False
+        assert client.get("/api/features/state").status_code == 200

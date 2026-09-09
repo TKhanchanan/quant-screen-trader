@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FeatureStateSchema, IPC_CHANNELS } from '@quant-screen-trader/shared-types'
+import { FeatureEngineStateSchema, FeatureStateSchema, IPC_CHANNELS } from '@quant-screen-trader/shared-types'
 
 const slot = {
   platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD OTC', primaryTimeframe: 'S5',
@@ -19,6 +19,16 @@ describe('feature diagnostics bridge', () => {
     expect(FeatureStateSchema.safeParse({ featureVersion: 'qfe-v1', slots: [] }).success).toBe(false)
     expect(FeatureStateSchema.safeParse({ featureVersion: 'qfe-v1', available: false,
       slots: [], extra: 1 }).success).toBe(false)
+  })
+  it('accepts the counters the engine reports alongside the state it renders', () => {
+    // The engine also returns `rejected`; parsing its payload with the strict desktop contract
+    // made every poll look like an unreachable engine.
+    const payload = { featureVersion: 'qfe-v1', rejected: 0, slots: [slot] }
+    const parsed = FeatureEngineStateSchema.parse(payload)
+    expect(parsed.featureVersion).toBe('qfe-v1')
+    expect(parsed.slots).toHaveLength(1)
+    expect(FeatureStateSchema.safeParse(payload).success).toBe(false)
+    expect(FeatureEngineStateSchema.safeParse({ featureVersion: 'qfe-v1' }).success).toBe(false)
   })
   it('reports an unreachable engine without fabricating slots', () => {
     const offline = FeatureStateSchema.parse({ featureVersion: 'unknown', available: false, slots: [] })

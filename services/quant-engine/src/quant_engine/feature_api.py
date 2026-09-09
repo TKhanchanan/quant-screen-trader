@@ -15,8 +15,14 @@ type SlotPath = Annotated[int, Path(ge=1, le=9)]
 
 
 def _engine(request: Request) -> MarketEngine:
+    """Feature state is read straight off the live engine, so it may only be read while no
+    ingestion thread is running. Both readers below stay synchronous after this check: the
+    event loop cannot start an ingest in between, and 429 lets the caller simply retry."""
     local_only(request)
-    return cast(MarketEngine, request.app.state.market)
+    engine = cast(MarketEngine, request.app.state.market)
+    if engine.busy:
+        raise HTTPException(429, "Engine busy")
+    return engine
 
 
 @router.get("/api/features/state")

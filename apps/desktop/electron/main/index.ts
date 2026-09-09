@@ -4,7 +4,7 @@ import { app, BrowserWindow, ipcMain, WebContentsView, type IpcMainInvokeEvent }
 import {
   IPC_CHANNELS, MarketCommandSchema, AssetSyncCommandSchema,
   PlatformSchema,
-  PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureStateSchema,
+  PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureEngineStateSchema,
   type Platform
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
@@ -207,8 +207,9 @@ void app.whenReady().then(() => {
       const response = await fetch(new URL('/api/features/state', connection.healthUrl),
         { signal: AbortSignal.timeout(2000), redirect: 'error' })
       if (!response.ok) throw new Error('Feature state unavailable')
-      const value = FeatureStateSchema.omit({ available: true }).parse(await response.json())
-      return { ...value, available: true, slots: value.slots.filter(s => s.platform === platform) }
+      const value = FeatureEngineStateSchema.parse(await response.json())
+      return { featureVersion: value.featureVersion, available: true,
+        slots: value.slots.filter(s => s.platform === platform) }
     } catch {
       return { featureVersion: 'unknown', available: false, slots: [] }
     }

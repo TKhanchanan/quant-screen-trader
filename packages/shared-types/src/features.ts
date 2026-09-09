@@ -18,6 +18,13 @@ export const FeatureSlotSchema = z.looseObject({
   timeframes: z.array(FeatureTimeframeSchema)
 })
 export type FeatureSlot = z.infer<typeof FeatureSlotSchema>
+/** What the engine returns. Loose: the engine may report counters the desktop does not render. */
+export const FeatureEngineStateSchema = z.looseObject({
+  featureVersion: z.string().min(1).max(40),
+  slots: z.array(FeatureSlotSchema).max(18)
+})
+export type FeatureEngineState = z.infer<typeof FeatureEngineStateSchema>
+/** What the desktop bridge delivers. `available` is added by the main process, never the engine. */
 export const FeatureStateSchema = z.strictObject({
   featureVersion: z.string().min(1).max(40),
   available: z.boolean(),
