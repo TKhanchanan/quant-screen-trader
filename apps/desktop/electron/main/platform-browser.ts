@@ -67,12 +67,33 @@ function chartNameBounds(cell: PixelBounds): PixelBounds {
  * raw OCR text: a clipped label never normalizes to an asset, so it carries no parsed name at all.
  * A prefix is only returned when the reads agree on it, and it is evidence, never an identity.
  */
+/**
+ * A chart title carries its own dropdown chevron, which OCR renders as one or two stray glyphs
+ * after the name. The instrument suffix closes with a bracket, so anything past it is noise.
+ */
+export function chartTitleText(line: string): string {
+  return line.replace(/\)\s.*$/, ')').replace(/\s+[+vVwW~^|]+$/, '').trim()
+}
+/**
+ * The legible head of a single clipped label. Two brokers clip differently: one appends an
+ * ellipsis, the other simply lets the tab overflow, which leaves a bracket it never closed.
+ * Both cases keep the leading text, which is evidence — never an identity on its own.
+ */
+function clippedLabelPrefix(line: string): string | null {
+  const text = line.trim().replace(/^[^\p{L}]+/u, '').replace(/\s+/g, ' ')
+  const head = /(?:\.{2,}|…)/.test(text)
+    ? text.split(/\.{2,}|…/)[0]
+    : text.includes('(') && !text.includes(')')
+      ? text.slice(0, text.indexOf('('))
+      : undefined
+  const prefix = head?.trim()
+  return prefix && prefix.length >= 3 ? prefix : null
+}
 export function clippedPrefix(rawOCR: string[] | undefined): string | null {
   const votes = new Map<string, number>()
   for (const raw of rawOCR ?? []) for (const line of raw.split(/\r?\n/)) {
-    if (!/(?:\.{2,}|…)/.test(line)) continue
-    const prefix = line.split(/\.{2,}|…/)[0]!.trim().replace(/\s+/g, ' ')
-    if (prefix.length >= 3) votes.set(prefix, (votes.get(prefix) ?? 0) + 1)
+    const prefix = clippedLabelPrefix(line)
+    if (prefix) votes.set(prefix, (votes.get(prefix) ?? 0) + 1)
   }
   const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)
   return ranked[0] && ranked[0][1] >= 2 ? ranked[0][0] : null
@@ -416,10 +437,11 @@ export class PlatformBrowserManager {
       ...normalizeBitmap(bitmap, resizedSize.width, resizedSize.height, threshold, true), purpose: 'ASSET' }))
     const votes = new Map<string, number>()
     for (const variant of variants) {
-      // A chart title is followed by its own dropdown chevron, which OCR renders as a stray glyph.
-      const asset = variant.asset ? normalizeAsset(variant.asset.replace(/\s+[+vVwW~^]$/, '')) : null
-      if (asset && asset.length > prefix.length && asset.toLowerCase().startsWith(prefix.toLowerCase()))
-        votes.set(asset, (votes.get(asset) ?? 0) + 1)
+      for (const line of (variant.rawText ?? variant.asset ?? '').split(/\r?\n/)) {
+        const asset = normalizeAsset(chartTitleText(line))
+        if (asset && asset.length > prefix.length && asset.toLowerCase().startsWith(prefix.toLowerCase()))
+          votes.set(asset, (votes.get(asset) ?? 0) + 1)
+      }
     }
     const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1])
     const rawOCR = variants.map(variant => variant.rawText ?? variant.asset ?? '')

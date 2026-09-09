@@ -37,7 +37,9 @@ class Popup extends EventEmitter {
   constructor(readonly options: Electron.BrowserWindowConstructorOptions) { super(); popups.push(this) }
 }
 vi.mock('electron', () => ({ WebContentsView: View, BrowserWindow: Popup }))
-const { PlatformBrowserManager, chartSurfaceActivity, findAssetTabs, canvasSlotForTab, clippedPrefix } = await import('../electron/main/platform-browser')
+const { PlatformBrowserManager, chartSurfaceActivity, findAssetTabs, canvasSlotForTab, clippedPrefix,
+  chartTitleText } = await import('../electron/main/platform-browser')
+const { normalizeAsset } = await import('../electron/main/asset-detector')
 class Window extends EventEmitter {
   contentView = { addChildView: vi.fn(), removeChildView: vi.fn() }
   show = vi.fn()
@@ -336,6 +338,31 @@ describe('nine opened tabs at operating zoom', () => {
     expect(clippedPrefix(['Australian Dollar Index', 'Australian Dollar Index'])).toBeNull()
     expect(clippedPrefix(['Pl...', 'Pl...'])).toBeNull()
     expect(clippedPrefix(undefined)).toBeNull()
+  })
+  it('treats an unclosed bracket as clipping, because one broker overflows without an ellipsis', () => {
+    // Real reads from a nine-tab CapitalBear bar narrow enough to cut the instrument suffix off.
+    expect(clippedPrefix(['_ GBP/JPY (', '_ GBP/JPY (', '_ GBP/JPY ('])).toBe('GBP/JPY')
+    expect(clippedPrefix(['Amazon (0', 'Amazon (0'])).toBe('Amazon')
+    expect(clippedPrefix(['_ EUR/JPY (C', 'EUR/JPY (('])).toBe('EUR/JPY')
+    expect(clippedPrefix(['. OpenAl (OTC)', '. OpenAl (OTC)'])).toBeNull()
+    expect(clippedPrefix(['EUR/USD OTC', 'EUR/USD OTC'])).toBeNull()
+    expect(clippedPrefix(['Pl (', 'Pl ('])).toBeNull()
+  })
+  it('reads a chart title through its dropdown chevron', () => {
+    // Real chart-cell reads: only one of four preprocessing variants survived without this.
+    for (const raw of ['GBP/JPY (OTC) v q', 'GBP/JPY (OTC) v a', 'GBP/JPY (OTC) v A', 'GBP/JPY (OTC)'])
+      expect(normalizeAsset(chartTitleText(raw))).toBe('GBP/JPY OTC')
+    expect(normalizeAsset(chartTitleText('Australian Dollar Index +'))).toBe('Australian Dollar Index')
+    expect(normalizeAsset(chartTitleText('AU 200 +'))).toBe('AU 200')
+    expect(normalizeAsset(chartTitleText('OpenAl (OTC) v i'))).toBe('OpenAI OTC')
+  })
+  it('drops the icon edge OCR picks up before a tab name', () => {
+    expect(normalizeAsset('. OpenAl (OTC)')).toBe('OpenAI OTC')
+    expect(normalizeAsset('_ EUR/USD (OTC)')).toBe('EUR/USD OTC')
+    expect(normalizeAsset('| AUS 200 (OT...')).toBe('AUS 200 OTC')
+    expect(normalizeAsset('_ GBP/JPY (')).toBeNull()
+    expect(normalizeAsset('EUR/USD')).toBe('EUR/USD')
+    expect(normalizeAsset('. . .')).toBeNull()
   })
   it.each(['capitalbear', 'iqoption'] as const)('maps each %s tab onto the canvas cell verified to hold it', platform => {
     expect(Array.from({ length: 9 }, (_, i) => canvasSlotForTab(platform, i + 1, 9))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])

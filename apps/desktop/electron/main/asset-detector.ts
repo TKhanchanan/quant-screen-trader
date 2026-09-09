@@ -5,7 +5,9 @@ const Rect = z.strictObject({ x: z.number().min(0).max(1), y: z.number().min(0).
 export const ChartLabelSchema = z.strictObject({ bounds: Rect, label: z.string().max(120), tooltip: z.string().max(120).nullable() })
 export type ChartLabel = z.infer<typeof ChartLabelSchema>
 export function normalizeAsset(label: string): string | null {
-  const value = label.trim().replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
+  // OCR of a tab label picks up the edge of the instrument icon as a stray leading mark. An
+  // asset name always starts with a letter, so anything before the first one is never part of it.
+  const value = label.trim().replace(/^[^\p{L}]+/u, '').replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
     .replace(/\s+(?:Digital|Binary)$/i, '')
     .replace(/\s*\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)\s*\)?$/i, ' OTC')
     .replace(/\s*\(OTC\)$/i, ' OTC')
