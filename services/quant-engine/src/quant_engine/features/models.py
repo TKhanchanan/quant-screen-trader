@@ -14,9 +14,13 @@ from pydantic import Field
 from quant_engine.configuration import Model, Platform
 from quant_engine.market_models import QualityState, Timeframe
 
-FEATURE_VERSION = "qfe-v1"
+FEATURE_VERSION = "qfe-v2"
 """Schema and formula version. Changing any formula requires changing this string so that
-snapshots computed under different definitions can never be silently mixed."""
+snapshots computed under different definitions can never be silently mixed.
+
+qfe-v2 corrected trueRangeBps and atr14Bps, which reported a bare ratio under a name that
+promises basis points. qfe-v1 records stay on disk and stay readable; they are simply a
+different formula contract and must never be pooled with qfe-v2 for research or backtests."""
 
 type FeatureStatus = Literal["WARMING", "READY", "DEGRADED", "INVALID"]
 

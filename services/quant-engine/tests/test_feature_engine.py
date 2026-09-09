@@ -50,6 +50,18 @@ def test_warming_reports_missing_indicators_as_none_never_zero() -> None:
     assert latest.trend.ema5 is not None  # a five-bar EMA can already exist
 
 
+def test_the_current_feature_version_is_pinned_to_the_corrected_formulas() -> None:
+    # Deliberately a literal rather than the constant: correcting trueRangeBps and atr14Bps from
+    # a bare ratio to basis points changed the formula contract, so v1 and v2 snapshots must never
+    # be pooled. Any further formula change has to break this test before it can ship.
+    assert FEATURE_VERSION == "qfe-v2"
+    engine = FeatureEngine()
+    snapshot = feed(engine, walk(3))[-1]
+    assert snapshot.featureVersion == "qfe-v2"
+    bundle = engine.latest_bundle("capitalbear", 1)
+    assert bundle is not None and bundle.featureVersion == "qfe-v2"
+
+
 def test_basis_point_features_are_basis_points_not_bare_ratios() -> None:
     # A 1% true range on a 100 close is 100 bps. Reporting the 0.01 ratio under a Bps name
     # silently understates volatility by four orders of magnitude.

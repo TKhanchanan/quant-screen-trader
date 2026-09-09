@@ -48,6 +48,25 @@ def test_feature_snapshots_survive_a_parquet_round_trip(tmp_path: Path) -> None:
     assert not any("EUR/USD" in str(path) for path in tmp_path.rglob("*")), "raw asset in path"
 
 
+def test_historical_feature_versions_stay_readable_and_distinguishable(tmp_path: Path) -> None:
+    """Snapshots written under an earlier formula contract are kept, not rewritten or dropped."""
+    engine = FeatureEngine()
+    current = next(
+        snapshot for record in history(30) if (snapshot := engine.ingest_candle(record)) is not None
+    )
+    historical = current.model_copy(update={"featureVersion": "qfe-v1"})
+    storage = ParquetStorage(tmp_path)
+    for snapshot in (historical, current):
+        storage.append("features", snapshot)
+    storage.flush()
+    reloaded = cast(list[FeatureSnapshot], storage.reload("features"))
+    versions = {record.featureVersion for record in reloaded}
+    assert versions == {"qfe-v1", FEATURE_VERSION}
+    assert len(reloaded) == 2, "the older contract is retained alongside the current one"
+    older = next(record for record in reloaded if record.featureVersion == "qfe-v1")
+    assert older.model_dump() == historical.model_dump()
+
+
 def test_history_loader_only_returns_earlier_bars_of_the_exact_series(tmp_path: Path) -> None:
     live = history(30, source="DOM")
     storage = store(

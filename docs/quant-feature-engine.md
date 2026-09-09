@@ -74,8 +74,8 @@ CLOSED snapshots are appended to the `features` category and follow the existing
 features/platform=capitalbear/asset=EUR_USD_OTC-<hash>/date=2026-09-09/<uuid>.parquet
 ```
 
-A snapshot round-trips through Parquet and back through Pydantic without semantic change, and every persisted snapshot carries `featureVersion`. The constant is `qfe-v1`; changing any formula requires changing it, so a later backtest can never silently mix two definitions of the same feature.
+A snapshot round-trips through Parquet and back through Pydantic without semantic change, and every persisted snapshot carries `featureVersion`. The constant is `qfe-v2`; changing any formula requires changing it, so a later backtest can never silently mix two definitions of the same feature. `qfe-v1` was the same catalog before `trueRangeBps` and `atr14Bps` were corrected from a bare ratio to basis points. Records written under it are still on disk and still load, and their version string is what keeps them distinguishable — nothing deletes them, and nothing may pool them with `qfe-v2`.
 
 Two local-only read endpoints sit behind the same trust boundary as the market API, and browser-origin requests are rejected. `GET /api/features/state` returns per-slot readiness for every active slot: asset, context, primary timeframe, micro sample count, and per-timeframe bar count, hydrated bars, status and feature time. `GET /api/features/{platform}/{slotId}`, optionally filtered by `timeframe`, returns the latest snapshots and the as-of bundle. There is no network-facing trading service.
 
-The desktop workspace shows a one-line summary under **Developer diagnostics** — for example `Quant: S5 WARMING 18 · M1 READY 64 · v qfe-v1` — and reports an unreachable engine rather than inventing state.
+The desktop workspace shows a one-line summary under **Developer diagnostics** — for example `Quant: S5 WARMING 18 · M1 READY 64 · v qfe-v2` — and reports an unreachable engine rather than inventing state.
