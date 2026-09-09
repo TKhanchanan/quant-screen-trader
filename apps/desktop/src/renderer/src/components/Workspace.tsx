@@ -66,20 +66,18 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
   const calibrate = (): void => {
     if (!data) return
     const profile = data.calibrations.find((p) => p.id === data.activeCalibrationId)
-    void window.quantScreenTrader.platformCommand({ operation: 'beginCalibration', platform,
-      draft: { assets: data.configuration, slots: profile?.slots ?? defaultCalibration(platform), zoomFactor: profile?.zoomFactor ?? 1 } })
+    void window.quantScreenTrader.platformCommand({ operation: 'state', platform }).then(browser =>
+      window.quantScreenTrader.platformCommand({ operation: 'beginCalibration', platform,
+        draft: { assets: data.configuration, slots: profile?.slots ?? defaultCalibration(platform), zoomFactor: browser.zoomFactor } }))
       .then(() => setMode('calibration')).catch(() => setActionError('Could not open calibration'))
   }
   const syncOnce = async (): Promise<void> => {
     try {
-      const current = await execute({ operation: 'get', platform })
-      if (current && !current.activeCalibrationId) {
-        const browser = await window.quantScreenTrader.platformCommand({ operation: 'state', platform })
-        await execute({ operation: 'saveCalibration', platform, name: 'Auto Chart Grid', slots: defaultCalibration(platform),
-          referenceBrowserWidth: browser.bounds.width, referenceBrowserHeight: browser.bounds.height, zoomFactor: browser.zoomFactor })
-      }
+      setActionError('')
+      await execute({ operation: 'get', platform })
       const result = await window.quantScreenTrader.assetSync({ platform, operation: 'sync' })
       setSync(result); await execute({ operation: 'get', platform })
+      if (result.error?.includes('CALIBRATION_ZOOM_MISMATCH')) calibrate()
     } catch { setActionError('Asset sync unavailable. Existing assets were preserved.') }
   }
   const observe = async (): Promise<void> => {
@@ -88,8 +86,13 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       const current = await execute({ operation: 'get', platform })
       if (!market?.running && !current?.configuration.slots.some(s => s.enabled && s.assetName)) { setActionError('No identified assets. Sync Assets or use Asset Setup.'); return }
       if (!market?.running && !current?.activeCalibrationId) { setActionError('Assets are ready. Calibrate Slots before starting observation.'); return }
+      setActionError('')
       setMarket(await window.quantScreenTrader.market({ platform, operation: market?.running ? 'stop' : 'start' }))
-    } catch { setActionError('Observation unavailable') }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Observation unavailable'
+      setActionError(message)
+      if (message.includes('CALIBRATION_ZOOM_MISMATCH')) calibrate()
+    }
   }
   return <main className="workspace-shell">
     <header className="workspace-toolbar">
@@ -120,7 +123,16 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
         const observed = market?.slots.find(s => s.slotId === i + 1)
         return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected?.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : ''} {detected ? `${detected.source} ${Math.round(detected.confidence * 100)}%` : ''}<br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br />Price {observed?.state === 'READY' ? observed.observation?.price : '—'} · {observed?.observation?.dataQuality.state ?? '—'}
           {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
-          <small><br />1s {observed?.secondSamples ?? 0} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
+          <small><br />1s {observed?.secondSamples ?? 0} {platform === 'capitalbear' ? ` · S5 ${observed?.s5Samples ?? 0} ${observed?.s5State ?? 'collecting'}` : ''} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
+          {developer && <small><br />Stage: {observed?.diagnostics?.stage ?? 'TAB'} · Canvas cell {observed?.diagnostics?.canvasSlotId ?? '—'}
+            <br />{observed?.diagnostics?.message}
+            <br />Tab {detected?.tabIndex ?? i + 1}: {JSON.stringify(detected?.pixelBounds)}
+            <br />OCR: {detected?.rawOCR?.join(' | ')}
+            <br />Chart: {JSON.stringify(observed?.pixelBounds)}
+            <br />Price ROI: {JSON.stringify(observed?.diagnostics?.pricePixelBounds)}
+            <br />Callout: {JSON.stringify(observed?.diagnostics?.labelPixelBounds)}
+            <br />Price OCR: {observed?.diagnostics?.rawPrice} · Parsed {observed?.diagnostics?.parsedPrice ?? '—'} · Confidence {observed?.diagnostics?.priceConfidence ?? '—'}
+            <br />Grid confidence {observed?.diagnostics?.gridConfidence ?? '—'}</small>}
         </span>
       })}</div>
       {developer && <details><summary>Slot diagnostics (images are not stored)</summary><pre style={{ maxHeight: 200, overflow: 'auto' }}>{JSON.stringify({ market, sync, calibration: data?.calibrations.find(p => p.id === data.activeCalibrationId) }, null, 2)}</pre></details>}

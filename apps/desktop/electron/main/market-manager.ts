@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { calibrationToChartGrid, MarketBatchResultSchema, normalizedToPixel, type ConfigurationResult, type MarketCommand, type MarketObservation, type MarketSnapshot, type Platform } from '@quant-screen-trader/shared-types'
+import { calibrationToChartGrid, calibrationZoomMatches, MarketBatchResultSchema, normalizedToPixel, type ConfigurationResult, type MarketCommand, type MarketObservation, type MarketSnapshot, type Platform } from '@quant-screen-trader/shared-types'
+import { canvasPriceGeometry } from './chart-grid'
 import { DOMMarketDataProvider, VisualMarketDataProvider, type ObservationContext } from './market-providers'
 import { TesseractOCRProvider } from './market-ocr'
 import { CaptureScheduler } from './market-scheduler'
@@ -62,7 +63,7 @@ export class MarketManager {
       workspace.snapshot.engineAvailable = false; workspace.snapshot.queueLagMs = 0
       workspace.scheduler.invalidate(); workspace.contextIds = new Map(workspace.snapshot.slots.map(s => [s.slotId, randomUUID()]))
       for (const key of this.queue.keys()) if (key.startsWith(command.platform + ':')) this.queue.delete(key)
-      for (const slot of workspace.snapshot.slots) { slot.observation = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null; if (slot.state !== 'DISABLED') slot.state = workspace.snapshot.running ? 'WAITING' : 'PAUSED' }
+      for (const slot of workspace.snapshot.slots) { slot.observation = null; slot.s5Samples = 0; slot.s5State = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null; if (slot.state !== 'DISABLED') slot.state = workspace.snapshot.running ? 'WAITING' : 'PAUSED' }
     }
     workspace.snapshot.queueDepth = this.queue.size
     workspace.snapshot.captureRate = workspace.snapshot.running ? workspace.count / Math.max(1, (Date.now() - workspace.started) / 1000) : 0
@@ -76,27 +77,37 @@ export class MarketManager {
         w.count = 0; w.started = Date.now()
         w.signature = signature; w.contextIds = new Map(w.snapshot.slots.map(s => [s.slotId, randomUUID()])); w.scheduler.invalidate()
         for (const key of this.queue.keys()) if (key.startsWith(platform + ':')) this.queue.delete(key)
-        for (const slot of w.snapshot.slots) { slot.observation = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null }
+        for (const slot of w.snapshot.slots) { slot.observation = null; slot.s5Samples = 0; slot.s5State = null; slot.secondSamples = 0; slot.m1Samples = 0; slot.m1State = null }
       }
       const profile = w.config.calibrations.find(p => p.id === w.config.activeCalibrationId)
+      const geometryReady = profile && surface.gridReady && calibrationZoomMatches(profile, surface)
       for (const slot of w.snapshot.slots) {
         const configured = w.config.configuration.slots.find(s => s.id === slot.slotId)!
         if (!configured.enabled) { slot.state = 'DISABLED'; continue }
         if (w.resetting.has(configured.id)) { slot.state = 'WAITING'; continue }
         if (!w.snapshot.running || surface.paused) { slot.state = 'PAUSED'; continue }
-        if (!surface.available || !profile) { slot.state = 'WAITING'; continue }
+        if (!surface.available || !geometryReady) {
+          slot.state = 'WAITING'; slot.diagnostics = { stage: 'CANVAS BOUNDS', message: 'Verified grid and matching calibration zoom required. Use Sync Assets or Calibrate Chart Area.' }; continue
+        }
         if (slot.observation && Date.now() - Date.parse(slot.observation.observedAt) > 3000) slot.state = 'STALE'
       }
-      if (!w.snapshot.running || !surface.available || surface.paused || !profile || w.busy) continue
+      if (!w.snapshot.running || !surface.available || surface.paused || !geometryReady || !profile || w.busy) continue
       const enabled = w.config.configuration.slots.filter(s => s.enabled && !w.resetting.has(s.id))
       if (!enabled.length) continue
       const configured = enabled[w.cursor++ % enabled.length]!
-      const geometry = calibrationToChartGrid(platform, profile.slots, 'LEGACY').slots.find(candidate => candidate.slotId === configured.id)!
-      const bounds = geometry.chartBounds
       const slot = w.snapshot.slots.find(s => s.slotId === configured.id)!
+      let canvasSlotId: number
+      try { canvasSlotId = this.browsers.chartSlot(platform, configured.id, configured.assetName) }
+      catch (error) { slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { stage: 'TAB', message: error instanceof Error ? error.message : 'Sync Assets required' }; continue }
+      const cell = calibrationToChartGrid(platform, profile.slots, 'LEGACY').slots.find(candidate => candidate.slotId === canvasSlotId)!
+      const geometry = canvasPriceGeometry(platform, cell.chartBounds, surface.bounds.width, surface.zoomFactor)
+      const bounds = geometry.chartBounds
       slot.pixelBounds = normalizedToPixel(bounds, surface.bounds.width, surface.bounds.height)
+      slot.diagnostics = { stage: 'PRICE ROI', canvasSlotId, contextId: w.contextIds.get(configured.id)!,
+        gridConfidence: this.browsers.command({ platform, operation: 'state' }).grid?.confidence,
+        pricePixelBounds: normalizedToPixel(geometry.priceBounds, surface.bounds.width, surface.bounds.height) }
       const context: ObservationContext = { platform, slotId: configured.id, assetName: configured.assetName,
-        contextId: w.contextIds.get(configured.id)!, calibrationProfileId: profile.id, bounds,
+        contextId: w.contextIds.get(configured.id)!, calibrationProfileId: profile.id, bounds, diagnostics: slot.diagnostics,
         ...(geometry.priceBounds ? { priceBounds: geometry.priceBounds } : {}) }
       const key = `${platform}:${configured.id}`
       w.busy = true
@@ -113,7 +124,11 @@ export class MarketManager {
         w.count++
         if (this.queue.has(key)) { w.snapshot.dropped++; slot.dropped++ }
         this.queue.set(key, value)
-      }, () => { slot.state = 'ERROR' }).finally(() => { w.busy = false })
+      }, error => { slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { ...slot.diagnostics!,
+        stage: error instanceof Error && error.message.startsWith('TAB') ? 'TAB' : 'PRICE ROI',
+        message: error instanceof Error ? error.message : 'Capture or OCR unavailable' } })
+        .catch(() => { /* Shutdown races tear the OCR worker down mid-capture. */ })
+        .finally(() => { w.busy = false })
     }
   }
   private async resetSlots(platform: Platform, slotIds: number[], revision: number): Promise<void> {
@@ -157,7 +172,7 @@ export class MarketManager {
         const w = this.workspaces.get(status.platform)
         const slot = w?.snapshot.slots.find(s => s.slotId === status.slotId)
         if (slot && w?.contextIds.get(status.slotId) === status.contextId) {
-          slot.secondSamples = status.secondSamples; slot.m1Samples = status.m1Samples; slot.m1State = status.m1State
+          slot.s5Samples = status.s5Samples ?? 0; slot.s5State = status.s5State ?? null; slot.secondSamples = status.secondSamples; slot.m1Samples = status.m1Samples; slot.m1State = status.m1State
         }
       }
       for (const w of this.workspaces.values()) { w.snapshot.engineAvailable = true; w.snapshot.queueLagMs = lag }

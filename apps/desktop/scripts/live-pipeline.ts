@@ -1,0 +1,161 @@
+/**
+ * Live end-to-end acceptance. Drives exactly what the workspace buttons drive — verify geometry,
+ * Sync Assets, Start Observation — against the real authenticated sessions, then reports what the
+ * engine built from the resulting samples. Read-only: capture, visible DOM and OCR only.
+ * Run through scripts/live-acceptance.mjs.
+ */
+import { app, BrowserWindow, WebContentsView } from 'electron'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { PlatformSchema, type Platform } from '@quant-screen-trader/shared-types'
+import { getEngineConnectionConfig } from '../electron/main/engine-config'
+import { requestConfiguration } from '../electron/main/configuration-client'
+import { prepareCalibration } from '../electron/main/calibration'
+import { PlatformBrowserManager } from '../electron/main/platform-browser'
+import { AssetSyncManager } from '../electron/main/asset-sync'
+import { MarketManager } from '../electron/main/market-manager'
+
+const platforms = (process.env.QST_LIVE_PLATFORM ?? 'iqoption').split(',').map(value => PlatformSchema.parse(value.trim()))
+const out = process.env.QST_LIVE_OUT!
+const userData = process.env.QST_LIVE_USER_DATA!
+const settleMs = Number(process.env.QST_LIVE_SETTLE_MS ?? 120000)
+const observeMs = Number(process.env.QST_LIVE_OBSERVE_MS ?? 90000)
+const intervalMs = Number(process.env.QST_LIVE_INTERVAL_MS ?? 1000)
+const width = Number(process.env.QST_LIVE_WIDTH ?? 1440), height = Number(process.env.QST_LIVE_HEIGHT ?? 940)
+const resizeWidth = Number(process.env.QST_LIVE_RESIZE_WIDTH ?? 0), resizeHeight = Number(process.env.QST_LIVE_RESIZE_HEIGHT ?? 0)
+if (!out || !userData) throw new Error('Run through scripts/live-acceptance.mjs')
+app.setPath('userData', userData)
+app.setPath('sessionData', userData)
+mkdirSync(out, { recursive: true })
+
+const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+const log = (message: string): void => console.log(`[live] ${message}`)
+const browsers = new PlatformBrowserManager(() => new WebContentsView())
+const report: Record<string, unknown> = {}
+
+void app.whenReady().then(async () => {
+  const connection = getEngineConnectionConfig()
+  const market = new MarketManager(browsers, connection)
+  const assetSync = new AssetSyncManager(browsers, async (platform, before, slots) => {
+    const profile = before.calibrations.find(p => p.id === before.activeCalibrationId)
+    return requestConfiguration(connection, { operation: 'syncAssets', platform, slots,
+      expectedSlots: before.configuration.slots, expectedCalibrationVersion: profile ? `${profile.id}:${profile.updatedAt}` : null })
+  }, result => market.configure(result))
+  const prepare = async (platform: Platform): Promise<void> => {
+    const result = await prepareCalibration(platform, browsers, request => requestConfiguration(connection, request))
+    market.configure(result); assetSync.configure(result)
+  }
+  const windows = new Map<Platform, BrowserWindow>()
+  const observing: Platform[] = []
+  try {
+    for (const [index, platform] of platforms.entries()) {
+      const window = new BrowserWindow({ width, height, show: true, x: 40 + index * 60, y: 40 + index * 60,
+        title: `Live acceptance — ${platform}`, backgroundColor: '#080d18' })
+      windows.set(platform, window)
+      browsers.attach(platform, window)
+      const [contentWidth = width, contentHeight = height] = window.getContentSize()
+      browsers.command({ platform, operation: 'layout', bounds: { x: 0, y: 0, width: contentWidth, height: contentHeight }, visible: true })
+    }
+    for (const platform of platforms) {
+      // The traderoom paints its canvas well after the document loads. Retry exactly what the
+      // workspace retries — verify the geometry — until it succeeds or the deadline passes.
+      log(`${platform}: waiting up to ${settleMs} ms for the live canvas grid`)
+      const platformReport: Record<string, unknown> = {}
+      report[platform] = platformReport
+      const deadline = Date.now() + settleMs
+      let ready = false
+      while (!ready) {
+        await wait(5000)
+        platformReport.zoomFactor = browsers.observationSurface(platform).zoomFactor
+        try { await prepare(platform); ready = true }
+        catch (error) {
+          platformReport.gridError = error instanceof Error ? error.message : 'geometry failed'
+          if (Date.now() >= deadline) break
+        }
+      }
+      if (!ready) { log(`${platform}: GEOMETRY FAILED ${String(platformReport.gridError)}`); continue }
+      delete platformReport.gridError
+      const grid = browsers.command({ platform, operation: 'state' }).grid
+      platformReport.grid = grid ? { bounds: grid.bounds, source: grid.source, confidence: grid.confidence } : null
+      log(`${platform}: grid ${JSON.stringify(platformReport.grid)}`)
+      const state = await assetSync.command({ platform, operation: 'sync' })
+      platformReport.syncError = state.error
+      platformReport.tabs = state.detection?.slots.map(slot => ({ tab: slot.tabIndex ?? slot.slotId, state: slot.state,
+        asset: slot.assetName, confidence: Number(slot.confidence.toFixed(3)), pixelBounds: slot.pixelBounds }))
+      for (const slot of state.detection?.slots ?? [])
+        log(`${platform}: tab ${slot.tabIndex ?? slot.slotId} -> ${slot.assetName ?? slot.state} (${slot.confidence.toFixed(2)})`)
+      market.command({ platform, operation: 'start', intervalMs })
+      observing.push(platform)
+    }
+    if (!observing.length) throw new Error('No platform reached verified geometry')
+    const finish = Date.now() + observeMs
+    while (Date.now() < finish) {
+      await wait(10000)
+      for (const platform of observing) {
+        const snapshot = market.command({ platform, operation: 'state' })
+        log(`${platform}: ${Math.round((finish - Date.now()) / 1000)}s left · ${snapshot.captureRate.toFixed(1)} obs/s · engine ${snapshot.engineAvailable ? 'receiving' : 'waiting'} · ` +
+          snapshot.slots.map(slot => `${slot.slotId}:${slot.state[0]}${slot.secondSamples}`).join(' '))
+      }
+    }
+    // PART J: resize the workspace without touching zoom, then confirm the geometry and the
+    // tab -> cell -> price mapping are recomputed rather than carried over from the old size.
+    if (resizeWidth && resizeHeight) {
+      for (const platform of observing) {
+        const before = market.command({ platform, operation: 'state' })
+        const platformReport = report[platform] as Record<string, unknown>
+        platformReport.beforeResize = { bounds: browsers.observationSurface(platform).bounds,
+          slots: before.slots.map(slot => ({ slotId: slot.slotId, asset: slot.observation?.assetName ?? null,
+            canvasSlotId: slot.diagnostics?.canvasSlotId ?? null, chartPixelBounds: slot.pixelBounds })) }
+        windows.get(platform)!.setContentSize(resizeWidth, resizeHeight)
+        const [w = resizeWidth, h = resizeHeight] = windows.get(platform)!.getContentSize()
+        browsers.command({ platform, operation: 'layout', bounds: { x: 0, y: 0, width: w, height: h }, visible: true })
+        log(`${platform}: resized to ${w}x${h}; zoom now ${browsers.observationSurface(platform).zoomFactor}`)
+      }
+      await wait(20000)
+      for (const platform of observing) {
+        const platformReport = report[platform] as Record<string, unknown>
+        try {
+          await prepare(platform)
+          const resync = await assetSync.command({ platform, operation: 'sync' })
+          market.command({ platform, operation: 'start', intervalMs })
+          const grid = browsers.command({ platform, operation: 'state' }).grid
+          platformReport.resizedGrid = grid ? { bounds: grid.bounds, source: grid.source, confidence: grid.confidence } : null
+          platformReport.resizedSyncError = resync.error
+          platformReport.resizedTabs = resync.detection?.slots.map(slot => ({ tab: slot.tabIndex ?? slot.slotId,
+            state: slot.state, asset: slot.assetName, confidence: Number(slot.confidence.toFixed(3)) })) ?? null
+          log(`${platform}: resized grid ${JSON.stringify(platformReport.resizedGrid)}`)
+          log(`${platform}: resized sync error=${resync.error ?? 'none'} tabs=${JSON.stringify(platformReport.resizedTabs)}`)
+        } catch (error) {
+          platformReport.resizeError = error instanceof Error ? error.message : 'resize recovery failed'
+          log(`${platform}: RESIZE FAILED ${String(platformReport.resizeError)}`)
+        }
+      }
+      await wait(Math.max(30000, observeMs / 3))
+    }
+    for (const platform of observing) {
+      const snapshot = market.command({ platform, operation: 'state' })
+      const platformReport = report[platform] as Record<string, unknown> | undefined
+      if (platformReport) platformReport.market = {
+        captureRate: snapshot.captureRate, engineAvailable: snapshot.engineAvailable, dropped: snapshot.dropped,
+        slots: snapshot.slots.map(slot => ({ slotId: slot.slotId, state: slot.state,
+          asset: slot.observation?.assetName ?? null, price: slot.observation?.price ?? null,
+          quality: slot.observation?.dataQuality.state ?? null, source: slot.observation?.sourceType ?? null,
+          secondSamples: slot.secondSamples, s5Samples: slot.s5Samples ?? 0, s5State: slot.s5State ?? null,
+          m1Samples: slot.m1Samples, m1State: slot.m1State, contextId: slot.observation?.contextId ?? null,
+          chartPixelBounds: slot.pixelBounds, diagnostics: slot.diagnostics })) }
+      for (const slot of snapshot.slots)
+        log(`${platform}: slot ${slot.slotId} ${slot.state} ${slot.observation?.assetName ?? '—'} ` +
+          `price=${String(slot.observation?.price ?? '—')} 1s=${slot.secondSamples} S5=${slot.s5Samples ?? 0}/${slot.s5State ?? '—'} ` +
+          `M1=${slot.m1Samples}/${slot.m1State ?? '—'} ${slot.diagnostics?.stage ?? ''} ${slot.diagnostics?.message ?? ''}`)
+      market.command({ platform, operation: 'stop' })
+    }
+  } catch (error) {
+    report.fatal = error instanceof Error ? error.message : String(error)
+    log(`FATAL: ${report.fatal as string}`)
+  } finally {
+    writeFileSync(join(out, 'pipeline.json'), JSON.stringify(report, null, 2))
+    assetSync.stop(); market.stop()
+    for (const window of windows.values()) if (!window.isDestroyed()) window.destroy()
+    app.quit()
+  }
+})

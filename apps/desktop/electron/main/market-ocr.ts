@@ -34,7 +34,7 @@ export function parseOCRFields(text: string, confidence: number, layoutLines: OC
   const timer = unique(s => parseTimer(s) !== null)
   const asset = unique(s => normalizeAsset(s) !== null)
   const assetConfidence = asset && !price && !payout && !timer ? assetLineConfidence(asset, layoutLines) : null
-  return { confidence: assetConfidence ?? confidence, ...(price ? { price } : {}), ...(payout ? { payout } : {}),
+  return { rawText: text, confidence: assetConfidence ?? confidence, ...(price ? { price } : {}), ...(payout ? { payout } : {}),
     ...(timer ? { timer } : {}), ...(asset ? { asset } : {}) }
 }
 export class TesseractOCRProvider implements OCRProvider {

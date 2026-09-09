@@ -25,6 +25,8 @@ class SlotSeriesStatus(Model):
     slotId: int
     contextId: UUID
     secondSamples: int
+    s5Samples: int
+    s5State: Literal["FORMING", "CLOSED"] | None
     m1Samples: int
     m1State: Literal["FORMING", "CLOSED"] | None
 
@@ -102,12 +104,17 @@ class MarketEngine:
             candle = builder.forming.get("M1") or next(
                 (c for c in reversed(builder.candles) if c.timeframe == "M1"), None
             )
+            s5 = builder.forming.get("S5") or next(
+                (c for c in reversed(builder.candles) if c.timeframe == "S5"), None
+            )
             slots.append(
                 SlotSeriesStatus(
                     platform=sample.platform,
                     slotId=sample.slotId,
                     contextId=sample.contextId,
                     secondSamples=len(builder.seconds),
+                    s5Samples=s5.sampleCount if s5 else 0,
+                    s5State=s5.state if s5 else None,
                     m1Samples=candle.sampleCount if candle else 0,
                     m1State=candle.state if candle else None,
                 )

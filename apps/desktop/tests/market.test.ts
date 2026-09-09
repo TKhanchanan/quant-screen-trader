@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { MarketObservationSchema, normalizedToPixel } from '@quant-screen-trader/shared-types'
 import { DOMMarketDataProvider, ReplayMarketDataProvider, SyntheticMarketDataProvider, VisualMarketDataProvider,
-  isolateBrightPriceLabel, normalizeBitmap, observation, parsePayout, parsePrice, parseTimer,
+  PriceStability, isolateBrightPriceLabel, normalizeBitmap, observation, parsePayout, parsePrice, parseTimer,
   type NormalizedImage, type ObservationContext } from '../electron/main/market-providers'
 import { CaptureScheduler } from '../electron/main/market-scheduler'
 
@@ -34,8 +34,12 @@ describe('strict UI parsers', () => {
     for (let y = 21; y < 29; y++) for (let x = 35; x < 38; x++) grayscale[y * 100 + x] = 20
     const result = isolateBrightPriceLabel({ width: 100, height: 50, grayscale })
     expect(result.purpose).toBe('PRICE')
-    expect(result.width).toBeLessThan(75)
-    expect(result.height).toBeLessThan(25)
+    expect(result.pixelBounds).toMatchObject({ x: 20, y: 18 })
+    expect(result.pixelBounds!.width).toBeLessThan(75)
+    expect(result.pixelBounds!.height).toBeLessThan(25)
+    // The raster handed to OCR is upscaled: broker callouts lose their decimal point at native size.
+    expect(result.height).toBeGreaterThanOrEqual(64)
+    expect(result.width / result.height).toBeCloseTo((60 + 4) / (14 + 4), 1)
   })
 })
 describe('provenance and confidence', () => {
@@ -68,6 +72,7 @@ describe('provenance and confidence', () => {
       expect(image.purpose).toBe('PRICE'); return { price: '1.23456', confidence: .94 }
     } })
     confident.start()
+    expect((await confident.observe(context)).dataQuality.state).toBe('UNCERTAIN')
     const value = await confident.observe(context)
     expect(value).toMatchObject({ platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD OTC', price: 1.23456,
       sourceType: 'VISUAL', dataQuality: { state: 'GOOD' } })
@@ -92,4 +97,21 @@ describe('bounded scheduler', () => {
     await scheduler.run('c', true, 250, async () => fixture(), accept, fail, 1000)
     expect(errors).toBe(1); expect(accepted).toBe(1); expect(scheduler.dropped).toBe(2)
   })
+})
+
+it('requires consecutive same-region prices and isolates slot/platform/context changes', () => {
+  const gate = new PriceStability(), box = { x: 100, y: 90, width: 50, height: 15 }
+  expect(gate.accept(context, 1.17342, .95, box, 0)).toBe(false)
+  expect(gate.accept(context, 1.17343, .95, box, 500)).toBe(true)
+  expect(gate.accept({ ...context, slotId: 2 }, 1.17343, .95, box, 1000)).toBe(false)
+  expect(gate.accept({ ...context, platform: 'iqoption' }, 1.17343, .95, box, 1000)).toBe(false)
+  expect(gate.accept(context, 50, .95, { ...box, x: 400 }, 1500)).toBe(false)
+  expect(gate.accept(context, 1.17341, .4, box, 2000)).toBe(false)
+  expect(gate.accept(context, 1.17341, .95, box, 2500)).toBe(false)
+  expect(gate.accept({ ...context, contextId: randomUUID() }, 1.17341, .95, box, 3000)).toBe(false)
+})
+it('rejects ambiguous bright labels and timer-shaped blobs', () => {
+  const grayscale = new Uint8Array(100 * 100).fill(40)
+  for (const top of [10, 60]) for (let y = top; y < top + 15; y++) for (let x = 20; x < 80; x++) grayscale[y * 100 + x] = 230
+  expect(() => isolateBrightPriceLabel({ width: 100, height: 100, grayscale })).toThrow()
 })

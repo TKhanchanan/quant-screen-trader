@@ -1,43 +1,65 @@
 import { describe, expect, it } from 'vitest'
 import { calibrationToChartGrid, defaultCalibration, deriveChartGrid, normalizedToPixel } from '@quant-screen-trader/shared-types'
-import { CapitalBearChartGridResolver, IQOptionChartGridResolver, ManualChartGridResolver } from '../electron/main/chart-grid'
+import { canvasPriceGeometry, detectCanvasGrid, IQOptionChartGridResolver, ManualChartGridResolver } from '../electron/main/chart-grid'
 
+function gridImage(scale = 1) {
+  const width = 1200 * scale, height = 800 * scale, grayscale = new Uint8Array(width * height).fill(28)
+  for (let y = 80 * scale; y < 680 * scale; y++) for (let x = 60 * scale; x < 1140 * scale; x++) {
+    const gutter = (x - 60 * scale) % (360 * scale) < 4 * scale || (y - 80 * scale) % (200 * scale) < 4 * scale
+    grayscale[y * width + x] = gutter ? 16 : (x + y) % (25 * scale) < 2 * scale ? 110 : 48
+  }
+  return { width, height, grayscale }
+}
 describe('chart grid geometry', () => {
-  it.each([new CapitalBearChartGridResolver(), new IQOptionChartGridResolver()])('resolves an inner normalized AUTO grid for $platform', resolver => {
-    const grid = resolver.resolve({ width: 1320, height: 594 })
-    expect(grid.source).toBe('AUTO')
-    expect(grid.bounds).toEqual({ x: .05, y: .12, width: .95, height: .78 })
+  it('requires actual separator and cell evidence, rather than browser dimensions', () => {
+    expect(() => detectCanvasGrid({ width: 1200, height: 800, grayscale: new Uint8Array(1200 * 800) })).toThrow('CANVAS_GEOMETRY_UNCERTAIN')
+    const grid = new IQOptionChartGridResolver().resolve(gridImage())
+    expect(grid.confidence).toBeGreaterThanOrEqual(.95)
+    expect(grid.bounds.x).toBeCloseTo(.05, 2)
+    expect(grid.bounds.y).toBeCloseTo(.1, 2)
+    expect(grid.bounds.width).toBeCloseTo(.9, 2)
+    expect(grid.bounds.height).toBeCloseTo(.75, 2)
     expect(grid.bounds).not.toEqual({ x: 0, y: 0, width: 1, height: 1 })
-    expect(grid.bounds.x).toBeGreaterThan(0)
-    expect(grid.bounds.y).toBeGreaterThan(0)
-    expect(grid.bounds.y + grid.bounds.height).toBeLessThan(1)
-    expect(grid.slots.map(slot => slot.slotId)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(grid.slots.map(s => s.slotId)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
     expect(grid.slots[3]!.chartBounds.x).toBe(grid.slots[0]!.chartBounds.x)
-    expect(grid.slots[3]!.chartBounds.y).toBeGreaterThan(grid.slots[0]!.chartBounds.y)
-    expect(grid.slots[0]!.priceBounds).toMatchObject({ x: .183, y: .1304, width: .13933333333333334 })
-    expect(grid.slots[0]!.priceBounds!.height).toBeCloseTo(.2392)
   })
-  it('scales with current browser dimensions without changing persisted normalized coordinates', () => {
-    const grid = new IQOptionChartGridResolver().resolve({ width: 1000, height: 600 })
-    expect(normalizedToPixel(grid.bounds, 1000, 600)).toEqual({ x: 50, y: 72, width: 950, height: 468 })
-    expect(normalizedToPixel(grid.bounds, 2000, 1200)).toEqual({ x: 100, y: 144, width: 1900, height: 936 })
+  it('finds the grid when a broker panel fills the surface below the charts', () => {
+    // The charts occupy the upper two thirds; an expanded portfolio panel fills the rest. Column
+    // separators do not reach into that panel, so support must be measured over the grid's own band.
+    const width = 1200, height = 1000, grayscale = new Uint8Array(width * height).fill(28)
+    for (let y = 80; y < 680; y++) for (let x = 60; x < 1140; x++) {
+      const gutter = (x - 60) % 360 < 4 || (y - 80) % 200 < 4
+      grayscale[y * width + x] = gutter ? 16 : (x + y) % 25 < 2 ? 110 : 48
+    }
+    const detection = detectCanvasGrid({ width, height, grayscale })
+    expect(detection.bounds.y).toBeCloseTo(.08, 2)
+    expect(detection.bounds.height).toBeCloseTo(.6, 2)
+    expect(detection.confidence).toBeGreaterThanOrEqual(.95)
   })
-  it('derives nine slots from one manual outer rectangle', () => {
-    const bounds = { x: .1, y: .2, width: .81, height: .6 }
-    const grid = new ManualChartGridResolver('capitalbear').resolve(bounds)
-    expect(grid.source).toBe('MANUAL')
-    expect(grid.bounds).toEqual(bounds)
+  it('resolves equivalent normalized grid geometry after resize', () => {
+    const small = detectCanvasGrid(gridImage()), large = detectCanvasGrid(gridImage(2))
+    for (const key of ['x', 'y', 'width', 'height'] as const) expect(small.bounds[key]).toBeCloseTo(large.bounds[key], 2)
+    expect(normalizedToPixel(small.bounds, 2400, 1600).width).toBeCloseTo(small.bounds.width * 2400)
+  })
+  it.each(['capitalbear', 'iqoption'] as const)('excludes each %s order panel and searches only the right-side canvas callout', platform => {
+    const cell = { x: .1, y: .2, width: .3, height: .2 }
+    const { chartBounds, priceBounds } = canvasPriceGeometry(platform, cell, 1500, .7)
+    expect(priceBounds.x).toBeGreaterThan(chartBounds.x + chartBounds.width * .7)
+    expect(priceBounds.x + priceBounds.width).toBeCloseTo(chartBounds.x + chartBounds.width)
+    expect(priceBounds.x + priceBounds.width).toBeLessThan(cell.x + cell.width - .05)
+    expect(priceBounds.y).toBeGreaterThan(cell.y)
+    expect(priceBounds.y + priceBounds.height).toBeLessThan(cell.y + cell.height)
+  })
+  it('derives nine row-major cells from one manual outer rectangle', () => {
+    const grid = new ManualChartGridResolver('capitalbear').resolve({ x: .1, y: .2, width: .81, height: .6 })
     expect(grid.slots).toHaveLength(9)
     expect(grid.slots[8]!.chartBounds).toMatchObject({ x: .64, y: .6, width: .27 })
     expect(grid.slots[8]!.chartBounds.height).toBeCloseTo(.2)
-  })
-  it('retains irregular legacy slot bounds safely while adding separate price regions', () => {
-    const slots = defaultCalibration().map(slot => slot.id === 1 ? { ...slot, bounds: { ...slot.bounds, x: .06 } } : slot)
-    const grid = calibrationToChartGrid('capitalbear', slots, 'LEGACY')
-    expect(grid.slots[0]!.chartBounds).toEqual(slots[0]!.bounds)
-    expect(grid.slots[0]!.priceBounds).toBeDefined()
-  })
-  it('rejects an invalid manual outer rectangle', () => {
     expect(() => deriveChartGrid('iqoption', { x: .5, y: .5, width: .6, height: .2 }, 'MANUAL')).toThrow()
+  })
+  it('keeps unverified defaults at zero confidence and retains manual bounds', () => {
+    expect(deriveChartGrid('iqoption', { x: .1, y: .2, width: .8, height: .6 }, 'MANUAL').confidence).toBe(1)
+    const slots = defaultCalibration()
+    expect(calibrationToChartGrid('capitalbear', slots).slots[0]!.chartBounds).toEqual(slots[0]!.bounds)
   })
 })

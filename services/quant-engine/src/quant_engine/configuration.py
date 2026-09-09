@@ -62,6 +62,7 @@ class CalibrationSlot(Model):
 
 class Calibration(Model):
     platform: Platform
+    geometrySource: Literal["AUTO", "MANUAL"] = "MANUAL"
     name: str = Field(min_length=1, max_length=120)
     referenceBrowserWidth: int = Field(gt=0, le=32768, strict=True)
     referenceBrowserHeight: int = Field(gt=0, le=32768, strict=True)

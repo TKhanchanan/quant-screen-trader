@@ -194,7 +194,7 @@ def test_upgrade_phase_one_preserves_existing_data(tmp_path: Path) -> None:
             "Existing asset",
             "MANUAL",
         )
-        assert db.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 4
+        assert db.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
 
 
 def test_upgrade_migrates_only_the_legacy_full_browser_grid(tmp_path: Path) -> None:
@@ -202,11 +202,16 @@ def test_upgrade_migrates_only_the_legacy_full_browser_grid(tmp_path: Path) -> N
     initialize_database(path)
     with sqlite3.connect(path) as db:
         db.execute("DELETE FROM schema_migrations WHERE version = 4")
-        db.execute(
-            "INSERT INTO calibration_profiles VALUES ('legacy','capitalbear','Legacy',900,600,1,'x','x')"
+        columns = (
+            "id,platform,name,reference_width,reference_height,zoom_factor,created_at,updated_at"
         )
         db.execute(
-            "INSERT INTO calibration_profiles VALUES ('manual','capitalbear','Manual',900,600,1,'x','x')"
+            f"INSERT INTO calibration_profiles({columns})"
+            " VALUES ('legacy','capitalbear','Legacy',900,600,1,'x','x')"
+        )
+        db.execute(
+            f"INSERT INTO calibration_profiles({columns})"
+            " VALUES ('manual','capitalbear','Manual',900,600,1,'x','x')"
         )
         for slot in range(1, 10):
             column, row = (slot - 1) % 3, (slot - 1) // 3

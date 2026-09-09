@@ -23,6 +23,14 @@ export const MarketCommandSchema = z.strictObject({ platform: z.enum(['capitalbe
   operation: z.enum(['start', 'stop', 'state']), intervalMs: z.number().int().min(250).max(10000).optional() })
 export type MarketCommand = z.infer<typeof MarketCommandSchema>
 export const SlotDataSchema = z.strictObject({ slotId: z.number().int().min(1).max(9), state: ObservationStateSchema,
+  diagnostics: z.object({ stage: z.enum(['TAB', 'MAPPING', 'CANVAS BOUNDS', 'PRICE ROI', 'OCR', 'READY']),
+    message: z.string().optional(), canvasSlotId: z.number().int().min(1).max(9).optional(),
+    gridConfidence: unit.optional(), rawPrice: z.string().optional(), parsedPrice: z.number().nullable().optional(),
+    priceConfidence: unit.optional(), contextId: z.string().optional(),
+    pricePixelBounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+    labelPixelBounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional()
+  }).optional(),
+  s5Samples: z.number().int().nonnegative().optional(), s5State: z.enum(['FORMING', 'CLOSED']).nullable().optional(),
   secondSamples: z.number().int().nonnegative(), m1Samples: z.number().int().nonnegative(), m1State: z.enum(['FORMING', 'CLOSED']).nullable(),
   observation: MarketObservationSchema.nullable(), dropped: z.number().int().nonnegative(),
   pixelBounds: z.strictObject({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).nullable() })
@@ -46,4 +54,5 @@ export type Candle = z.infer<typeof CandleSchema>
 export const MarketBatchResultSchema = z.strictObject({ accepted: z.number().int().nonnegative(),
   queueDepth: z.number().int().nonnegative(), rejected: z.number().int().nonnegative(),
   slots: z.array(z.strictObject({ platform: z.enum(['capitalbear', 'iqoption']), slotId: z.number().int().min(1).max(9),
+    s5Samples: z.number().int().nonnegative().optional(), s5State: z.enum(['FORMING', 'CLOSED']).nullable().optional(),
     contextId: z.uuid(), secondSamples: z.number().int().nonnegative(), m1Samples: z.number().int().nonnegative(), m1State: z.enum(['FORMING', 'CLOSED']).nullable() })).max(18) })

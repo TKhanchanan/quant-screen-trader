@@ -13,8 +13,9 @@ export function CalibrationControls({ platform, onClose, onError }: {
   const run = (action: () => Promise<void>): void => { void action().catch(() => onError('Calibration operation failed. Your saved profile is unchanged.')) }
   const begin = async (reset = false): Promise<void> => {
     if (!data) return
+    const browser = await window.quantScreenTrader.platformCommand({ operation: 'state', platform })
     await window.quantScreenTrader.platformCommand({ operation: 'beginCalibration', platform,
-      draft: { assets: data.configuration, slots: reset ? defaultCalibration(platform) : profile?.slots ?? defaultCalibration(platform), zoomFactor: profile?.zoomFactor ?? 1 } })
+      draft: { assets: data.configuration, slots: reset ? defaultCalibration(platform) : profile?.slots ?? defaultCalibration(platform), zoomFactor: browser.zoomFactor } })
   }
   const save = async (update: boolean, renameOnly = false): Promise<void> => {
     const snapshot = await window.quantScreenTrader.platformCommand({ operation: 'state', platform })
@@ -24,7 +25,8 @@ export function CalibrationControls({ platform, onClose, onError }: {
       slots: renameOnly && profile ? profile.slots : snapshot.draft.slots,
       referenceBrowserWidth: renameOnly && profile ? profile.referenceBrowserWidth : snapshot.bounds.width,
       referenceBrowserHeight: renameOnly && profile ? profile.referenceBrowserHeight : snapshot.bounds.height,
-      zoomFactor: snapshot.draft.zoomFactor })
+      geometrySource: renameOnly ? profile?.geometrySource ?? 'MANUAL' : 'MANUAL',
+      zoomFactor: renameOnly && profile ? profile.zoomFactor : snapshot.zoomFactor })
     if (result) { setSelected(result.activeCalibrationId ?? ''); if (!renameOnly) onClose() }
   }
   return <fieldset className="calibration-controls" disabled={busy}>

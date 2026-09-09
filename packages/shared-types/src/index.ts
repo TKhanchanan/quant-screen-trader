@@ -105,6 +105,7 @@ export type ChartGridGeometry = z.infer<typeof ChartGridGeometrySchema>
 const NamedRecord = { id: z.uuid(), platform: PlatformSchema, name: z.string().trim().min(1).max(120),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime() }
 export const CalibrationProfileSchema = z.object({ ...NamedRecord,
+  geometrySource: z.enum(['AUTO', 'MANUAL']).optional(),
   referenceBrowserWidth: z.number().int().positive().max(32768),
   referenceBrowserHeight: z.number().int().positive().max(32768),
   zoomFactor: z.number().min(0.25).max(5), slots: CalibrationSlotsSchema })
@@ -150,7 +151,7 @@ export const CalibrationDraftSchema = z.object({ slots: CalibrationSlotsSchema,
   assets: SlotConfigurationSchema, zoomFactor: z.number().min(0.25).max(5) })
 export type CalibrationDraft = z.infer<typeof CalibrationDraftSchema>
 export const PlatformCommandSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.enum(['state', 'reload', 'endCalibration']), platform: PlatformSchema }),
+  z.object({ operation: z.enum(['state', 'reload', 'endCalibration', 'resolveGrid']), platform: PlatformSchema }),
   z.object({ operation: z.literal('layout'), platform: PlatformSchema,
     bounds: BrowserRectangleSchema, visible: z.boolean() }),
   z.object({ operation: z.enum(['beginCalibration', 'draft']), platform: PlatformSchema,
@@ -159,8 +160,16 @@ export const PlatformCommandSchema = z.discriminatedUnion('operation', [
 export type PlatformCommand = z.infer<typeof PlatformCommandSchema>
 export const BrowserSnapshotSchema = z.object({ session: PlatformSessionStateSchema,
   draft: CalibrationDraftSchema.nullable(), bounds: BrowserRectangleSchema,
+  grid: ChartGridGeometrySchema.nullable().optional(),
   zoomFactor: z.number().min(0.25).max(5) })
 export type BrowserSnapshot = z.infer<typeof BrowserSnapshotSchema>
+
+export function isAutoCalibration(profile: CalibrationProfile): boolean {
+  return profile.geometrySource === 'AUTO' || (!profile.geometrySource && profile.name === 'Auto Chart Grid')
+}
+export function calibrationZoomMatches(profile: Pick<CalibrationProfile, 'zoomFactor'>, browser: Pick<BrowserSnapshot, 'zoomFactor'>): boolean {
+  return Math.abs(profile.zoomFactor - browser.zoomFactor) <= .001
+}
 
 const AUTO_GRID_BOUNDS: NormalizedBounds = { x: .05, y: .12, width: .95, height: .78 }
 export function deriveChartGrid(platform: Platform, bounds: NormalizedBounds, source: ChartGeometrySource = 'AUTO',
@@ -176,7 +185,7 @@ export function deriveChartGrid(platform: Platform, bounds: NormalizedBounds, so
     })
     return { slotId: index + 1, chartBounds,
       assetTitleBounds: region(.02, .02, .5, .18),
-      priceBounds: region(.42, .04, .44, .92),
+      priceBounds: region(.68, .14, .14, .74),
       timerBounds: region(.72, .25, .25, .5),
       payoutBounds: region(.72, .02, .25, .2) }
   })
@@ -206,7 +215,7 @@ export function calibrationToChartGrid(platform: Platform, slots: CalibrationSlo
   }) })
 }
 export function defaultChartGrid(platform: Platform): ChartGridGeometry {
-  return deriveChartGrid(platform, AUTO_GRID_BOUNDS, 'AUTO')
+  return deriveChartGrid(platform, AUTO_GRID_BOUNDS, 'AUTO', 0)
 }
 export function defaultCalibration(platform: Platform = 'capitalbear'): CalibrationSlot[] {
   return defaultChartGrid(platform).slots.map(slot => ({ id: slot.slotId, bounds: slot.chartBounds }))

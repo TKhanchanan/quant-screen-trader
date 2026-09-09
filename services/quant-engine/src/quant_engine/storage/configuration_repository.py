@@ -107,6 +107,7 @@ def _snapshot(db: sqlite3.Connection, platform: Platform, workspace: int) -> dic
                 referenceBrowserWidth=row["reference_width"],
                 referenceBrowserHeight=row["reference_height"],
                 zoomFactor=row["zoom_factor"],
+                geometrySource=row["geometry_source"],
                 createdAt=row["created_at"],
                 updatedAt=row["updated_at"],
             )
@@ -197,7 +198,7 @@ def execute_configuration(path: Path, request: ConfigurationRequest) -> dict[str
                 )
             else:
                 db.execute(
-                    "INSERT INTO calibration_profiles VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO calibration_profiles VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         record_id,
                         request.platform,
@@ -207,6 +208,7 @@ def execute_configuration(path: Path, request: ConfigurationRequest) -> dict[str
                         request.zoomFactor,
                         now,
                         now,
+                        request.geometrySource,
                     ),
                 )
             if isinstance(request, PresetRequest):
@@ -220,11 +222,12 @@ def execute_configuration(path: Path, request: ConfigurationRequest) -> dict[str
                 )
             else:
                 db.execute(
-                    "UPDATE calibration_profiles SET reference_width=?,reference_height=?,zoom_factor=? WHERE id=?",
+                    "UPDATE calibration_profiles SET reference_width=?,reference_height=?,zoom_factor=?,geometry_source=? WHERE id=?",
                     (
                         request.referenceBrowserWidth,
                         request.referenceBrowserHeight,
                         request.zoomFactor,
+                        request.geometrySource,
                         record_id,
                     ),
                 )
