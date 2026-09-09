@@ -14,7 +14,9 @@ class Contents extends EventEmitter {
   reload = vi.fn()
   close = vi.fn(() => { this.destroyed = true })
   isDestroyed = (): boolean => this.destroyed
-  setZoomFactor = vi.fn()
+  zoom = .7
+  getZoomFactor = (): number => this.zoom
+  setZoomFactor = vi.fn((zoom: number) => { this.zoom = zoom })
   setWindowOpenHandler = vi.fn()
   sendInputEvent = vi.fn()
   focus = vi.fn()
@@ -35,7 +37,7 @@ class Popup extends EventEmitter {
   constructor(readonly options: Electron.BrowserWindowConstructorOptions) { super(); popups.push(this) }
 }
 vi.mock('electron', () => ({ WebContentsView: View, BrowserWindow: Popup }))
-const { PlatformBrowserManager, chartSurfaceActivity, findAssetTabs } = await import('../electron/main/platform-browser')
+const { PlatformBrowserManager, chartSurfaceActivity, findAssetTabs, canvasSlotForTab, clippedPrefix } = await import('../electron/main/platform-browser')
 class Window extends EventEmitter {
   contentView = { addChildView: vi.fn(), removeChildView: vi.fn() }
   show = vi.fn()
@@ -162,6 +164,8 @@ describe('embedded browser lifecycle', () => {
     expect(() => manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { ...bounds, height: 900 }, visible: true })).toThrow()
     expect(manager.command({ operation: 'endCalibration', platform: 'capitalbear' }).draft).toBeNull()
     expect(views[1]?.webContents.close).toHaveBeenCalledOnce()
+    expect(manager.command({ operation: 'state', platform: 'capitalbear' }).zoomFactor).toBe(.7)
+    expect(views[0]?.webContents.setZoomFactor).not.toHaveBeenCalledWith(1)
   })
   const bitmap = (value: number, width = 2, height = 1): Electron.NativeImage => {
     const resize = vi.fn((size: Electron.ResizeOptions) => bitmap(value, size.width, size.height))
@@ -214,7 +218,7 @@ describe('embedded browser lifecycle', () => {
     contents.capturePage.mockResolvedValue(tabs('iqoption'))
     const recognize = vi.fn()
     await expect(manager.captureAssetLabel('iqoption', 4, defaultCalibration('iqoption'), recognize))
-      .resolves.toEqual({ confidence: 1, present: false })
+      .resolves.toMatchObject({ confidence: 1, present: false })
     expect(recognize).not.toHaveBeenCalled()
   })
   it('refuses OCR fragments when tabs are too narrow or preprocessing votes tie', async () => {
@@ -222,7 +226,7 @@ describe('embedded browser lifecycle', () => {
     contents.capturePage.mockResolvedValue(tabs('iqoption', 70))
     const recognize = vi.fn()
     await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
-      .resolves.toEqual({ confidence: 0, present: true })
+      .resolves.toMatchObject({ confidence: 0, present: true })
     expect(recognize).not.toHaveBeenCalled()
 
     contents.capturePage.mockResolvedValue(tabs('iqoption'))
@@ -233,9 +237,10 @@ describe('embedded browser lifecycle', () => {
     await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
       .resolves.toMatchObject({ confidence: .94, present: true })
   })
-  it('requires manual portfolio collapse without broker input', async () => {
+  it('captures only against verified geometry, whatever sits below the charts', async () => {
     const { manager, contents } = ready()
     const width = 100, height = 100, pixels = new Uint8Array(width * height * 4)
+    // Painted charts in the upper band, an expanded broker panel (flat) below them.
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       const value = y >= 18 && y < 58 && x >= 6 && x < 98 ? (x + y) % 2 ? 24 : 112 : 32
       const index = (y * width + x) * 4
@@ -245,20 +250,19 @@ describe('embedded browser lifecycle', () => {
       toBitmap: () => pixels } as unknown as Electron.NativeImage)
     await expect(manager.captureSlot({ platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD', contextId: 'test',
       calibrationProfileId: null, bounds: { x: .05, y: .12, width: .3, height: .26 } }))
-      .rejects.toThrow('Chart grid preparation failed: collapse the portfolio panel manually, then retry.')
+      .rejects.toThrow('Capture unavailable: verified chart geometry required')
     expect(contents.sendInputEvent).not.toHaveBeenCalled()
   })
 })
 describe('visible chart surface preparation', () => {
-  const image = (lowerTexture: boolean) => {
+  const image = (painted: boolean) => {
     const width = 100, height = 100, grayscale = new Uint8Array(width * height).fill(32)
-    for (let y = 18; y < 58; y++) for (let x = 6; x < 98; x++) grayscale[y * width + x] = (x + y) % 2 ? 24 : 112
-    if (lowerTexture) for (let y = 68; y < 88; y++) for (let x = 6; x < 98; x++) grayscale[y * width + x] = (x + y) % 2 ? 20 : 100
+    if (painted) for (let y = 18; y < 58; y++) for (let x = 6; x < 98; x++) grayscale[y * width + x] = (x + y) % 2 ? 24 : 112
     return { width, height, grayscale }
   }
-  it('distinguishes an open empty portfolio panel from a collapsed chart grid', () => {
-    expect(chartSurfaceActivity(image(false))).toMatchObject({ portfolioOpen: true })
-    expect(chartSurfaceActivity(image(true))).toMatchObject({ portfolioOpen: false })
+  it('reports readiness from the chart band and ignores whatever fills the rest of the surface', () => {
+    expect(chartSurfaceActivity(image(false)).ready).toBe(false)
+    expect(chartSurfaceActivity(image(true)).ready).toBe(true)
   })
 })
 describe('visual asset tab segmentation', () => {
@@ -278,5 +282,65 @@ describe('IPC sender scope', () => {
     expect(() => requireScope(scope, false)).toThrow()
     expect(() => requireScope(scope, true, 'iqoption')).toThrow()
     expect(requireScope(scope, true, 'capitalbear')).toEqual(scope)
+  })
+})
+
+describe('nine opened tabs at operating zoom', () => {
+  function screenshot(count: number, scale: number, missing = -1) {
+    const width = Math.round(3000 * scale), height = Math.round(1200 * scale), grayscale = new Uint8Array(width * height).fill(32)
+    for (let tab = 0; tab < count; tab++) {
+      const left = Math.round((460 + tab * 210) * scale), right = left + Math.round((188 + tab % 3 * 4) * scale)
+      for (let y = Math.round(16 * scale); y <= Math.round(85 * scale); y++) for (let x = left; x < right; x++)
+        grayscale[y * width + x] = y >= Math.round(83 * scale) && tab !== missing ? 220 : 60
+    }
+    return { width, height, grayscale }
+  }
+  it.each([3, 5, 9])('preserves physical order for %i variable-width tabs across zoom and resize', count => {
+    for (const scale of [.7, 1, 1.25]) for (const platform of ['capitalbear', 'iqoption'] as const) {
+      const image = screenshot(count, scale), first = findAssetTabs(image, platform)
+      expect(first).toHaveLength(count)
+      expect(findAssetTabs(image, platform)).toEqual(first)
+      expect(first.map(t => t.x)).toEqual(first.map(t => t.x).sort((a, b) => a - b))
+    }
+  })
+  it('rejects a missing interior tab instead of shifting subsequent assets', () => {
+    expect(findAssetTabs(screenshot(9, 1, 2), 'iqoption')).toEqual([])
+  })
+  it('reads a tab whose name area is far shorter than the captured surface', async () => {
+    // A 2x capture of a nine-tab bar: tabs are wide enough to read, but far narrower than the
+    // surface is tall. Judging legibility against the surface height rejected all of them.
+    views.length = 0
+    const manager = new PlatformBrowserManager(() => new View() as never)
+    manager.attach('iqoption', new Window() as unknown as BrowserWindow)
+    const contents = views[0]!.webContents
+    contents.url = 'https://iqoption.com/'
+    contents.emit('did-finish-load')
+    manager.command({ operation: 'layout', platform: 'iqoption', bounds: { x: 0, y: 0, width: 1320, height: 860 }, visible: true })
+    const image = screenshot(9, 1)
+    contents.capturePage.mockResolvedValue({ isEmpty: () => false, getSize: () => ({ width: image.width, height: image.height }),
+      toBitmap: () => Uint8Array.from({ length: image.width * image.height * 4 },
+        (_, index) => index % 4 === 3 ? 255 : image.grayscale[Math.floor(index / 4)]!),
+      crop: () => ({ getSize: () => ({ width: 40, height: 12 }), toBitmap: () => new Uint8Array(40 * 12 * 4),
+        resize: () => ({ getSize: () => ({ width: 160, height: 48 }), toBitmap: () => new Uint8Array(160 * 48 * 4) }) })
+    } as unknown as Electron.NativeImage)
+    const recognize = vi.fn(async () => ({ asset: 'EUR/USD OTC', confidence: .97 }))
+    await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
+      .resolves.toMatchObject({ present: true, asset: 'EUR/USD OTC' })
+    expect(recognize).toHaveBeenCalledTimes(4)
+    expect(contents.sendInputEvent).not.toHaveBeenCalled()
+  })
+  it('completes a clipped tab name only from agreeing reads that continue it', () => {
+    expect(clippedPrefix(['Australian D...', 'Australian D...', 'x'])).toBe('Australian D')
+    expect(clippedPrefix(['Australian D…', 'Australian D…'])).toBe('Australian D')
+    expect(clippedPrefix(['Australian D...'])).toBeNull()
+    expect(clippedPrefix(['Australian Dollar Index', 'Australian Dollar Index'])).toBeNull()
+    expect(clippedPrefix(['Pl...', 'Pl...'])).toBeNull()
+    expect(clippedPrefix(undefined)).toBeNull()
+  })
+  it.each(['capitalbear', 'iqoption'] as const)('maps each %s tab onto the canvas cell verified to hold it', platform => {
+    expect(Array.from({ length: 9 }, (_, i) => canvasSlotForTab(platform, i + 1, 9))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(Array.from({ length: 5 }, (_, i) => canvasSlotForTab(platform, i + 1, 5))).toEqual([1, 2, 3, 4, 5])
+    expect(() => canvasSlotForTab(platform, 6, 5)).toThrow('MAPPING')
+    expect(() => canvasSlotForTab(platform, 1, 10)).toThrow('MAPPING')
   })
 })

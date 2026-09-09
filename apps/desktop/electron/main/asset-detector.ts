@@ -9,8 +9,9 @@ export function normalizeAsset(label: string): string | null {
     .replace(/\s+(?:Digital|Binary)$/i, '')
     .replace(/\s*\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)\s*\)?$/i, ' OTC')
     .replace(/\s*\(OTC\)$/i, ' OTC')
+    .replace(/^OpenAl OTC$/, 'OpenAI OTC')
   if (!/^[\p{L}][\p{L}\p{N} /&+()._-]{1,119}$/u.test(value) || /(?:\.{2,}|…|\?)/.test(value) ||
-    /(?:balance|account|deposit|withdraw|password)/i.test(value)) return null
+    /(?:balance|account|deposit|withdraw|password)/i.test(value) || /[()]/.test(value)) return null
   return value
 }
 export function emptyAsset(platform: Platform, slotId: number, state: DetectedAsset['state'] = 'NOT_FOUND'): DetectedAsset {

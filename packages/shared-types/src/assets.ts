@@ -4,7 +4,10 @@ export const DetectedAssetSchema = z.strictObject({ platform: Platform, slotId: 
   state: z.enum(['DETECTED', 'UNCERTAIN', 'NOT_FOUND']), assetName: z.string().min(1).max(120).nullable(),
   displayName: z.string().min(1).max(120).nullable(), canonicalAssetId: z.string().max(160).nullable(),
   source: z.enum(['DOM', 'OCR']), confidence: z.number().min(0).max(1), detectedAt: z.iso.datetime(),
-  evidenceType: z.enum(['CHART_LABEL', 'LABEL_TOOLTIP', 'CALIBRATED_OCR', 'NO_MAPPING'])
+  evidenceType: z.enum(['CHART_LABEL', 'LABEL_TOOLTIP', 'CALIBRATED_OCR', 'NO_MAPPING']),
+  tabIndex: z.number().int().min(1).max(9).optional(),
+  pixelBounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+  rawOCR: z.array(z.string()).optional()
 }).refine(s => s.state !== 'DETECTED' || (s.assetName !== null && s.confidence >= .9), 'Detected assets require reliable identity')
 export type DetectedAsset = z.infer<typeof DetectedAssetSchema>
 export const AssetDetectionResultSchema = z.strictObject({ platform: Platform, slots: z.array(DetectedAssetSchema).length(9),

@@ -1,85 +1,68 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { defaultCalibration, type ConfigurationResult } from '@quant-screen-trader/shared-types'
-import { mapChartLabels } from '../electron/main/asset-detector'
+import { defaultCalibration, type AssetDetectionResult, type ConfigurationResult } from '@quant-screen-trader/shared-types'
+import { emptyAsset } from '../electron/main/asset-detector'
 import type { PlatformBrowserManager } from '../electron/main/platform-browser'
 import { createPlaceholderSlots } from '../src/renderer/src/features/slots/createPlaceholderSlots'
-const { parse } = vi.hoisted(() => ({ parse: vi.fn() }))
-vi.mock('../electron/main/market-ocr', () => ({ TesseractOCRProvider: class { parseText = parse; stop = vi.fn(async () => {}) } }))
+vi.mock('../electron/main/market-ocr', () => ({ TesseractOCRProvider: class { parseText = vi.fn(); stop = vi.fn(async () => {}) } }))
 const { AssetSyncManager } = await import('../electron/main/asset-sync')
 let manager: InstanceType<typeof AssetSyncManager> | undefined
-beforeEach(() => { vi.useFakeTimers(); parse.mockReset(); vi.setSystemTime(new Date('2026-09-08T00:00:00Z')) })
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-08T00:00:00Z')) })
 afterEach(() => { manager?.stop(); vi.useRealTimers() })
-function configuration(inset = true): ConfigurationResult {
+function configuration(): ConfigurationResult {
   const id = randomUUID(), stamp = new Date().toISOString()
   return { configuration: { platform: 'capitalbear', slots: createPlaceholderSlots('capitalbear') }, presets: [], activeCalibrationId: id,
-    calibrations: [{ id, platform: 'capitalbear', name: 'Chart regions', createdAt: stamp, updatedAt: stamp, zoomFactor: 1,
-      referenceBrowserWidth: 900, referenceBrowserHeight: 600,
-      slots: defaultCalibration().map(s => ({ ...s, bounds: inset ? { ...s.bounds, y: .1 + s.bounds.y * .8, height: s.bounds.height * .8 } : s.bounds })) }] }
+    calibrations: [{ id, platform: 'capitalbear', name: 'Chart regions', createdAt: stamp, updatedAt: stamp, zoomFactor: .7,
+      referenceBrowserWidth: 900, referenceBrowserHeight: 600, slots: defaultCalibration() }] }
 }
-it('uses calibrated OCR for all missing labels on explicit sync and preserves low-confidence values', async () => {
-  const capture = vi.fn(async (_platform: string, slotId: number, _slots: unknown,
-    recognize: (image: { width: number; height: number; grayscale: Uint8Array }) => Promise<Record<string, unknown>>) =>
-    ({ ...await recognize({ width: 1, height: 1, grayscale: new Uint8Array([slotId]) }), present: true }))
-  parse.mockImplementation(async (image: { grayscale: Uint8Array }) => ({ asset: `Instrument ${image.grayscale[0]} (OTC)`, confidence: image.grayscale[0] === 2 ? .54 : .98 }))
-  const save = vi.fn(async (_p, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
+function result(count = 9): AssetDetectionResult {
+  return { platform: 'capitalbear', durationMs: 1, overallConfidence: .98,
+    slots: Array.from({ length: 9 }, (_, i) => ({ ...emptyAsset('capitalbear', i + 1), source: 'OCR',
+      confidence: .98, state: i < count ? 'DETECTED' : 'NOT_FOUND', assetName: i < count ? `Asset ${i + 1} OTC` : null })) }
+}
+function setup(capture: () => Promise<AssetDetectionResult>, data = configuration()) {
+  const save = vi.fn(async (_platform, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
   manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
-    detectAssets: async () => mapChartLabels('capitalbear', []), captureAssetLabel: capture } as unknown as PlatformBrowserManager, save)
-  manager.configure(configuration())
-  const result = await manager.command({ platform: 'capitalbear', operation: 'sync' })
-  expect(capture).toHaveBeenCalledTimes(9)
-  expect(result.applied).toBe(8)
-  expect(result.detection?.slots[1]?.state).toBe('UNCERTAIN')
-  expect(result.detection?.slots[0]?.assetName).toBe('Instrument 1 OTC')
+    captureAssetTabs: capture } as unknown as PlatformBrowserManager, save)
+  manager.configure(data)
+  return save
+}
+it('applies one coherent top-tab scan, leaving uncertain identities disabled', async () => {
+  const scan = result(); scan.slots[1] = { ...emptyAsset('capitalbear', 2, 'UNCERTAIN'), source: 'OCR', confidence: .4 }
+  const save = setup(async () => scan)
+  const state = await manager!.command({ platform: 'capitalbear', operation: 'sync' })
+  expect(state.applied).toBe(8)
   expect(save.mock.calls[0]?.[2][1].enabled).toBe(false)
+  expect(save.mock.calls[0]?.[2][0].assetName).toBe('Asset 1 OTC')
 })
-it('does not apply an in-flight result after a profile change', async () => {
-  let finish!: (v: ReturnType<typeof mapChartLabels>) => void
-  const capture = vi.fn()
-  const save = vi.fn()
-  manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
-    detectAssets: () => new Promise(r => { finish = r }), captureAssetLabel: capture } as unknown as PlatformBrowserManager, save)
-  manager.configure(configuration(false))
-  const pending = manager.command({ platform: 'capitalbear', operation: 'sync' })
-  manager.configure(configuration())
-  finish(mapChartLabels('capitalbear', [])); await pending
+it('does not apply in-flight detection after a configuration change', async () => {
+  let finish!: (value: AssetDetectionResult) => void
+  const save = setup(() => new Promise(resolve => { finish = resolve }))
+  const pending = manager!.command({ platform: 'capitalbear', operation: 'sync' })
+  manager!.configure(configuration()); finish(result()); await pending
   expect(save).not.toHaveBeenCalled()
 })
-it('requires three consistent Auto Sync OCR attempts and ignores transient names', async () => {
-  const names = ['EUR/USD OTC', 'GBP/USD OTC', 'EUR/USD OTC', 'EUR/USD OTC', 'EUR/USD OTC']
-  parse.mockImplementation(async () => ({ asset: names.shift() ?? 'EUR/USD OTC', confidence: .98 }))
-  const save = vi.fn(async (_p, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
-  const capture = vi.fn(async (_platform: string, _slotId: number, _slots: unknown,
-    recognize: (image: { width: number; height: number; grayscale: Uint8Array }) => Promise<Record<string, unknown>>) =>
-    ({ ...await recognize({ width: 1, height: 1, grayscale: new Uint8Array([0]) }), present: true }))
-  manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
-    detectAssets: async () => mapChartLabels('capitalbear', []), captureAssetLabel: capture } as unknown as PlatformBrowserManager, save)
-  const data = configuration()
-  data.configuration.slots = data.configuration.slots.map(s => ({ ...s, assetMode: s.id === 1 ? 'AUTO' : 'MANUAL' }))
-  manager.configure(data)
-  await manager.command({ platform: 'capitalbear', operation: 'auto', enabled: true })
-  await vi.advanceTimersByTimeAsync(10000)
+it('does not synchronize on startup; Auto Sync requires repeated stable scans', async () => {
+  const capture = vi.fn(async () => result()), save = setup(capture)
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(capture).not.toHaveBeenCalled()
+  await manager!.command({ platform: 'capitalbear', operation: 'auto', enabled: true })
+  await vi.advanceTimersByTimeAsync(5000)
   expect(save).not.toHaveBeenCalled()
-  await vi.advanceTimersByTimeAsync(4000)
-  expect(save).toHaveBeenCalledTimes(1)
-  expect(save.mock.calls[0]?.[2][0].assetName).toBe('EUR/USD OTC')
-  expect(capture).toHaveBeenCalledTimes(5)
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(save).toHaveBeenCalledOnce()
 })
-it('clears a stale Auto slot only when the visual tab count proves it absent', async () => {
-  const names = ['EUR/USD', 'Gold/Silver', 'S&P500/Gold']
-  const capture = vi.fn(async (_platform: string, slotId: number) => slotId <= names.length
-    ? { asset: names[slotId - 1], confidence: .98, present: true }
-    : { confidence: 1, present: false })
-  const save = vi.fn(async (_p, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
-  manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
-    detectAssets: async () => mapChartLabels('capitalbear', []), captureAssetLabel: capture } as unknown as PlatformBrowserManager, save)
+it('clears absent AUTO slots to empty identities and preserves MANUAL slots', async () => {
   const data = configuration()
-  data.configuration.slots[5] = { ...data.configuration.slots[5]!, enabled: true, assetMode: 'AUTO', assetName: 'AUS 200', displayName: 'AUS 200' }
-  data.configuration.slots[6] = { ...data.configuration.slots[6]!, enabled: true, assetMode: 'MANUAL', assetName: 'Manual asset', displayName: 'Manual asset' }
-  manager.configure(data)
-  const result = await manager.command({ platform: 'capitalbear', operation: 'sync' })
-  expect(result.detection?.slots[5]).toMatchObject({ state: 'NOT_FOUND', confidence: 1 })
-  expect(save.mock.calls[0]?.[2][5]).toMatchObject({ enabled: false, assetMode: 'AUTO', assetName: 'Unassigned' })
-  expect(save.mock.calls[0]?.[2][5].displayName).toBeUndefined()
-  expect(save.mock.calls[0]?.[2][6]).toMatchObject({ enabled: true, assetMode: 'MANUAL', assetName: 'Manual asset' })
+  data.configuration.slots[5] = { ...data.configuration.slots[5]!, enabled: true, assetName: 'Old', assetMode: 'AUTO' }
+  data.configuration.slots[6] = { ...data.configuration.slots[6]!, enabled: true, assetName: 'Manual', assetMode: 'MANUAL' }
+  const save = setup(async () => result(3), data)
+  await manager!.command({ platform: 'capitalbear', operation: 'sync' })
+  expect(save.mock.calls[0]?.[2][5]).toMatchObject({ enabled: false, assetName: '', displayName: undefined })
+  expect(save.mock.calls[0]?.[2][6]).toMatchObject({ enabled: true, assetName: 'Manual' })
+})
+it('reports uncertain geometry and never saves a shifted partial mapping', async () => {
+  const save = setup(async () => { throw new Error('TAB_GEOMETRY_UNCERTAIN: one interior tab is missing') })
+  expect((await manager!.command({ platform: 'capitalbear', operation: 'sync' })).error).toContain('TAB_GEOMETRY_UNCERTAIN')
+  expect(save).not.toHaveBeenCalled()
 })

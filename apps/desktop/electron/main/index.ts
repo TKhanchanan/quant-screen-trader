@@ -16,6 +16,7 @@ import { AssetSyncManager } from './asset-sync'
 import { MarketManager } from './market-manager'
 import { requestConfiguration } from './configuration-client'
 import { requireScope, type RendererScope } from './ipc-scope'
+import { prepareCalibration } from './calibration'
 
 const trustedRenderers = new Map<number, RendererScope>()
 function authorize(event: IpcMainInvokeEvent, platform?: Platform): RendererScope {
@@ -43,7 +44,6 @@ let dashboardWindow: BrowserWindow | null = null
 let engineProcess: EngineProcessManager | null = null
 let market: MarketManager | null = null
 let assetSync: AssetSyncManager | null = null
-let liveSyncScheduled = false
 
 function rendererLocation(): { devServerUrl?: string; file: string } {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
@@ -168,19 +168,34 @@ void app.whenReady().then(() => {
   })
   engineProcess.start()
   market = new MarketManager(browsers, connection)
+  const prepare = async (platform: Platform): Promise<void> => {
+    const result = await prepareCalibration(platform, browsers, request => requestConfiguration(connection, request))
+    market!.configure(result)
+    assetSync!.configure(result)
+  }
   assetSync = new AssetSyncManager(browsers, async (platform, before, slots) => {
     const profile = before.calibrations.find(p => p.id === before.activeCalibrationId)
     return requestConfiguration(connection, { operation: 'syncAssets', platform, slots,
       expectedSlots: before.configuration.slots, expectedCalibrationVersion: profile ? `${profile.id}:${profile.updatedAt}` : null })
   }, result => market!.configure(result))
-  ipcMain.handle(IPC_CHANNELS.assetSync, (event, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.assetSync, async (event, input: unknown) => {
     const command = AssetSyncCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot sync assets')
-    return assetSync!.command(command)
+    // Geometry first: a tab whose name the broker had to clip is completed from the chart cell it
+    // addresses, which only exists once the canvas grid for this browser state has been verified.
+    let geometry: string | null = null
+    if (command.operation === 'sync') {
+      try { await prepare(command.platform) }
+      catch (error) { geometry = error instanceof Error ? error.message : 'Use Calibrate Chart Area.' }
+    }
+    const state = await assetSync!.command(command)
+    if (geometry) state.error = geometry
+    return state
   })
-  ipcMain.handle(IPC_CHANNELS.market, (event, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.market, async (event, input: unknown) => {
     const command = MarketCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot observe')
+    if (command.operation === 'start') await prepare(command.platform)
     return market!.command(command)
   })
 
@@ -189,12 +204,19 @@ void app.whenReady().then(() => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
     workspaceWindows.open(PlatformSchema.parse(input))
   })
-  ipcMain.handle(IPC_CHANNELS.platformCommand, (event, input: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.platformCommand, async (event, input: unknown) => {
     const command = PlatformCommandSchema.parse(input)
     const scope = authorize(event, command.platform)
     if (scope.overlay && command.operation !== 'state' && command.operation !== 'draft')
       throw new Error('Overlay operation not authorized')
-    return browsers.command(command)
+    if (command.operation === 'resolveGrid') return browsers.resolveGrid(command.platform)
+    const previous = browsers.observationSurface(command.platform)
+    const result = browsers.command(command)
+    if (command.operation === 'layout' && previous.gridReady && !browsers.observationSurface(command.platform).gridReady) {
+      try { await prepare(command.platform) }
+      catch { /* Geometry remains blocked; Sync/Start reports the calibration fallback. */ }
+    }
+    return result
   })
   ipcMain.handle(IPC_CHANNELS.configuration, async (event, input: unknown) => {
     const request = ConfigurationRequestSchema.parse(input)
@@ -202,16 +224,10 @@ void app.whenReady().then(() => {
     const result = await requestConfiguration(connection, request)
     market!.configure(result)
     assetSync!.configure(result)
-    if (request.platform === 'iqoption' && !liveSyncScheduled) {
-      liveSyncScheduled = true
-      setTimeout(() => { void assetSync!.command({ platform: 'iqoption', operation: 'sync' })
-        .then(state => console.info('[live-sync]', JSON.stringify(state))) }, 30000)
-    }
     return result
   })
 
   openDashboard()
-  setTimeout(() => workspaceWindows.open('iqoption'), 1500)
   app.on('activate', () => {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) openDashboard()
   })
