@@ -43,6 +43,7 @@ let dashboardWindow: BrowserWindow | null = null
 let engineProcess: EngineProcessManager | null = null
 let market: MarketManager | null = null
 let assetSync: AssetSyncManager | null = null
+let liveSyncScheduled = false
 
 function rendererLocation(): { devServerUrl?: string; file: string } {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
@@ -201,10 +202,16 @@ void app.whenReady().then(() => {
     const result = await requestConfiguration(connection, request)
     market!.configure(result)
     assetSync!.configure(result)
+    if (request.platform === 'iqoption' && !liveSyncScheduled) {
+      liveSyncScheduled = true
+      setTimeout(() => { void assetSync!.command({ platform: 'iqoption', operation: 'sync' })
+        .then(state => console.info('[live-sync]', JSON.stringify(state))) }, 30000)
+    }
     return result
   })
 
   openDashboard()
+  setTimeout(() => workspaceWindows.open('iqoption'), 1500)
   app.on('activate', () => {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) openDashboard()
   })

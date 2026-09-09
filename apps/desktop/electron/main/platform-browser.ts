@@ -2,6 +2,7 @@ import { CapitalBearAssetDetector, IQOptionAssetDetector, normalizeAsset } from 
 import { normalizedToPixel, type AssetDetectionResult, type CalibrationSlot } from '@quant-screen-trader/shared-types'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
 import { WebContentsView, BrowserWindow, type WebContents } from 'electron'
+import { writeFileSync } from 'node:fs'
 import { type BrowserSnapshot, type Platform, type PlatformCommand } from '@quant-screen-trader/shared-types'
 import { allowedLoginNavigation, allowedNavigation, getPlatformConfig, safeOrigin } from '../platforms/config'
 
@@ -31,10 +32,56 @@ export function chartSurfaceActivity(image: NormalizedImage): { middle: number; 
   return { middle, lower, portfolioOpen: middle >= 2.5 && lower < 1.5 }
 }
 
-const ASSET_TAB_LAYOUT = {
-  iqoption: { x: .155, y: .01, width: .525, height: .105 },
-  capitalbear: { x: .238, y: .01, width: .415, height: .105 }
-} satisfies Record<Platform, { x: number; y: number; width: number; height: number }>
+interface PixelBounds { x: number; y: number; width: number; height: number }
+const DEFAULT_PLATFORM_ZOOM_FACTOR = .7
+
+export function findAssetTabs(image: NormalizedImage, platform: Platform): PixelBounds[] {
+  const top = Math.max(1, Math.floor(image.height * .005))
+  const bottom = Math.min(image.height, Math.ceil(image.height * .12))
+  const start = Math.floor(image.width * (platform === 'capitalbear' ? .14 : .1))
+  const end = Math.ceil(image.width * (platform === 'capitalbear' ? .78 : .75))
+  const edges: { x: number; score: number; top: number; bottom: number }[] = []
+  for (let x = start; x < end; x++) {
+    const rows: number[] = []
+    for (let y = top; y < bottom; y++) {
+      for (let offset = -5; offset <= 5; offset++) {
+        const column = x + offset
+        if (column > 0 && column < image.width &&
+          Math.abs(image.grayscale[y * image.width + column]! - image.grayscale[y * image.width + column - 1]!) >= 6) {
+          rows.push(y)
+          break
+        }
+      }
+    }
+    if (rows.length >= image.height * .03) edges.push({ x, score: rows.length, top: rows[0]!, bottom: rows.at(-1)! })
+  }
+  const boundaries: typeof edges = []
+  for (let index = 0; index < edges.length;) {
+    let last = index
+    while (last + 1 < edges.length && edges[last + 1]!.x <= edges[last]!.x + 1) last++
+    boundaries.push(edges.slice(index, last + 1).sort((a, b) => b.score - a.score)[0]!)
+    index = last + 1
+  }
+  const minimumWidth = Math.max(image.width * .035, image.height * .1)
+  const maximumWidth = image.width * .18
+  const candidates = boundaries.flatMap((left, index) => boundaries.slice(index + 1).flatMap(right => {
+      const width = candidate.x - left.x
+      if (width < minimumWidth || width > maximumWidth ||
+        Math.abs(right.top - left.top) > 3 || Math.abs(right.bottom - left.bottom) > 3) return []
+    const y = Math.max(left.top, right.top), height = Math.min(left.bottom, right.bottom) - y + 1
+    return height >= image.height * .03 ? [{ x: left.x, y, width, height }] : []
+  }))
+  const chains = candidates.map((tab, index) => {
+    const previous = candidates.slice(0, index).map((candidate, previousIndex) => ({ candidate, chain: chains[previousIndex]! }))
+      .filter(({ candidate }) => {
+        const gap = tab.x - candidate.x - candidate.width
+        return gap >= 2 && gap <= Math.max(tab.width, candidate.width) * .35 &&
+          Math.abs(tab.width - candidate.width) <= Math.max(tab.width, candidate.width) * .08
+      }).sort((a, b) => b.chain.length - a.chain.length)[0]
+    return [...(previous?.chain ?? []), tab]
+  })
+  return (chains.sort((a, b) => b.length - a.length || a[0]!.x - b[0]!.x)[0] ?? []).slice(0, 9)
+}
 
 export class PlatformBrowserManager {
   private readonly entries = new Map<Platform, Entry>()
@@ -48,11 +95,12 @@ export class PlatformBrowserManager {
       navigateOnDragDrop: false, spellcheck: false } })
     const entry: Entry = { window, view, overlay: null, visible: false, revision: 0, preparedRevision: -1,
       snapshot: { session: { platform, state: 'STARTING', loadState: 'idle', lastUpdatedAt: new Date().toISOString() },
-        bounds: { x: 0, y: 180, width: 1, height: 1 }, zoomFactor: 1, draft: null } }
+        bounds: { x: 0, y: 180, width: 1, height: 1 }, zoomFactor: DEFAULT_PLATFORM_ZOOM_FACTOR, draft: null } }
     this.entries.set(platform, entry)
     window.contentView.addChildView(view)
     view.setVisible(false)
     const contents = view.webContents
+    contents.setZoomFactor(DEFAULT_PLATFORM_ZOOM_FACTOR)
     contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
     contents.session.setPermissionCheckHandler(() => false)
     const preventDownload = (event: Electron.Event): void => event.preventDefault()
@@ -166,7 +214,6 @@ export class PlatformBrowserManager {
   async detectAssets(platform: Platform, calibration?: CalibrationSlot[]): Promise<AssetDetectionResult> {
     const entry = this.entries.get(platform), surface = this.observationSurface(platform)
     if (!entry || !surface.available || surface.paused) throw new Error('Platform unavailable for asset detection')
-    await this.prepareChartGrid(platform)
     const evaluate = (script: string): Promise<unknown> => entry.view.webContents.executeJavaScript(script)
     return (platform === 'capitalbear' ? new CapitalBearAssetDetector(evaluate) : new IQOptionAssetDetector(evaluate)).detectAssets(calibration)
   }
@@ -189,29 +236,59 @@ export class PlatformBrowserManager {
   }
   async captureAssetLabel(platform: Platform, slotId: number, calibration: CalibrationSlot[],
     recognize: (image: NormalizedImage) => Promise<ParsedFields>
-  ): Promise<ParsedFields> {
+  ): Promise<ParsedFields & { present: boolean }> {
     const surface = this.observationSurface(platform), entry = this.entries.get(platform)
     const configuredSlot = calibration.find(slot => slot.id === slotId)
     if (!entry || !surface.available || surface.paused || !configuredSlot || this.assetScans.has(platform))
       throw new Error('Asset label capture unavailable')
-    const layout = ASSET_TAB_LAYOUT[platform]
-    const tabWidth = layout.width / 9
-    const roi = normalizedToPixel({
-      x: layout.x + (slotId - 1) * tabWidth + tabWidth * .2,
-      y: layout.y + layout.height * .12,
-      width: tabWidth * .76,
-      height: layout.height * .5
-    }, surface.bounds.width, surface.bounds.height)
-    const x = Math.max(0, Math.floor(roi.x)), y = Math.max(0, Math.floor(roi.y))
-    const width = Math.max(1, Math.min(surface.bounds.width - x, Math.ceil(roi.width)))
-    const height = Math.max(1, Math.min(surface.bounds.height - y, Math.ceil(roi.height)))
     this.assetScans.add(platform)
     try {
-      const image = await entry.view.webContents.capturePage({ x, y, width, height })
-      if (image.isEmpty()) throw new Error(`Empty asset tab capture for Slot ${slotId}`)
-      const resized = image.resize({ width: width * 4, height: height * 4 })
-      const size = resized.getSize()
-      return recognize({ ...normalizeBitmap(resized.toBitmap(), size.width, size.height, 145, true), purpose: 'ASSET' })
+      const capture = async (): Promise<{ image: Electron.NativeImage; normalized: NormalizedImage; tabs: PixelBounds[] }> => {
+        const image = await entry.view.webContents.capturePage()
+        if (image.isEmpty()) throw new Error(`Empty asset tab capture for Slot ${slotId}`)
+        if (process.env.QST_CAPTURE_DEBUG) writeFileSync(`/private/tmp/qst-${platform}-zoom.png`, image.toPNG())
+        const size = image.getSize()
+        const normalized = normalizeBitmap(image.toBitmap(), size.width, size.height, undefined, false)
+        const tabs = findAssetTabs(normalized, platform)
+        if (process.env.QST_CAPTURE_DEBUG) console.info('[asset-tabs]', platform, size, tabs)
+        return { image, normalized, tabs }
+      }
+      const first = await capture(), second = await capture()
+      const stable = first.tabs.length === second.tabs.length && first.tabs.every((tab, index) => {
+        const next = second.tabs[index]
+        return !!next && Math.abs(tab.x - next.x) <= first.image.getSize().width * .01 &&
+          Math.abs(tab.width - next.width) <= first.image.getSize().width * .01
+      })
+      if (!stable || !second.tabs.length) throw new Error('Asset tab bar was not isolated consistently')
+      const { image, normalized, tabs } = second
+      const tab = tabs[slotId - 1]
+      if (!tab) return { confidence: 1, present: false }
+      let brightEdge = 0
+      for (let row = Math.floor(tab.y + tab.height * .15); row < tab.y + tab.height * .58; row++)
+        for (let column = Math.floor(tab.x + tab.width * .96); column < tab.x + tab.width * .995; column++)
+          if (normalized.grayscale[row * normalized.width + column]! >= 150) brightEdge++
+      if (tab.width < normalized.height * .12) return { confidence: 0, present: true }
+      const x = Math.floor(tab.x + tab.width * .28), y = Math.floor(tab.y + tab.height * .12)
+      const width = Math.max(1, Math.floor(tab.width * .7)), height = Math.max(1, Math.floor(tab.height * .43))
+      const resized = image.crop({ x, y, width, height }).resize({ width: width * 4, height: height * 4 })
+      const croppedSize = resized.getSize()
+      const bitmap = resized.toBitmap(), variants: ParsedFields[] = []
+      for (const threshold of [undefined, 125, 145, 165]) variants.push(await recognize({
+        ...normalizeBitmap(bitmap, croppedSize.width, croppedSize.height, threshold, true), purpose: 'ASSET' }))
+      const groups = new Map<string, ParsedFields[]>()
+      for (const result of variants) {
+        const asset = result.asset ? normalizeAsset(result.asset) : null
+        if (asset) groups.set(asset, [...(groups.get(asset) ?? []), result])
+      }
+      const matches = [...groups.values()].sort((a, b) => b.length - a.length ||
+        Math.max(...b.map(v => v.confidence)) - Math.max(...a.map(v => v.confidence)))
+      const agreed = matches[0]?.length && matches[0].length >= 2 && matches[0].length > (matches[1]?.length ?? 0)
+        ? matches[0] : null
+      const result = agreed
+        ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.max(.95, ...agreed.map(v => v.confidence)) }
+        : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.min(.94, variants[0]!.confidence) }
+      const truncatedOtc = /\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)/i.test(result.asset ?? '')
+      return { ...result, confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
     } finally { this.assetScans.delete(platform) }
   }
   async readSlotDOM(context: ObservationContext): Promise<ParsedFields> {

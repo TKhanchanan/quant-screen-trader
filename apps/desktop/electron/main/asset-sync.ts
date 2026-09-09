@@ -10,14 +10,17 @@ export class AssetStability {
     return slots.map(slot => {
       const detected = result.slots.find(d => d.slotId === slot.id)
       if (checked && !checked.has(slot.id) && this.pending.get(slot.id)?.source === 'OCR' && slot.assetMode !== 'MANUAL') return slot
-      if (slot.assetMode === 'MANUAL' || !detected || detected.state !== 'DETECTED' || !detected.assetName || detected.confidence < .9) {
+      if (slot.assetMode === 'MANUAL' || !detected || detected.state === 'UNCERTAIN' || detected.confidence < .9 ||
+        (detected.state === 'DETECTED' && !detected.assetName)) {
         this.pending.delete(slot.id); return slot
       }
+      const name = detected.state === 'NOT_FOUND' ? '' : detected.assetName!
       const previous = this.pending.get(slot.id)
-      const count = previous?.name === detected.assetName && previous.source === detected.source ? previous.count + 1 : 1
-      this.pending.set(slot.id, { name: detected.assetName, count, source: detected.source })
+      const count = previous?.name === name && previous.source === detected.source ? previous.count + 1 : 1
+      this.pending.set(slot.id, { name, count, source: detected.source })
       if (count < required) return slot
-      return { ...slot, assetMode: 'AUTO', assetName: detected.assetName, displayName: detected.displayName ?? detected.assetName, enabled: true }
+      if (!name) return { ...slot, assetMode: 'AUTO', assetName: 'Unassigned', displayName: undefined, enabled: false }
+      return { ...slot, assetMode: 'AUTO', assetName: name, displayName: detected.displayName ?? name, enabled: true }
     })
   }
 }
@@ -86,6 +89,11 @@ export class AssetSyncManager {
             try {
               const text = await this.browsers.captureAssetLabel(platform, fallback.slotId, profile.slots,
                 image => this.ocr.parseText(image))
+              if (!text.present) {
+                Object.assign(fallback, { source: 'OCR', state: 'NOT_FOUND', confidence: 1,
+                  evidenceType: 'NO_MAPPING', assetName: null, displayName: null, canonicalAssetId: null })
+                continue
+              }
               const name = text.asset ? normalizeAsset(text.asset) : null
               Object.assign(fallback, { source: 'OCR', evidenceType: 'CALIBRATED_OCR', confidence: text.confidence,
                 detectedAt: new Date().toISOString(), state: name && text.confidence >= .95 ? 'DETECTED' : 'UNCERTAIN',

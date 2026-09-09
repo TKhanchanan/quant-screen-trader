@@ -19,8 +19,8 @@ function configuration(inset = true): ConfigurationResult {
 }
 it('uses calibrated OCR for all missing labels on explicit sync and preserves low-confidence values', async () => {
   const capture = vi.fn(async (_platform: string, slotId: number, _slots: unknown,
-    recognize: (image: { width: number; height: number; grayscale: Uint8Array }) => Promise<unknown>) =>
-    recognize({ width: 1, height: 1, grayscale: new Uint8Array([slotId]) }))
+    recognize: (image: { width: number; height: number; grayscale: Uint8Array }) => Promise<Record<string, unknown>>) =>
+    ({ ...await recognize({ width: 1, height: 1, grayscale: new Uint8Array([slotId]) }), present: true }))
   parse.mockImplementation(async (image: { grayscale: Uint8Array }) => ({ asset: `Instrument ${image.grayscale[0]} (OTC)`, confidence: image.grayscale[0] === 2 ? .54 : .98 }))
   const save = vi.fn(async (_p, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
   manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
@@ -50,8 +50,8 @@ it('requires three consistent Auto Sync OCR attempts and ignores transient names
   parse.mockImplementation(async () => ({ asset: names.shift() ?? 'EUR/USD OTC', confidence: .98 }))
   const save = vi.fn(async (_p, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
   const capture = vi.fn(async (_platform: string, _slotId: number, _slots: unknown,
-    recognize: (image: { width: number; height: number; grayscale: Uint8Array }) => Promise<unknown>) =>
-    recognize({ width: 1, height: 1, grayscale: new Uint8Array([0]) }))
+    recognize: (image: { width: number; height: number; grayscale: Uint8Array }) => Promise<Record<string, unknown>>) =>
+    ({ ...await recognize({ width: 1, height: 1, grayscale: new Uint8Array([0]) }), present: true }))
   manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
     detectAssets: async () => mapChartLabels('capitalbear', []), captureAssetLabel: capture } as unknown as PlatformBrowserManager, save)
   const data = configuration()
@@ -64,4 +64,22 @@ it('requires three consistent Auto Sync OCR attempts and ignores transient names
   expect(save).toHaveBeenCalledTimes(1)
   expect(save.mock.calls[0]?.[2][0].assetName).toBe('EUR/USD OTC')
   expect(capture).toHaveBeenCalledTimes(5)
+})
+it('clears a stale Auto slot only when the visual tab count proves it absent', async () => {
+  const names = ['EUR/USD', 'Gold/Silver', 'S&P500/Gold']
+  const capture = vi.fn(async (_platform: string, slotId: number) => slotId <= names.length
+    ? { asset: names[slotId - 1], confidence: .98, present: true }
+    : { confidence: 1, present: false })
+  const save = vi.fn(async (_p, before, slots) => ({ ...before, configuration: { ...before.configuration, slots } }))
+  manager = new AssetSyncManager({ observationSurface: () => ({ available: true, paused: false, bounds: { width: 900, height: 600 } }),
+    detectAssets: async () => mapChartLabels('capitalbear', []), captureAssetLabel: capture } as unknown as PlatformBrowserManager, save)
+  const data = configuration()
+  data.configuration.slots[5] = { ...data.configuration.slots[5]!, enabled: true, assetMode: 'AUTO', assetName: 'AUS 200', displayName: 'AUS 200' }
+  data.configuration.slots[6] = { ...data.configuration.slots[6]!, enabled: true, assetMode: 'MANUAL', assetName: 'Manual asset', displayName: 'Manual asset' }
+  manager.configure(data)
+  const result = await manager.command({ platform: 'capitalbear', operation: 'sync' })
+  expect(result.detection?.slots[5]).toMatchObject({ state: 'NOT_FOUND', confidence: 1 })
+  expect(save.mock.calls[0]?.[2][5]).toMatchObject({ enabled: false, assetMode: 'AUTO', assetName: 'Unassigned' })
+  expect(save.mock.calls[0]?.[2][5].displayName).toBeUndefined()
+  expect(save.mock.calls[0]?.[2][6]).toMatchObject({ enabled: true, assetMode: 'MANUAL', assetName: 'Manual asset' })
 })

@@ -35,7 +35,7 @@ class Popup extends EventEmitter {
   constructor(readonly options: Electron.BrowserWindowConstructorOptions) { super(); popups.push(this) }
 }
 vi.mock('electron', () => ({ WebContentsView: View, BrowserWindow: Popup }))
-const { PlatformBrowserManager, chartSurfaceActivity } = await import('../electron/main/platform-browser')
+const { PlatformBrowserManager, chartSurfaceActivity, findAssetTabs } = await import('../electron/main/platform-browser')
 class Window extends EventEmitter {
   contentView = { addChildView: vi.fn(), removeChildView: vi.fn() }
   show = vi.fn()
@@ -52,6 +52,7 @@ describe('embedded browser lifecycle', () => {
     manager.attach(platform, owner as unknown as BrowserWindow)
     manager.attach(sibling, other as unknown as BrowserWindow)
     const contents = views[0]!.webContents
+    expect(contents.setZoomFactor).toHaveBeenCalledWith(.7)
     const open = contents.setWindowOpenHandler.mock.calls[0]![0] as
       (details: { url: string }) => Electron.WindowOpenHandlerResponse
     const callback = `https://${platform}.com/oauth/callback`
@@ -164,7 +165,8 @@ describe('embedded browser lifecycle', () => {
   })
   const bitmap = (value: number, width = 2, height = 1): Electron.NativeImage => {
     const resize = vi.fn((size: Electron.ResizeOptions) => bitmap(value, size.width, size.height))
-    return { isEmpty: () => false, resize, getSize: () => ({ width, height }),
+    const crop = vi.fn((bounds: Electron.Rectangle) => bitmap(value, bounds.width, bounds.height))
+    return { isEmpty: () => false, resize, crop, getSize: () => ({ width, height }),
       toBitmap: () => new Uint8Array(width * height * 4).map((_, index) => index % 4 === 3 ? 255 : value) } as unknown as Electron.NativeImage
   }
   const ready = (platform: 'capitalbear' | 'iqoption' = 'capitalbear'):
@@ -178,18 +180,58 @@ describe('embedded browser lifecycle', () => {
     manager.command({ operation: 'layout', platform, bounds: { x: 0, y: 200, width: 900, height: 600 }, visible: true })
     return { manager, contents }
   }
-  it.each([
-    ['capitalbear', { x: 264, y: 13, width: 32, height: 32 }, { width: 128, height: 128 }],
-    ['iqoption', { x: 202, y: 13, width: 40, height: 32 }, { width: 160, height: 128 }]
-  ] as const)('captures the %s asset tab without broker input', async (platform, bounds, size) => {
+  const tabs = (platform: 'capitalbear' | 'iqoption', tabWidth = 120): Electron.NativeImage => {
+    const width = 900, height = 600, pixels = new Uint8Array(width * height * 4)
+    for (let index = 0; index < pixels.length; index += 4) {
+      pixels[index] = 32; pixels[index + 1] = 32; pixels[index + 2] = 32; pixels[index + 3] = 255
+    }
+    const left = platform === 'capitalbear' ? 220 : 160
+    for (let y = 12; y < 63; y++) for (const x of [left, left + tabWidth, left + tabWidth + 20,
+      left + tabWidth * 2 + 20, left + tabWidth * 2 + 40, left + tabWidth * 3 + 40]) {
+      const column = x + Math.floor((y - 12) / 20)
+      const index = (y * width + column) * 4
+      pixels[index] = 96; pixels[index + 1] = 96; pixels[index + 2] = 96
+    }
+    const image = bitmap(200, width, height) as unknown as { toBitmap: () => Uint8Array }
+    image.toBitmap = () => pixels
+    return image as unknown as Electron.NativeImage
+  }
+  it.each(['capitalbear', 'iqoption'] as const)('captures the %s asset tab without broker input', async (platform) => {
     const { manager, contents } = ready(platform)
-    contents.capturePage.mockResolvedValue(bitmap(200))
+    const image = tabs(platform)
+    contents.capturePage.mockResolvedValue(image)
     const recognize = vi.fn(async () => ({ asset: 'EUR/USD (OTC)', confidence: .98 }))
     await expect(manager.captureAssetLabel(platform, 2, defaultCalibration(platform), recognize))
-      .resolves.toMatchObject({ asset: 'EUR/USD (OTC)' })
-    expect(contents.capturePage).toHaveBeenCalledWith(bounds)
-    expect(recognize).toHaveBeenCalledWith(expect.objectContaining({ ...size, purpose: 'ASSET' }))
+      .resolves.toMatchObject({ asset: 'EUR/USD (OTC)', present: true })
+    expect(contents.capturePage).toHaveBeenCalledWith()
+    expect(image.crop).toHaveBeenCalledWith(expect.objectContaining({ width: 84, height: 21 }))
+    expect(recognize).toHaveBeenCalledWith(expect.objectContaining({ width: 336, height: 84, purpose: 'ASSET' }))
+    expect(recognize).toHaveBeenCalledTimes(4)
     expect(contents.sendInputEvent).not.toHaveBeenCalled()
+  })
+  it('maps the current tab count and reports slots beyond it as absent', async () => {
+    const { manager, contents } = ready('iqoption')
+    contents.capturePage.mockResolvedValue(tabs('iqoption'))
+    const recognize = vi.fn()
+    await expect(manager.captureAssetLabel('iqoption', 4, defaultCalibration('iqoption'), recognize))
+      .resolves.toEqual({ confidence: 1, present: false })
+    expect(recognize).not.toHaveBeenCalled()
+  })
+  it('refuses OCR fragments when tabs are too narrow or preprocessing votes tie', async () => {
+    const { manager, contents } = ready('iqoption')
+    contents.capturePage.mockResolvedValue(tabs('iqoption', 70))
+    const recognize = vi.fn()
+    await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
+      .resolves.toEqual({ confidence: 0, present: true })
+    expect(recognize).not.toHaveBeenCalled()
+
+    contents.capturePage.mockResolvedValue(tabs('iqoption'))
+    recognize.mockResolvedValueOnce({ asset: 'EUR/USD', confidence: .99 })
+      .mockResolvedValueOnce({ asset: 'EUR/USD', confidence: .99 })
+      .mockResolvedValueOnce({ asset: 'GBP/USD', confidence: .99 })
+      .mockResolvedValueOnce({ asset: 'GBP/USD', confidence: .99 })
+    await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
+      .resolves.toMatchObject({ confidence: .94, present: true })
   })
   it('requires manual portfolio collapse without broker input', async () => {
     const { manager, contents } = ready()
@@ -217,6 +259,16 @@ describe('visible chart surface preparation', () => {
   it('distinguishes an open empty portfolio panel from a collapsed chart grid', () => {
     expect(chartSurfaceActivity(image(false))).toMatchObject({ portfolioOpen: true })
     expect(chartSurfaceActivity(image(true))).toMatchObject({ portfolioOpen: false })
+  })
+})
+describe('visual asset tab segmentation', () => {
+  it('finds skewed variable-count tabs and ignores square controls', () => {
+    const width = 900, height = 600, grayscale = new Uint8Array(width * height).fill(32)
+    for (let y = 12; y < 63; y++) for (const x of [100, 150, 180, 300, 320, 440, 460, 580, 605, 655])
+      grayscale[y * width + x + Math.floor((y - 12) / 20)] = 96
+    const result = findAssetTabs({ width, height, grayscale }, 'iqoption')
+    expect(result).toHaveLength(3)
+    expect(result.map(tab => tab.width)).toEqual([120, 120, 120])
   })
 })
 describe('IPC sender scope', () => {
