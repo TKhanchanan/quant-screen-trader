@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { defaultCalibration, type AssetSyncState, type FeatureState, type MarketSnapshot, type Platform } from '@quant-screen-trader/shared-types'
+import { defaultCalibration, percent, voteLabel, type AssetSyncState, type FeatureState, type MarketSnapshot, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
 import { PLATFORM_DETAILS } from '../platforms'
 import { useAppStore } from '../state/appStore'
 import { EngineStatus } from './EngineStatus'
@@ -22,6 +22,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
   const syncRevision = useRef(-1)
   const [developer, setDeveloper] = useState(false)
   const [features, setFeatures] = useState<FeatureState | null>(null)
+  const [strategy, setStrategy] = useState<StrategyState | null>(null)
   const [actionError, setActionError] = useState('')
   const region = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -40,14 +41,19 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
     }).catch(() => {}) }
     const featurePoll = (): void => { void window.quantScreenTrader.features(platform)
       .then(s => { if (!disposed) setFeatures(s) }).catch(() => {}) }
+    const strategyPoll = (): void => { void window.quantScreenTrader.strategy(platform)
+      .then(s => { if (!disposed) setStrategy(s) }).catch(() => {}) }
     featurePoll()
+    strategyPoll()
     const featureTimer = window.setInterval(featurePoll, 2000)
+    const strategyTimer = window.setInterval(strategyPoll, 2000)
     const syncTimer = window.setInterval(syncPoll, 1000)
     const dataTimer = window.setInterval(dataPoll, 500)
     poll()
     const timer = window.setInterval(poll, 1000)
     return () => { disposed = true; window.clearInterval(timer); window.clearInterval(dataTimer)
-      window.clearInterval(syncTimer); window.clearInterval(featureTimer) }
+      window.clearInterval(syncTimer); window.clearInterval(featureTimer)
+      window.clearInterval(strategyTimer) }
   }, [platform, execute, setSession])
   useEffect(() => {
     const element = region.current
@@ -127,12 +133,18 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
         const slot = data?.configuration.slots.find((s) => s.id === i + 1)
         const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)
         const observed = market?.slots.find(s => s.slotId === i + 1)
+        const opinion = strategy?.slots.find(s => s.slotId === i + 1)
         return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected?.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : ''} {detected ? `${detected.source} ${Math.round(detected.confidence * 100)}%` : ''}<br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br />Price {observed?.state === 'READY' ? observed.observation?.price : '—'} · {observed?.observation?.dataQuality.state ?? '—'}
           {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
           <small><br />1s {observed?.secondSamples ?? 0} {platform === 'capitalbear' ? ` · S5 ${observed?.s5Samples ?? 0} ${observed?.s5State ?? 'collecting'}` : ''} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
           {developer && <small><br />Quant: {(features?.slots.find(f => f.slotId === i + 1)?.timeframes ?? [])
             .map(t => `${t.timeframe} ${t.status ?? 'NONE'} ${t.barCount}`).join(' · ') || 'no feature state'}
             {features?.available === false ? ' (engine unreachable)' : ''} · v{features?.featureVersion ?? '—'}
+            <br />Regime: {opinion ? `${opinion.primaryRegime} ${percent(opinion.regimeConfidence)}` : '—'}
+            {' · '}Ensemble: {opinion ? `${opinion.direction} ${percent(opinion.confidence)}` : '—'}
+            {opinion?.vetoes.length ? ` · veto ${opinion.vetoes.join(', ')}` : ''}
+            {strategy?.available === false ? ' (engine unreachable)' : ''} · v{strategy?.strategyVersion ?? '—'}
+            <br />Votes: {(opinion?.votes ?? []).map(voteLabel).join(' · ') || 'none'}
             <br />Stage: {observed?.diagnostics?.stage ?? 'TAB'} · Canvas cell {observed?.diagnostics?.canvasSlotId ?? '—'}
             <br />{observed?.diagnostics?.message}
             <br />Tab {detected?.tabIndex ?? i + 1}: {JSON.stringify(detected?.pixelBounds)}

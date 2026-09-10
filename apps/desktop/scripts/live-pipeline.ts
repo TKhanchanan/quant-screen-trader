@@ -30,6 +30,14 @@ mkdirSync(out, { recursive: true })
 
 const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 const log = (message: string): void => console.log(`[live] ${message}`)
+
+/** Read a local engine endpoint. Read-only, and a failure is reported rather than invented. */
+async function readEngine(base: string, path: string): Promise<Record<string, unknown> | null> {
+  try {
+    const response = await fetch(new URL(path, base), { signal: AbortSignal.timeout(4000), redirect: 'error' })
+    return response.ok ? (await response.json() as Record<string, unknown>) : null
+  } catch { return null }
+}
 const browsers = new PlatformBrowserManager(() => new WebContentsView())
 const report: Record<string, unknown> = {}
 
@@ -132,6 +140,23 @@ void app.whenReady().then(async () => {
       }
       await wait(Math.max(30000, observeMs / 3))
     }
+    // Phase 6 and Phase 7 acceptance. Every closed PRIMARY feature snapshot — S5 on
+    // CapitalBear, M1 on IQ Option — must have produced exactly one regime, one evaluation
+    // per strategy and one ensemble. WARMING and SKIP are acceptable outcomes; a missing
+    // ensemble is not, and nothing here fabricates a direction to make the run look better.
+    const features = await readEngine(connection.healthUrl, '/api/features/state')
+    const strategy = await readEngine(connection.healthUrl, '/api/strategy/state')
+    report.featureState = features
+    report.strategyState = strategy
+    log(`engine: features ${features ? 'reachable' : 'UNREACHABLE'} · strategy ${strategy ? 'reachable' : 'UNREACHABLE'}`)
+    if (strategy) log(`engine: ${String(strategy.featureVersion)} / ${String(strategy.regimeVersion)} / ${String(strategy.strategyVersion)} · evaluated ${String(strategy.evaluated)} · duplicates ${String(strategy.duplicates)}`)
+    for (const row of (strategy?.slots as Record<string, unknown>[] | undefined) ?? []) {
+      const votes = (row.votes as Record<string, unknown>[]).map(v => `${String(v.strategyId).replace('_v1', '')}:${String(v.direction)}`).join(' ')
+      log(`${String(row.platform)}: slot ${String(row.slotId)} ${String(row.assetName)} · regime ${String(row.primaryRegime)} ` +
+        `${Math.round(Number(row.regimeConfidence) * 100)}% · ensemble ${String(row.direction)} ${Math.round(Number(row.confidence) * 100)}% ` +
+        `· eligible ${String(row.eligibleStrategies)}/${String(row.evaluations)} · votes ${votes} · vetoes ${(row.vetoes as string[]).join(',') || 'none'}`)
+    }
+
     for (const platform of observing) {
       const snapshot = market.command({ platform, operation: 'state' })
       const platformReport = report[platform] as Record<string, unknown> | undefined

@@ -1,6 +1,6 @@
 # Quant feature engine
 
-Phase 6 turns the canonical Phase 5 series into quantitative facts. It classifies nothing: there is no direction, no signal, no score and no ranking anywhere in this layer. Regime detection and strategy belong to Phase 7 and consume the snapshots described here.
+Phase 6 turns the canonical Phase 5 series into quantitative facts. It classifies nothing: there is no direction, no signal, no score and no ranking anywhere in this layer. Regime detection and strategy belong to Phase 7 and consume the snapshots described here; see [Strategy engine](strategy-engine.md).
 
 ## Architecture
 

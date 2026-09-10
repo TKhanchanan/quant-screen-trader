@@ -3,7 +3,7 @@ import {
   IPC_CHANNELS, AssetSyncCommandSchema, AssetSyncStateSchema, MarketCommandSchema, MarketSnapshotSchema,
   PlatformSchema,
   PlatformCommandSchema, BrowserSnapshotSchema, ConfigurationRequestSchema, ConfigurationResultSchema,
-  FeatureStateSchema,
+  FeatureStateSchema, StrategyStateSchema,
   type DesktopBridge,
   type EngineHealthSnapshot,
   type Platform
@@ -18,6 +18,8 @@ const bridge: DesktopBridge = {
     IPC_CHANNELS.configuration, ConfigurationRequestSchema.parse(request))),
   features: async (platform) => FeatureStateSchema.parse(
     await ipcRenderer.invoke(IPC_CHANNELS.features, PlatformSchema.parse(platform))),
+  strategy: async (platform) => StrategyStateSchema.parse(
+    await ipcRenderer.invoke(IPC_CHANNELS.strategy, PlatformSchema.parse(platform))),
   getEngineHealth: () =>
     ipcRenderer.invoke(IPC_CHANNELS.getEngineHealth) as Promise<EngineHealthSnapshot>,
   openWorkspace: async (platform: Platform) => {

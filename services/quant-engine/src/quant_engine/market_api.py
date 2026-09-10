@@ -10,9 +10,12 @@ from pydantic import Field, model_validator
 
 from quant_engine.configuration import Model, Platform
 from quant_engine.features import FeatureEngine
+from quant_engine.features.engine import PRIMARY_TIMEFRAME
+from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_builder import TimeSeriesBuilder
 from quant_engine.market_models import Candle, MarketObservation, Timeframe
 from quant_engine.market_storage import ParquetStorage
+from quant_engine.strategy import StrategyEngine
 
 router = APIRouter()
 
@@ -62,6 +65,7 @@ class MarketEngine:
         self.storage = storage
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
         self.features = FeatureEngine(hydrator=self._history)
+        self.strategy = StrategyEngine()
         self.busy = False
         self.rejected = 0
         self.storage_error = False
@@ -106,14 +110,40 @@ class MarketEngine:
                 snapshot = self.features.ingest_candle(record)
                 if snapshot is not None:
                     self.storage.append("features", snapshot)
+                    self.evaluate_primary_close(snapshot)
             else:
                 self.storage.append("seconds", record)
                 self.features.ingest_second(record)
             builder.emitted.popleft()
 
+    def evaluate_primary_close(self, snapshot: FeatureSnapshot) -> None:
+        """Run and store the whole Phase 7 chain for one closed PRIMARY snapshot.
+
+        Phase 7 is triggered by a closed primary bar and never by a UI poll.
+
+        CapitalBear decides on S5 and IQ Option on M1, so a closed M5 or M10 updates the
+        context a later primary close will read as-of and produces no ensemble of its own.
+        The bundle is the one the feature engine has already joined, so nothing here can see
+        a timeframe that had not finished at the primary's close time.
+        """
+        if snapshot.timeframe != PRIMARY_TIMEFRAME[snapshot.platform]:
+            return
+        bundle = self.features.latest_bundle(snapshot.platform, snapshot.slotId)
+        if bundle is None:
+            return
+        before = self.strategy.evaluated
+        ensemble = self.strategy.evaluate(bundle)
+        if self.strategy.evaluated == before:
+            return  # already evaluated at this as-of time; one primary close, one ensemble
+        self.storage.append("regimes", ensemble.regime)
+        for evaluation in ensemble.strategies:
+            self.storage.append("strategy_evaluations", evaluation)
+        self.storage.append("ensembles", ensemble)
+
     def reset_slots(self, platform: Platform, slot_ids: list[int]) -> int:
         """Drop live series and every derived feature when a configured identity changes."""
         self.features.reset_slot(platform, slot_ids)
+        self.strategy.reset_slot(platform, slot_ids)
         return sum(self.builders.pop((platform, slot_id), None) is not None for slot_id in slot_ids)
 
     def status(self) -> list[SlotSeriesStatus]:

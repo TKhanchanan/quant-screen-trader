@@ -22,6 +22,7 @@ from quant_engine.market_api import router as market_router
 from quant_engine.market_storage import ParquetStorage
 from quant_engine.paths import AppPaths, ensure_app_paths
 from quant_engine.storage.database import database_is_healthy, initialize_database
+from quant_engine.strategy_api import router as strategy_router
 
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1.0
 
@@ -112,6 +113,7 @@ def create_app(
     application.include_router(configuration_router)
     application.include_router(market_router)
     application.include_router(feature_router)
+    application.include_router(strategy_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

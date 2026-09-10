@@ -5,6 +5,7 @@ import {
   IPC_CHANNELS, MarketCommandSchema, AssetSyncCommandSchema,
   PlatformSchema,
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureEngineStateSchema,
+  StrategyEngineStateSchema,
   type Platform
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
@@ -212,6 +213,23 @@ void app.whenReady().then(() => {
         slots: value.slots.filter(s => s.platform === platform) }
     } catch {
       return { featureVersion: 'unknown', available: false, slots: [] }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.strategy, async (event, input: unknown) => {
+    // Read-only Phase 7 diagnostics. The desktop renders opinions; it never places anything.
+    const platform = PlatformSchema.parse(input)
+    authorize(event, platform)
+    try {
+      const response = await fetch(new URL('/api/strategy/state', connection.healthUrl),
+        { signal: AbortSignal.timeout(2000), redirect: 'error' })
+      if (!response.ok) throw new Error('Strategy state unavailable')
+      const value = StrategyEngineStateSchema.parse(await response.json())
+      return { featureVersion: value.featureVersion, regimeVersion: value.regimeVersion,
+        strategyVersion: value.strategyVersion, available: true,
+        slots: value.slots.filter(s => s.platform === platform) }
+    } catch {
+      return { featureVersion: 'unknown', regimeVersion: 'unknown', strategyVersion: 'unknown',
+        available: false, slots: [] }
     }
   })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })

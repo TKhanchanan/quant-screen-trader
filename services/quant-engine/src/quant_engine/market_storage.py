@@ -13,9 +13,40 @@ import duckdb
 
 from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_models import TIMEFRAMES, Candle, MarketObservation, PriceSample, Timeframe
+from quant_engine.strategy.models import EnsembleSnapshot, RegimeSnapshot, StrategyEvaluation
 
-type Category = Literal["observations", "samples", "seconds", "candles", "features"]
-type Record = MarketObservation | PriceSample | Candle | FeatureSnapshot
+type Category = Literal[
+    "observations",
+    "samples",
+    "seconds",
+    "candles",
+    "features",
+    "regimes",
+    "strategy_evaluations",
+    "ensembles",
+]
+type Record = (
+    MarketObservation
+    | PriceSample
+    | Candle
+    | FeatureSnapshot
+    | RegimeSnapshot
+    | StrategyEvaluation
+    | EnsembleSnapshot
+)
+
+MODELS: dict[Category, type[Record]] = {
+    "observations": MarketObservation,
+    "samples": PriceSample,
+    "seconds": PriceSample,
+    "candles": Candle,
+    "features": FeatureSnapshot,
+    "regimes": RegimeSnapshot,
+    "strategy_evaluations": StrategyEvaluation,
+    "ensembles": EnsembleSnapshot,
+}
+"""Which model owns each category. Reloading a category through the wrong model would accept
+some rows and silently reshape others, so the mapping is explicit rather than inferred."""
 
 LIVE_SOURCES = ("DOM", "VISUAL")
 HISTORY_LIMIT = 256
@@ -34,6 +65,8 @@ def record_stamp(record: Record) -> datetime:
         millis = record.openTime
     elif isinstance(record, FeatureSnapshot):
         millis = record.featureTime
+    elif isinstance(record, RegimeSnapshot | StrategyEvaluation | EnsembleSnapshot):
+        millis = record.asOf
     else:
         millis = record.timestamp
     return datetime.fromtimestamp(millis / 1000, UTC)
@@ -106,15 +139,7 @@ class ParquetStorage:
         files = list((self.root / category).rglob("*.parquet"))
         if not files:
             return []
-        model: type[Record] = (
-            MarketObservation
-            if category == "observations"
-            else Candle
-            if category == "candles"
-            else FeatureSnapshot
-            if category == "features"
-            else PriceSample
-        )
+        model = MODELS[category]
         with duckdb.connect() as connection:
             rows = (
                 connection.read_parquet(

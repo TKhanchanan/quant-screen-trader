@@ -1,6 +1,6 @@
 # QuantScreen Trader
 
-QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence. It now includes calibrated DOM/visual observation, local OCR, provenance and quality gates, plus a Python one-second and multi-timeframe market-data builder with Parquet storage.
+QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence. It now includes calibrated DOM/visual observation, local OCR, provenance and quality gates, a Python one-second and multi-timeframe market-data builder with Parquet storage, deterministic quantitative features, and a regime-aware strategy ensemble that produces explainable analytical opinions.
 
 This software is for research and simulation. It does not place unattended real-money orders, collect platform passwords, or bypass platform security controls.
 
@@ -94,7 +94,9 @@ Phase 4 ✅ Authenticated nine-slot capture verified live on both platforms.
 
 Phase 5 ✅ Deterministic market data builder.
 
-Phase 6 ✅ Quantitative feature engine. Signal generation, trading and installer packaging remain unimplemented.
+Phase 6 ✅ Quantitative feature engine.
+
+Phase 7 ✅ Regime-aware strategy ensemble. Analysis only: it forms directional opinions and abstains freely, and places no orders. Trading, position sizing and installer packaging remain unimplemented.
 
 ## Workspace workflow
 
@@ -116,9 +118,11 @@ Phase 4 ✅ Acceptance ran against both real authenticated sessions on 2026-09-0
 
 Phase 5 ✅ Deterministic samples, one-second selection, S5/M1/M5/M10 OHLC, forming/closed state, gaps, bounded buffers and Parquet/replay tests.
 
-Phase 6 ✅ Deterministic, no-lookahead quantitative features over the canonical series: price action, trend, momentum, volatility, structure, noise, one-second micro state and per-timeframe snapshots with explicit readiness. Closed candles only; nothing repaints. Phase 6 produces facts, not signals — direction, ranking and strategy belong to Phase 7, which has not started.
+Phase 6 ✅ Deterministic, no-lookahead quantitative features over the canonical series: price action, trend, momentum, volatility, structure, noise, one-second micro state and per-timeframe snapshots with explicit readiness. Closed candles only; nothing repaints. Phase 6 produces facts, not signals — direction and strategy belong to Phase 7, and cross-asset ranking to a later phase that has not started.
 
-See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
+Phase 7 ✅ Deterministic regime classification and a six-strategy ensemble over the `qfe-v2` bundles: a primary regime with all of its supporting scores, one explainable evaluation per strategy with its reasons and vetoes, and a weighted vote that abstains rather than forcing a direction. Evidence is normalized by each series' own volatility, so one set of documented thresholds describes a five-second bar and a ten-minute bar alike. `confidence` measures how much usable, agreeing evidence exists — it is not a win probability, and Phase 7 has no calibration behind it. There is no order, stake, payout, bankroll or broker control anywhere in the layer, and tests assert that the package binds no execution name and imports nothing that could reach a broker.
+
+See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md), [Strategy engine](docs/strategy-engine.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
 
 
 The interrupted temporary-profile acceptance check is complete, including both unauthenticated workspaces, idle disabled slots, calibration pause and 18-stream synthetic HTTP/Parquet validation. Real authenticated broker extraction has since been verified on both platforms. See the [2026-09-08 verification results](docs/development.md#acceptance-continuation--2026-09-08).
