@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { defaultCalibration, percent, voteLabel, type AssetSyncState, type FeatureState, type MarketSnapshot, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
+import { boardLabel, candidateLabel, defaultCalibration, leadLabel, percent, voteLabel, type AssetSyncState, type FeatureState, type MarketSnapshot, type OpportunityState, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
 import { PLATFORM_DETAILS } from '../platforms'
 import { useAppStore } from '../state/appStore'
 import { EngineStatus } from './EngineStatus'
@@ -23,6 +23,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
   const [developer, setDeveloper] = useState(false)
   const [features, setFeatures] = useState<FeatureState | null>(null)
   const [strategy, setStrategy] = useState<StrategyState | null>(null)
+  const [opportunity, setOpportunity] = useState<OpportunityState | null>(null)
   const [actionError, setActionError] = useState('')
   const region = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -43,17 +44,23 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       .then(s => { if (!disposed) setFeatures(s) }).catch(() => {}) }
     const strategyPoll = (): void => { void window.quantScreenTrader.strategy(platform)
       .then(s => { if (!disposed) setStrategy(s) }).catch(() => {}) }
+    // Polling only reads the board. Ranking is computed when Phase 7 produces an ensemble,
+    // never when this timer fires, so a slow or paused UI cannot change a stored ranking.
+    const opportunityPoll = (): void => { void window.quantScreenTrader.opportunities(platform)
+      .then(s => { if (!disposed) setOpportunity(s) }).catch(() => {}) }
     featurePoll()
     strategyPoll()
+    opportunityPoll()
     const featureTimer = window.setInterval(featurePoll, 2000)
     const strategyTimer = window.setInterval(strategyPoll, 2000)
+    const opportunityTimer = window.setInterval(opportunityPoll, 2000)
     const syncTimer = window.setInterval(syncPoll, 1000)
     const dataTimer = window.setInterval(dataPoll, 500)
     poll()
     const timer = window.setInterval(poll, 1000)
     return () => { disposed = true; window.clearInterval(timer); window.clearInterval(dataTimer)
       window.clearInterval(syncTimer); window.clearInterval(featureTimer)
-      window.clearInterval(strategyTimer) }
+      window.clearInterval(strategyTimer); window.clearInterval(opportunityTimer) }
   }, [platform, execute, setSession])
   useEffect(() => {
     const element = region.current
@@ -106,6 +113,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       if (message.includes('CALIBRATION_ZOOM_MISMATCH')) calibrate()
     }
   }
+  const board = opportunity?.board ?? null
   return <main className="workspace-shell">
     <header className="workspace-toolbar">
       <div className="toolbar"><h1>{details.name}</h1><EngineStatus health={engineHealth} />
@@ -129,6 +137,17 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       {sync?.error && <p role="alert">{sync.error}</p>}
       {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
       {(error || actionError) && <p role="alert" className="error-banner">{error || actionError}</p>}
+      <section className="opportunity-board" aria-label={`${details.name} opportunity board`}>
+        <h2>Opportunity Board — {details.name}</h2>
+        <p>{boardLabel(board)} · {board ? `${board.receivedSlots}/${board.expectedSlots} slots` : '—'} · {board?.primaryTimeframe ?? '—'} close
+          {board?.missingSlots.length ? ` · Missing slot ${board.missingSlots.join(', ')}` : ''}
+          {opportunity?.available === false ? ' · engine unreachable' : ''} · v{opportunity?.rankingVersion ?? '—'}</p>
+        {board?.watchlist.length
+          ? <ol>{board.watchlist.map(entry => <li key={entry.slotId}>{candidateLabel(entry)}</li>)}</ol>
+          : <p>No directional candidate in this cohort.</p>}
+        <p>{leadLabel(board)}</p>
+        <small>Top analysis, not an instruction. Score orders the markets currently observed; it is not a win probability.</small>
+      </section>
       <div className="slot-summary" aria-label="Nine configured slots">{Array.from({ length: 9 }, (_, i) => {
         const slot = data?.configuration.slots.find((s) => s.id === i + 1)
         const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)

@@ -157,6 +157,38 @@ void app.whenReady().then(async () => {
         `· eligible ${String(row.eligibleStrategies)}/${String(row.evaluations)} · votes ${votes} · vetoes ${(row.vetoes as string[]).join(',') || 'none'}`)
     }
 
+    // Phase 8 acceptance. Each platform ranks its own same-time cohort on its own primary
+    // horizon — S5 on CapitalBear, M1 on IQ Option — and the two boards stay separate. A
+    // COLLECTING, PARTIAL or NO_OPPORTUNITY board is a valid outcome; nothing here invents a
+    // top candidate, and no broker control is touched to produce one.
+    const opportunities = await readEngine(connection.healthUrl, '/api/opportunities/state')
+    report.opportunityState = opportunities
+    log(`engine: opportunities ${opportunities ? 'reachable' : 'UNREACHABLE'}`)
+    if (opportunities) log(`engine: ranking ${String(opportunities.rankingVersion)} · ingested ${String(opportunities.ingested)} ` +
+      `· duplicates ${String(opportunities.duplicates)} · outOfOrder ${String(opportunities.outOfOrder)} ` +
+      `· stale ${String(opportunities.staleForEpoch)} · boards ${String(opportunities.finalized)}`)
+    for (const platform of observing) {
+      const payload = await readEngine(connection.healthUrl, `/api/opportunities/${platform}`)
+      const platformReport = report[platform] as Record<string, unknown> | undefined
+      if (platformReport) platformReport.opportunityBoard = payload
+      const board = payload?.board as Record<string, unknown> | undefined
+      if (!board) { log(`${platform}: no opportunity board yet`); continue }
+      log(`${platform}: board asOf ${String(board.asOf)} (${String(board.primaryTimeframe)}) · ${String(board.status)} ` +
+        `· expected ${String(board.expectedSlots)} received ${String(board.receivedSlots)} ranked ${String(board.rankedSlots)} ` +
+        `excluded ${String(board.excludedSlots)} · missing ${(board.missingSlots as number[]).join(',') || 'none'} ` +
+        `· reasons ${(board.reasons as string[]).join(',') || 'none'}`)
+      log(`${platform}: selected ${board.selectedSlotId === null ? 'NONE' : `slot ${String(board.selectedSlotId)} ${String(board.selectedAssetName)} ${String(board.selectedDirection)} score ${String(board.selectedScore)}`} ` +
+        `· lead ${board.leadMargin === null ? '—' : String(board.leadMargin)}`)
+      for (const entry of (board.watchlist as Record<string, unknown>[]))
+        log(`${platform}: #${String(entry.rank)} slot ${String(entry.slotId)} ${String(entry.assetName)} ${String(entry.direction)} ` +
+          `· score ${Number(entry.rankScore).toFixed(3)} · ensemble ${Number(entry.ensembleConfidence).toFixed(3)} · ${String(entry.regime)} · ${String(entry.candidateStatus)}`)
+      for (const candidate of (board.candidates as Record<string, unknown>[]))
+        log(`${platform}: candidate slot ${String(candidate.slotId)} ${String(candidate.assetName)} ${String(candidate.direction)} ` +
+          `rank=${String(candidate.rank ?? '—')} score=${Number(candidate.rankScore).toFixed(3)} status=${String(candidate.candidateStatus)} ` +
+          `p3=${Number(candidate.directionPersistence3).toFixed(2)} med3=${Number(candidate.confidenceMedian3).toFixed(2)} ` +
+          `quality=${String(candidate.analysisStatus)} excl=${(candidate.exclusionReasons as string[]).join(',') || 'none'}`)
+    }
+
     for (const platform of observing) {
       const snapshot = market.command({ platform, operation: 'state' })
       const platformReport = report[platform] as Record<string, unknown> | undefined

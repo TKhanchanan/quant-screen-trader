@@ -13,6 +13,7 @@ import duckdb
 
 from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_models import TIMEFRAMES, Candle, MarketObservation, PriceSample, Timeframe
+from quant_engine.opportunity.models import OpportunityBoard, OpportunityCandidate
 from quant_engine.strategy.models import EnsembleSnapshot, RegimeSnapshot, StrategyEvaluation
 
 type Category = Literal[
@@ -24,6 +25,8 @@ type Category = Literal[
     "regimes",
     "strategy_evaluations",
     "ensembles",
+    "opportunity_candidates",
+    "opportunity_boards",
 ]
 type Record = (
     MarketObservation
@@ -33,6 +36,8 @@ type Record = (
     | RegimeSnapshot
     | StrategyEvaluation
     | EnsembleSnapshot
+    | OpportunityCandidate
+    | OpportunityBoard
 )
 
 MODELS: dict[Category, type[Record]] = {
@@ -44,6 +49,8 @@ MODELS: dict[Category, type[Record]] = {
     "regimes": RegimeSnapshot,
     "strategy_evaluations": StrategyEvaluation,
     "ensembles": EnsembleSnapshot,
+    "opportunity_candidates": OpportunityCandidate,
+    "opportunity_boards": OpportunityBoard,
 }
 """Which model owns each category. Reloading a category through the wrong model would accept
 some rows and silently reshape others, so the mapping is explicit rather than inferred."""
@@ -51,11 +58,25 @@ some rows and silently reshape others, so the mapping is explicit rather than in
 LIVE_SOURCES = ("DOM", "VISUAL")
 HISTORY_LIMIT = 256
 
+BOARD_PARTITION = "_cross-asset"
+"""Where a record that is about several assets at once lives.
+
+An opportunity board ranks a whole platform cohort, so no single asset owns it and forcing
+one into the path would be a lie about what the row contains. Every real asset partition
+carries a hash suffix, so this name cannot collide with one."""
+
 
 def asset_partition(asset_name: str) -> str:
     """Sanitized, collision-resistant folder name. Raw asset text never reaches the path."""
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", asset_name)[:60]
     return safe + "-" + hashlib.sha256(asset_name.encode()).hexdigest()[:12]
+
+
+def partition_asset(record: Record) -> str:
+    """The asset folder a record belongs in. Cross-asset records get their own."""
+    if isinstance(record, OpportunityBoard):
+        return BOARD_PARTITION
+    return asset_partition(record.assetName)
 
 
 def record_stamp(record: Record) -> datetime:
@@ -65,7 +86,14 @@ def record_stamp(record: Record) -> datetime:
         millis = record.openTime
     elif isinstance(record, FeatureSnapshot):
         millis = record.featureTime
-    elif isinstance(record, RegimeSnapshot | StrategyEvaluation | EnsembleSnapshot):
+    elif isinstance(
+        record,
+        RegimeSnapshot
+        | StrategyEvaluation
+        | EnsembleSnapshot
+        | OpportunityCandidate
+        | OpportunityBoard,
+    ):
         millis = record.asOf
     else:
         millis = record.timestamp
@@ -94,7 +122,7 @@ class ParquetStorage:
         groups: dict[Path, list[Record]] = defaultdict(list)
         for category, record in self.pending:
             stamp = record_stamp(record)
-            asset = asset_partition(record.assetName)
+            asset = partition_asset(record)
             folder = (
                 self.root
                 / category
@@ -136,19 +164,28 @@ class ParquetStorage:
             ]
 
     def reload(self, category: Category) -> list[Record]:
-        files = list((self.root / category).rglob("*.parquet"))
+        """Every stored row of one category, back through the model that owns it.
+
+        Files are read one at a time rather than as a set. A list column whose rows all
+        happened to be empty in one file is typed differently from the same column in a file
+        where it was populated — an empty ``list[str]`` infers as JSON, a populated one as
+        VARCHAR — and no cast reconciles the two. The model is the schema of record, so the
+        merge belongs after validation rather than inside the reader. This is a diagnostic and
+        replay path, not the ingestion hot path, so the extra scans cost nothing that matters.
+        """
+        files = sorted((self.root / category).rglob("*.parquet"))
         if not files:
             return []
         model = MODELS[category]
+        rows: list[tuple[str]] = []
         with duckdb.connect() as connection:
-            rows = (
-                connection.read_parquet(
-                    [str(p) for p in files], hive_partitioning=False, union_by_name=True
+            for path in files:
+                rows.extend(
+                    connection.read_parquet(str(path), hive_partitioning=False)
+                    .set_alias("r")
+                    .project("to_json(r)")
+                    .fetchall()
                 )
-                .set_alias("r")
-                .project("to_json(r)")
-                .fetchall()
-            )
         records: list[Record] = []
         for row in rows:
             values = json.loads(row[0])

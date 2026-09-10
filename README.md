@@ -1,6 +1,6 @@
 # QuantScreen Trader
 
-QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence. It now includes calibrated DOM/visual observation, local OCR, provenance and quality gates, a Python one-second and multi-timeframe market-data builder with Parquet storage, deterministic quantitative features, and a regime-aware strategy ensemble that produces explainable analytical opinions.
+QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence. It now includes calibrated DOM/visual observation, local OCR, provenance and quality gates, a Python one-second and multi-timeframe market-data builder with Parquet storage, deterministic quantitative features, a regime-aware strategy ensemble that produces explainable analytical opinions, and per-platform cross-asset ranking of those opinions.
 
 This software is for research and simulation. It does not place unattended real-money orders, collect platform passwords, or bypass platform security controls.
 
@@ -96,7 +96,9 @@ Phase 5 ✅ Deterministic market data builder.
 
 Phase 6 ✅ Quantitative feature engine.
 
-Phase 7 ✅ Regime-aware strategy ensemble. Analysis only: it forms directional opinions and abstains freely, and places no orders. Trading, position sizing and installer packaging remain unimplemented.
+Phase 7 ✅ Regime-aware strategy ensemble. Analysis only: it forms directional opinions and abstains freely, and places no orders.
+
+Phase 8 ✅ Cross-asset opportunity ranking. Ranking only: it orders the Phase 7 opinions the application is currently holding, one board per platform, and names a top analysis or refuses to. Trading, position sizing and installer packaging remain unimplemented.
 
 ## Workspace workflow
 
@@ -122,7 +124,11 @@ Phase 6 ✅ Deterministic, no-lookahead quantitative features over the canonical
 
 Phase 7 ✅ Deterministic regime classification and a six-strategy ensemble over the `qfe-v2` bundles: a primary regime with all of its supporting scores, one explainable evaluation per strategy with its reasons and vetoes, and a weighted vote that abstains rather than forcing a direction. Evidence is normalized by each series' own volatility, so one set of documented thresholds describes a five-second bar and a ten-minute bar alike. `confidence` measures how much usable, agreeing evidence exists — it is not a win probability, and Phase 7 has no calibration behind it. There is no order, stake, payout, bankroll or broker control anywhere in the layer, and tests assert that the package binds no execution name and imports nothing that could reach a broker.
 
-See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md), [Strategy engine](docs/strategy-engine.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
+Phase 8 ✅ Per-platform cross-asset ranking over the `qst-strategy-v1` ensembles: one board per platform for one primary close, ranking only the snapshots that describe that same market decision time. It consumes finished Phase 7 ensembles and nothing else — no broker price, no raw feature, no recomputed indicator, no copy of a strategy. `rankScore` orders the opportunities that currently exist; it is not a win probability, an expected return or a payout-adjusted value, and no outcome has ever been observed by this system to calibrate one. A board names a top analysis only when the cohort is closed, the leader clears a minimum score on its own, and it stands clear of the runner-up — otherwise it reports NO_OPPORTUNITY rather than forcing a winner. CapitalBear ranks on its S5 close and IQ Option on its M1 close, and the two boards are never merged into one 1–18 list. There is no order, stake, payout, bankroll or broker control anywhere in the layer, and tests assert that the package binds no execution name and imports nothing that could reach a broker.
+
+Phase 8 acceptance ran against both real authenticated sessions on 2026-09-10, read-only. Every new Phase 7 ensemble produced exactly one Phase 8 candidate — 882 ingested, 0 duplicated, 0 out of order — and each platform ranked its own same-time cohort on its own primary close. CapitalBear's capture rate does not close all nine S5 bars inside every five-second window, so most boards finalize as PARTIAL with the missing slots named rather than invented. Directional candidates were ranked live, in both directions, and none cleared the selection gate: every one stayed WATCH on immature, DEGRADED input, so no board named a top analysis. That is the intended outcome, not a failure — the ranking pipeline reports what it has instead of forcing a winner.
+
+See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md), [Strategy engine](docs/strategy-engine.md), [Opportunity ranking](docs/opportunity-ranking.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
 
 
 The interrupted temporary-profile acceptance check is complete, including both unauthenticated workspaces, idle disabled slots, calibration pause and 18-stream synthetic HTTP/Parquet validation. Real authenticated broker extraction has since been verified on both platforms. See the [2026-09-08 verification results](docs/development.md#acceptance-continuation--2026-09-08).

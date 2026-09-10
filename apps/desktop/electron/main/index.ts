@@ -5,7 +5,7 @@ import {
   IPC_CHANNELS, MarketCommandSchema, AssetSyncCommandSchema,
   PlatformSchema,
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureEngineStateSchema,
-  StrategyEngineStateSchema,
+  StrategyEngineStateSchema, OpportunityResponseSchema,
   type Platform
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
@@ -230,6 +230,23 @@ void app.whenReady().then(() => {
     } catch {
       return { featureVersion: 'unknown', regimeVersion: 'unknown', strategyVersion: 'unknown',
         available: false, slots: [] }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.opportunities, async (event, input: unknown) => {
+    // Read-only Phase 8 diagnostics. The desktop renders a ranking the engine produced; it
+    // never scores, orders or selects anything, and a top candidate is analysis, not a trade.
+    const platform = PlatformSchema.parse(input)
+    authorize(event, platform)
+    try {
+      const response = await fetch(new URL(`/api/opportunities/${platform}`, connection.healthUrl),
+        { signal: AbortSignal.timeout(2000), redirect: 'error' })
+      // 404 is the honest answer while a platform has produced no cohort yet, and 429 means
+      // the engine is mid-ingest. Neither is an invented board.
+      if (!response.ok) throw new Error('Opportunity board unavailable')
+      const value = OpportunityResponseSchema.parse(await response.json())
+      return { rankingVersion: value.rankingVersion, available: true, board: value.board }
+    } catch {
+      return { rankingVersion: 'unknown', available: false, board: null }
     }
   })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })

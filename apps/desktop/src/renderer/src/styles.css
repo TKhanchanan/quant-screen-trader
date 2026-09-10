@@ -344,6 +344,12 @@ button:disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #76a5ff; outline-offset: 2px; }
 .slot-summary { display: flex; gap: 6px; overflow-x: auto; font-size: .68rem; padding: 5px 0; }
 .slot-summary span { white-space: nowrap; padding: 4px 6px; background: #18263e; border-radius: 4px; }
+.opportunity-board { font-size: .72rem; background: #131f33; border-radius: 6px; padding: 7px 10px; margin: 7px 0; }
+.opportunity-board h2 { font-size: .78rem; margin: 0 0 3px; }
+.opportunity-board ol { margin: 3px 0; padding-left: 18px; }
+.opportunity-board li { padding: 1px 0; }
+.opportunity-board p { margin: 3px 0; font-size: .72rem; }
+.opportunity-board small { color: #9aabc5; }
 .browser-region { position: relative; flex: 1; min-height: 100px; overflow: auto; background: #101828; }
 .configuration-panel { padding: 20px; }
 .configuration-panel p { color: #9aabc5; font-size: .85rem; }

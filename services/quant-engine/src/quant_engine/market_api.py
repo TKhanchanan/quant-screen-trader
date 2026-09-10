@@ -15,7 +15,9 @@ from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_builder import TimeSeriesBuilder
 from quant_engine.market_models import Candle, MarketObservation, Timeframe
 from quant_engine.market_storage import ParquetStorage
+from quant_engine.opportunity import OpportunityEngine
 from quant_engine.strategy import StrategyEngine
+from quant_engine.strategy.models import EnsembleSnapshot
 
 router = APIRouter()
 
@@ -66,6 +68,7 @@ class MarketEngine:
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
         self.features = FeatureEngine(hydrator=self._history)
         self.strategy = StrategyEngine()
+        self.opportunities = OpportunityEngine()
         self.busy = False
         self.rejected = 0
         self.storage_error = False
@@ -139,11 +142,37 @@ class MarketEngine:
         for evaluation in ensemble.strategies:
             self.storage.append("strategy_evaluations", evaluation)
         self.storage.append("ensembles", ensemble)
+        self.rank_opportunity(ensemble)
+
+    def expected_slots(self, platform: Platform) -> set[int]:
+        """Which slots this platform's live observation pipeline is actually carrying.
+
+        A builder exists only for a slot that has produced observations, so a disabled or
+        unassigned slot is simply absent and can never hold a ranking cohort at COLLECTING.
+        A slot whose identity changed is dropped with its builder and re-enters the cohort
+        the moment it reports again under its new identity.
+        """
+        return {slot_id for name, slot_id in self.builders if name == platform}
+
+    def rank_opportunity(self, ensemble: EnsembleSnapshot) -> None:
+        """Rank one NEW Phase 7 ensemble against its platform's current cohort.
+
+        Only new ones reach here — a repeated primary close returned above — so one close
+        contributes to its ranking epoch exactly once. A board is written when the next epoch
+        supersedes it, which is the moment it stops being able to change.
+        """
+        result = self.opportunities.ingest(ensemble, self.expected_slots(ensemble.platform))
+        if result is None or result.finalized is None:
+            return
+        for candidate in result.finalized.candidates:
+            self.storage.append("opportunity_candidates", candidate)
+        self.storage.append("opportunity_boards", result.finalized)
 
     def reset_slots(self, platform: Platform, slot_ids: list[int]) -> int:
         """Drop live series and every derived feature when a configured identity changes."""
         self.features.reset_slot(platform, slot_ids)
         self.strategy.reset_slot(platform, slot_ids)
+        self.opportunities.reset_slot(platform, slot_ids)
         return sum(self.builders.pop((platform, slot_id), None) is not None for slot_id in slot_ids)
 
     def status(self) -> list[SlotSeriesStatus]:

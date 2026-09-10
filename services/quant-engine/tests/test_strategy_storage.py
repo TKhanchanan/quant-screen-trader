@@ -102,6 +102,7 @@ def test_the_asset_name_never_reaches_the_path_verbatim(tmp_path: Path) -> None:
     storage.flush()
     assert not any("/" in part for path in tmp_path.rglob("*") for part in path.parts[-2:])
     reloaded = storage.reload("ensembles")[0]
+    assert isinstance(reloaded, EnsembleSnapshot)
     assert reloaded.assetName == "EUR/USD OTC"
 
 
