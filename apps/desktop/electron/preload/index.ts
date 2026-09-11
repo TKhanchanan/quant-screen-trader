@@ -4,6 +4,7 @@ import {
   PlatformSchema,
   PlatformCommandSchema, BrowserSnapshotSchema, ConfigurationRequestSchema, ConfigurationResultSchema,
   FeatureStateSchema, StrategyStateSchema, OpportunityStateSchema,
+  ExecutionCommandSchema, ExecutionStateSchema,
   type DesktopBridge,
   type EngineHealthSnapshot,
   type Platform
@@ -22,10 +23,15 @@ const bridge: DesktopBridge = {
     await ipcRenderer.invoke(IPC_CHANNELS.strategy, PlatformSchema.parse(platform))),
   opportunities: async (platform) => OpportunityStateSchema.parse(
     await ipcRenderer.invoke(IPC_CHANNELS.opportunities, PlatformSchema.parse(platform))),
+  execution: async (request) => ExecutionStateSchema.parse(await ipcRenderer.invoke(
+    IPC_CHANNELS.execution, ExecutionCommandSchema.parse(request))),
   getEngineHealth: () =>
     ipcRenderer.invoke(IPC_CHANNELS.getEngineHealth) as Promise<EngineHealthSnapshot>,
   openWorkspace: async (platform: Platform) => {
     await ipcRenderer.invoke(IPC_CHANNELS.openWorkspace, PlatformSchema.parse(platform))
+  },
+  openTrading: async (platform: Platform) => {
+    await ipcRenderer.invoke(IPC_CHANNELS.openTrading, PlatformSchema.parse(platform))
   }
 }
 

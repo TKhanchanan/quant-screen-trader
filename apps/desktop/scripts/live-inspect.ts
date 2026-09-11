@@ -11,6 +11,7 @@ import { PlatformSchema, deriveChartGrid, normalizedToPixel, type NormalizedBoun
 import { getPlatformConfig } from '../electron/platforms/config'
 import { chartSurfaceActivity, findAssetTabs, type PixelBounds } from '../electron/main/platform-browser'
 import { canvasPriceGeometry, detectCanvasGrid } from '../electron/main/chart-grid'
+import { controlCenter, findOrderButtons, orderPanelBounds } from '../electron/main/order-panel'
 import { isolateBrightPriceLabel, normalizeBitmap, type NormalizedImage } from '../electron/main/market-providers'
 import { TesseractOCRProvider } from '../electron/main/market-ocr'
 import { normalizeAsset } from '../electron/main/asset-detector'
@@ -156,9 +157,24 @@ void app.whenReady().then(async () => {
           price = { rawOCR: parsed.rawText?.trim(), price: parsed.price ?? null, confidence: parsed.confidence,
             labelBounds: label.pixelBounds, sourceHeight: priceSize.height }
         } catch (error) { price = { error: error instanceof Error ? error.message : 'price isolation failed' } }
+        // The reserved strip the chart ROI already excludes. Captured and measured only: the probe
+        // reports where this broker draws its entry controls, and never sends an input event.
+        const panelPx = pixels(orderPanelBounds(platform, slot.chartBounds, bounds.width, contents.getZoomFactor()), size)
+        const panelCrop = native.crop(panelPx)
+        save(`cell-${slot.slotId}-order-panel`, panelCrop)
+        let controls: unknown
+        try {
+          const panelSize = panelCrop.getSize()
+          const reading = findOrderButtons({ width: panelSize.width, height: panelSize.height, bgra: panelCrop.toBitmap() })
+          controls = { ...reading,
+            greenCenter: reading.green ? controlCenter(reading.green, panelPx) : null,
+            redCenter: reading.red ? controlCenter(reading.red, panelPx) : null }
+        } catch (error) { controls = { error: error instanceof Error ? error.message : 'panel read failed' } }
         cells.push({ canvasSlotId: slot.slotId, chartPixelBounds: chartPx, priceRoiPixelBounds: pricePx,
+          orderPanelPixelBounds: panelPx, controls,
           titleOCR: title.rawText?.trim(), titleAsset: title.asset ? normalizeAsset(title.asset) : null, price })
         log(`  cell ${slot.slotId}: title="${title.rawText?.trim().replace(/\n/g, ' ') ?? ''}" price=${JSON.stringify(price)}`)
+        log(`    order panel @ ${JSON.stringify(panelPx)} -> ${JSON.stringify(controls)}`)
       }
       report.cells = cells
     } catch (error) {

@@ -3,6 +3,7 @@ import type { AssetSyncCommand, AssetSyncState } from './assets'
 import type { FeatureState } from './features'
 import type { StrategyState } from './strategy'
 import type { OpportunityState } from './opportunity'
+import type { ExecutionCommand, ExecutionState } from './execution'
 import type { MarketCommand, MarketSnapshot } from './market'
 
 export const PlatformSchema = z.enum(['capitalbear', 'iqoption'])
@@ -57,7 +58,7 @@ export type EngineHealthSnapshot = z.infer<typeof EngineHealthSnapshotSchema>
 export const IPC_CHANNELS = {
   getEngineHealth: 'engine:get-health', market: 'market:command', assetSync: 'assets:sync',
   features: 'features:state', strategy: 'strategy:state', opportunities: 'opportunities:state',
-  openWorkspace: 'workspace:open',
+  openWorkspace: 'workspace:open', openTrading: 'trading:open', execution: 'execution:command',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
 
@@ -66,11 +67,15 @@ export interface DesktopBridge {
   market: (request: MarketCommand) => Promise<MarketSnapshot>
   getEngineHealth: () => Promise<EngineHealthSnapshot>
   openWorkspace: (platform: Platform) => Promise<void>
+  /** The board and execution controls, in their own window so they cost the charts no height. */
+  openTrading: (platform: Platform) => Promise<void>
   platformCommand: (request: PlatformCommand) => Promise<BrowserSnapshot>
   configuration: (request: ConfigurationRequest) => Promise<ConfigurationResult>
   features: (platform: Platform) => Promise<FeatureState>
   strategy: (platform: Platform) => Promise<StrategyState>
   opportunities: (platform: Platform) => Promise<OpportunityState>
+  /** The only bridge method that can lead to a press. Workspace main frames only. */
+  execution: (request: ExecutionCommand) => Promise<ExecutionState>
 }
 
 export const PLATFORM_DETAILS = {
@@ -250,3 +255,4 @@ export * from './features'
 export * from './strategy'
 
 export * from './opportunity'
+export * from './execution'

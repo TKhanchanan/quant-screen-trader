@@ -5,7 +5,7 @@ import {
   IPC_CHANNELS, MarketCommandSchema, AssetSyncCommandSchema,
   PlatformSchema,
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureEngineStateSchema,
-  StrategyEngineStateSchema, OpportunityResponseSchema,
+  StrategyEngineStateSchema, OpportunityResponseSchema, ExecutionCommandSchema,
   type Platform
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
@@ -15,6 +15,8 @@ import { PlatformWindowRegistry } from './window-registry'
 import { PlatformBrowserManager } from './platform-browser'
 import { AssetSyncManager } from './asset-sync'
 import { MarketManager } from './market-manager'
+import { OrderExecutor } from './order-executor'
+import { ExecutionManager } from './execution-manager'
 import { requestConfiguration } from './configuration-client'
 import { requireScope, type RendererScope } from './ipc-scope'
 import { prepareCalibration } from './calibration'
@@ -45,6 +47,7 @@ let dashboardWindow: BrowserWindow | null = null
 let engineProcess: EngineProcessManager | null = null
 let market: MarketManager | null = null
 let assetSync: AssetSyncManager | null = null
+let execution: ExecutionManager | null = null
 
 function rendererLocation(): { devServerUrl?: string; file: string } {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
@@ -116,6 +119,17 @@ function createWorkspaceWindow(platform: Platform): BrowserWindow {
 
 const workspaceWindows = new PlatformWindowRegistry<BrowserWindow>(createWorkspaceWindow)
 
+/**
+ * The board and execution controls live in their own window. Kept out of the workspace because
+ * every pixel they take there is a pixel the broker's nine charts do not get, and the grid
+ * detector needs those charts at a readable size.
+ */
+function createTradingWindow(platform: Platform): BrowserWindow {
+  return createWindow(`${PLATFORM_DETAILS[platform].name} Trading — QuantScreen Trader`,
+    { view: 'trading', platform }, { width: 720, height: 840 })
+}
+const tradingWindows = new PlatformWindowRegistry<BrowserWindow>(createTradingWindow)
+
 function openDashboard(): BrowserWindow {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
     dashboardWindow.focus()
@@ -169,16 +183,18 @@ void app.whenReady().then(() => {
   })
   engineProcess.start()
   market = new MarketManager(browsers, connection)
+  execution = new ExecutionManager(browsers, new OrderExecutor(browsers), connection)
   const prepare = async (platform: Platform): Promise<void> => {
     const result = await prepareCalibration(platform, browsers, request => requestConfiguration(connection, request))
     market!.configure(result)
     assetSync!.configure(result)
+    execution!.configure(result)
   }
   assetSync = new AssetSyncManager(browsers, async (platform, before, slots) => {
     const profile = before.calibrations.find(p => p.id === before.activeCalibrationId)
     return requestConfiguration(connection, { operation: 'syncAssets', platform, slots,
       expectedSlots: before.configuration.slots, expectedCalibrationVersion: profile ? `${profile.id}:${profile.updatedAt}` : null })
-  }, result => market!.configure(result))
+  }, result => { market!.configure(result); execution!.configure(result) })
   ipcMain.handle(IPC_CHANNELS.assetSync, async (event, input: unknown) => {
     const command = AssetSyncCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot sync assets')
@@ -254,6 +270,10 @@ void app.whenReady().then(() => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
     workspaceWindows.open(PlatformSchema.parse(input))
   })
+  ipcMain.handle(IPC_CHANNELS.openTrading, (event, input: unknown) => {
+    if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
+    tradingWindows.open(PlatformSchema.parse(input))
+  })
   ipcMain.handle(IPC_CHANNELS.platformCommand, async (event, input: unknown) => {
     const command = PlatformCommandSchema.parse(input)
     const scope = authorize(event, command.platform)
@@ -274,7 +294,18 @@ void app.whenReady().then(() => {
     const result = await requestConfiguration(connection, request)
     market!.configure(result)
     assetSync!.configure(result)
+    execution!.configure(result)
     return result
+  })
+  ipcMain.handle(IPC_CHANNELS.execution, async (event, input: unknown) => {
+    // The only channel that can lead to a press. A calibration overlay sits above the broker
+    // page and must never reach it, so it is refused here as well as by its own scope.
+    const command = ExecutionCommandSchema.parse(input)
+    if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot control execution')
+    // Measuring controls needs verified geometry, the same precondition Start observation has, so
+    // it resolves the grid itself rather than demanding the operator go and find another button.
+    if (command.operation === 'calibrateControls') await prepare(command.platform)
+    return execution!.command(command)
   })
 
   openDashboard()
@@ -283,7 +314,7 @@ void app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => { assetSync?.stop(); market?.stop(); engineProcess?.stop() })
+app.on('before-quit', () => { execution?.stop(); assetSync?.stop(); market?.stop(); engineProcess?.stop() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

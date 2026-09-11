@@ -60,7 +60,7 @@ describe('opportunity board bridge', () => {
       rankingVersion: 'unknown', available: false, board: null
     })
     expect(offline.board).toBeNull()
-    expect(boardLabel(offline.board)).toBe('No board')
+    expect(boardLabel(offline.board)).toBe('ยังไม่มีบอร์ด')
     expect(leadLabel(offline.board)).toBe('—')
   })
 
@@ -71,8 +71,8 @@ describe('opportunity board bridge', () => {
       selectedScore: null, runnerUpSlotId: null, leadMargin: null,
       reasons: ['COHORT_INCOMPLETE', 'MISSING_SLOTS']
     })
-    expect(boardLabel(collecting)).toBe('Collecting cohort')
-    expect(leadLabel(collecting)).toBe('Cohort incomplete')
+    expect(boardLabel(collecting)).toBe('กำลังเก็บข้อมูล')
+    expect(leadLabel(collecting)).toBe('ข้อมูลรอบนี้ไม่ครบ')
   })
 
   it('says why no leader was named instead of showing false certainty', () => {
@@ -80,17 +80,17 @@ describe('opportunity board bridge', () => {
       status: 'NO_OPPORTUNITY', selectedSlotId: null, selectedScore: null,
       selectedAssetName: null, selectedDirection: null, leadMargin: 0.01,
       reasons: ['LOW_LEAD_MARGIN', 'COHORT_COMPLETE']
-    }))).toBe('No clear leader (lead margin too small)')
+    }))).toBe('ไม่มีตัวนำชัดเจน (ทิ้งห่างน้อยไป)')
     expect(leadLabel(parsed({
       status: 'NO_OPPORTUNITY', selectedSlotId: null, selectedScore: null,
       selectedAssetName: null, selectedDirection: null, runnerUpSlotId: null, leadMargin: null,
       reasons: ['BELOW_SELECTION_SCORE', 'COHORT_COMPLETE']
-    }))).toBe('Top score below selection threshold')
+    }))).toBe('คะแนนสูงสุดยังต่ำกว่าเกณฑ์คัดเลือก')
     expect(leadLabel(parsed({ leadMargin: null, runnerUpSlotId: null })))
-      .toBe('Lead — (sole candidate)')
-    expect(leadLabel(parsed())).toBe('Lead +0.11')
-    expect(boardLabel(parsed({ status: 'PARTIAL' }))).toBe('Partial cohort')
-    expect(boardLabel(parsed({ status: 'INVALID' }))).toBe('Invalid cohort')
+      .toBe('นำอยู่ — (ตัวเดียวในรอบ)')
+    expect(leadLabel(parsed())).toBe('นำอยู่ +0.11')
+    expect(boardLabel(parsed({ status: 'PARTIAL' }))).toBe('ข้อมูลไม่ครบ (PARTIAL)')
+    expect(boardLabel(parsed({ status: 'INVALID' }))).toBe('ข้อมูลใช้ไม่ได้')
   })
 
   it('never renders a ranking as an instruction to trade', () => {
@@ -100,8 +100,12 @@ describe('opportunity board bridge', () => {
     ].join(' ').toLowerCase()
     for (const verb of ['buy', 'sell', 'enter', 'bet', 'place trade', 'stake', 'payout', 'win rate'])
       expect(rendered).not.toContain(verb)
-    expect(candidateLabel(entry)).toContain('#1 Slot 4 · EUR/USD OTC · UP')
-    expect(candidateLabel(entry)).toContain('Score 0.74')
+    // The labels are Thai now, so the same guarantee is asserted in Thai: a direction may be
+    // named, an action may not. "ขึ้น"/"ลง" describe where the analysis points; these do not.
+    for (const verb of ['ซื้อ', 'ขาย', 'เข้าไม้', 'เดิมพัน', 'ลงเงิน', 'ชนะ', 'ควรเข้า'])
+      expect(rendered).not.toContain(verb)
+    expect(candidateLabel(entry)).toContain('#1 ช่อง 4 · EUR/USD OTC · ขึ้น')
+    expect(candidateLabel(entry)).toContain('คะแนน 0.74')
   })
 
   it('keeps the two platform boards separate rather than merging them into one list', () => {

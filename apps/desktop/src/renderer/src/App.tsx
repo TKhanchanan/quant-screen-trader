@@ -3,6 +3,7 @@ import type { JSX } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { Workspace } from './components/Workspace'
 import { CalibrationOverlay } from './components/CalibrationOverlay'
+import { TradingWindow } from './components/TradingWindow'
 import { useEngineHealthPolling } from './hooks/useEngineHealthPolling'
 
 export function App(): JSX.Element {
@@ -17,6 +18,10 @@ export function App(): JSX.Element {
 
   if (query.get('view') === 'workspace' && platform.success) {
     return <Workspace platform={platform.data} />
+  }
+
+  if (query.get('view') === 'trading' && platform.success) {
+    return <TradingWindow platform={platform.data} />
   }
 
   return <Dashboard />

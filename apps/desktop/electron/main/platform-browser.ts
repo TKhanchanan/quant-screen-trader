@@ -526,6 +526,49 @@ export class PlatformBrowserManager {
         nameHash: createHash('sha256').update(image.crop({ x, y, width, height }).toBitmap()).digest('hex'), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
     } finally { this.assetScans.delete(platform) }
   }
+  /**
+   * The visible surface, for callers that measure geometry the capture pipeline does not own.
+   * Returns the native image alongside the surface it belongs to so a caller can convert between
+   * capture pixels and the browser's own device-independent pixels without guessing a scale.
+   */
+  async captureSurface(platform: Platform): Promise<{ image: Electron.NativeImage
+    size: { width: number; height: number }; surface: ReturnType<PlatformBrowserManager['observationSurface']> }> {
+    const entry = this.entries.get(platform), surface = this.observationSurface(platform)
+    if (!entry || !surface.available || surface.paused) throw new Error('Surface capture unavailable')
+    const image = await entry.view.webContents.capturePage()
+    if (image.isEmpty()) throw new Error('Empty surface capture')
+    return { image, size: image.getSize(), surface }
+  }
+  /**
+   * Send one click into the platform page at a normalized point on its own surface.
+   *
+   * This is the only method in the application that produces input for a broker. It refuses
+   * unless the surface it is about to press is the same surface the caller measured: same
+   * revision, same zoom, still visible, still showing a verified grid. A stale coordinate is a
+   * click somewhere the caller never looked.
+   */
+  async pressPoint(platform: Platform, point: { x: number; y: number },
+    guard: { revision: number; zoomFactor: number }): Promise<{ pressedAt: number; devicePoint: { x: number; y: number } }> {
+    const entry = this.entries.get(platform), surface = this.observationSurface(platform)
+    if (!entry || entry.view.webContents.isDestroyed()) throw new Error('PRESS_UNAVAILABLE: workspace is not open')
+    if (!surface.available || surface.paused) throw new Error('PRESS_UNAVAILABLE: surface is hidden, unloaded or calibrating')
+    if (!surface.gridReady) throw new Error('PRESS_UNAVAILABLE: verified chart geometry required')
+    if (surface.revision !== guard.revision) throw new Error('PRESS_STALE: the surface changed after the controls were measured')
+    if (Math.abs(surface.zoomFactor - guard.zoomFactor) > .001) throw new Error('PRESS_STALE: browser zoom changed after the controls were measured')
+    if (!(point.x > 0 && point.x < 1 && point.y > 0 && point.y < 1)) throw new Error('PRESS_STALE: point is outside the surface')
+    // View-relative device-independent pixels: the same space setBounds uses, so page zoom is
+    // applied by Chromium rather than by this arithmetic.
+    const x = Math.round(point.x * surface.bounds.width), y = Math.round(point.y * surface.bounds.height)
+    const contents = entry.view.webContents
+    const base = { x, y, button: 'left', clickCount: 1 } as const
+    contents.sendInputEvent({ ...base, type: 'mouseMove', clickCount: 0 })
+    const pressedAt = Date.now()
+    contents.sendInputEvent({ ...base, type: 'mouseDown' })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    if (this.observationSurface(platform).revision !== guard.revision) throw new Error('PRESS_STALE: the surface changed mid-press')
+    contents.sendInputEvent({ ...base, type: 'mouseUp' })
+    return { pressedAt, devicePoint: { x, y } }
+  }
   async readSlotDOM(context: ObservationContext): Promise<ParsedFields> {
     const entry = this.entries.get(context.platform), surface = this.observationSurface(context.platform)
     if (!entry || !surface.available || surface.paused || this.assetScans.has(context.platform)) throw new Error('DOM unavailable')

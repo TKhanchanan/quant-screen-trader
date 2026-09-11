@@ -2,7 +2,7 @@
 
 QuantScreen Trader is a cross-platform Electron desktop application with a local Python quantitative engine. It includes independent embedded CapitalBear and IQ Option browsers, nine user-configured asset slots per platform, reusable asset presets, normalized drag/resize calibration profiles, local engine health monitoring, and SQLite persistence. It now includes calibrated DOM/visual observation, local OCR, provenance and quality gates, a Python one-second and multi-timeframe market-data builder with Parquet storage, deterministic quantitative features, a regime-aware strategy ensemble that produces explainable analytical opinions, and per-platform cross-asset ranking of those opinions.
 
-This software is for research and simulation. It does not place unattended real-money orders, collect platform passwords, or bypass platform security controls.
+It also includes an execution layer that can press the broker's own entry controls automatically. That layer is off by default and must be armed deliberately; when armed in AUTO mode it places real-money orders without confirming each one. The application still never collects platform passwords or bypasses platform security controls. Read [Execution](docs/execution.md) before arming anything.
 
 ## Requirements
 
@@ -98,7 +98,9 @@ Phase 6 ✅ Quantitative feature engine.
 
 Phase 7 ✅ Regime-aware strategy ensemble. Analysis only: it forms directional opinions and abstains freely, and places no orders.
 
-Phase 8 ✅ Cross-asset opportunity ranking. Ranking only: it orders the Phase 7 opinions the application is currently holding, one board per platform, and names a top analysis or refuses to. Trading, position sizing and installer packaging remain unimplemented.
+Phase 8 ✅ Cross-asset opportunity ranking. Ranking only: it orders the Phase 7 opinions the application is currently holding, one board per platform, and names a top analysis or refuses to.
+
+Execution layer ⚠️ Implemented, not yet accepted against a live broker. It locates the broker's own direction controls in each of the nine cells, and in AUTO mode presses the one a finished board named. It sets no stake, no expiry and no account, reads no balance, and records no outcome. Verified by unit tests only — the control locator has never been run against a real broker panel, so measure the controls and watch a PAPER run before arming AUTO. Position sizing, outcome tracking and installer packaging remain unimplemented.
 
 ## Workspace workflow
 
@@ -128,7 +130,7 @@ Phase 8 ✅ Per-platform cross-asset ranking over the `qst-strategy-v1` ensemble
 
 Phase 8 acceptance ran against both real authenticated sessions on 2026-09-10, read-only. Every new Phase 7 ensemble produced exactly one Phase 8 candidate — 882 ingested, 0 duplicated, 0 out of order — and each platform ranked its own same-time cohort on its own primary close. CapitalBear's capture rate does not close all nine S5 bars inside every five-second window, so most boards finalize as PARTIAL with the missing slots named rather than invented. Directional candidates were ranked live, in both directions, and none cleared the selection gate: every one stayed WATCH on immature, DEGRADED input, so no board named a top analysis. That is the intended outcome, not a failure — the ranking pipeline reports what it has instead of forcing a winner.
 
-See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md), [Strategy engine](docs/strategy-engine.md), [Opportunity ranking](docs/opportunity-ranking.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
+See [Providers](docs/market-data-providers.md), [Capture and parsing](docs/capture-parser.md), [Market data builder](docs/market-data-builder.md), [Quant feature engine](docs/quant-feature-engine.md), [Strategy engine](docs/strategy-engine.md), [Opportunity ranking](docs/opportunity-ranking.md), [Execution](docs/execution.md) and [Data quality](docs/data-quality.md). After updating, install the Python dependencies again to obtain DuckDB: `node scripts/python.mjs -m pip install -e "services/quant-engine[dev]"`.
 
 
 The interrupted temporary-profile acceptance check is complete, including both unauthenticated workspaces, idle disabled slots, calibration pause and 18-stream synthetic HTTP/Parquet validation. Real authenticated broker extraction has since been verified on both platforms. See the [2026-09-08 verification results](docs/development.md#acceptance-continuation--2026-09-08).

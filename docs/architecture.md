@@ -53,7 +53,11 @@ Zustand owns renderer session/configuration snapshots and request status. React 
 
 ## Execution safety
 
-The architecture supports analysis, paper simulation, and explicit manual confirmation. Unattended real-money order submission is outside the allowed boundary. Future broker support must sit behind a capability-reporting adapter and keep live submission disabled or human-confirmed.
+The architecture supports analysis, paper simulation, and — since the execution layer — unattended submission that the operator explicitly arms. AUTO mode presses the broker's own direction control with real money and no per-order confirmation. This is a deliberate change from the earlier boundary, made by the project owner, and the safeguards are structural rather than a prompt before each order: an off-by-default mode, a separate arm step, a stop control nothing can refuse, per-surface control maps that expire when the page moves, a cooldown, an hourly cap, and a breaker that disarms after presses the broker never visibly answered.
+
+The layer never sets stake, expiry or account. It presses one direction control in one cell and inherits whatever the broker panel already has selected.
+
+`PlatformBrowserManager.pressPoint` is the single place that produces input for a broker page; nothing else in the application may send input events. The Python engine remains analysis-only and cannot trigger a press. See [Execution](execution.md).
 
 See [ADR 0001](adr/0001-lightweight-monorepo-and-local-health-transport.md) for the repository and local transport decision.
 

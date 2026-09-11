@@ -86,15 +86,15 @@ export const OpportunityStateSchema = z.strictObject({
 export type OpportunityState = z.infer<typeof OpportunityStateSchema>
 
 const BOARD_LABELS: Record<BoardStatus, string> = {
-  COLLECTING: 'Collecting cohort',
-  READY: 'Ranked',
-  PARTIAL: 'Partial cohort',
-  NO_OPPORTUNITY: 'No opportunity',
-  INVALID: 'Invalid cohort'
+  COLLECTING: 'กำลังเก็บข้อมูล',
+  READY: 'จัดอันดับแล้ว',
+  PARTIAL: 'ข้อมูลไม่ครบ (PARTIAL)',
+  NO_OPPORTUNITY: 'ไม่มีโอกาส',
+  INVALID: 'ข้อมูลใช้ไม่ได้'
 }
 
 export function boardLabel(board: OpportunityBoard | null): string {
-  return board ? BOARD_LABELS[board.status] : 'No board'
+  return board ? BOARD_LABELS[board.status] : 'ยังไม่มีบอร์ด'
 }
 
 /**
@@ -102,18 +102,18 @@ export function boardLabel(board: OpportunityBoard | null): string {
  * the wording never reads as an instruction to enter, buy, bet or place anything.
  */
 export function candidateLabel(entry: WatchlistEntry): string {
-  return `#${entry.rank} Slot ${entry.slotId} · ${entry.assetName} · ${entry.direction} · ` +
-    `Score ${entry.rankScore.toFixed(2)} · Ensemble ${entry.ensembleConfidence.toFixed(2)} · ${entry.regime}`
+  return `#${entry.rank} ช่อง ${entry.slotId} · ${entry.assetName} · ${entry.direction === 'UP' ? 'ขึ้น' : entry.direction === 'DOWN' ? 'ลง' : entry.direction} · ` +
+    `คะแนน ${entry.rankScore.toFixed(2)} · ความมั่นใจ ${entry.ensembleConfidence.toFixed(2)} · ${entry.regime}`
 }
 
 /** How far ahead the leading analysis stands, or why none was named. */
 export function leadLabel(board: OpportunityBoard | null): string {
   if (!board) return '—'
   if (board.selectedSlotId === null) {
-    if (board.reasons.includes('LOW_LEAD_MARGIN')) return 'No clear leader (lead margin too small)'
-    if (board.reasons.includes('BELOW_SELECTION_SCORE')) return 'Top score below selection threshold'
-    if (board.reasons.includes('COHORT_INCOMPLETE')) return 'Cohort incomplete'
-    return 'No directional candidate'
+    if (board.reasons.includes('LOW_LEAD_MARGIN')) return 'ไม่มีตัวนำชัดเจน (ทิ้งห่างน้อยไป)'
+    if (board.reasons.includes('BELOW_SELECTION_SCORE')) return 'คะแนนสูงสุดยังต่ำกว่าเกณฑ์คัดเลือก'
+    if (board.reasons.includes('COHORT_INCOMPLETE')) return 'ข้อมูลรอบนี้ไม่ครบ'
+    return 'ไม่มีตัวเลือกที่มีทิศทาง'
   }
-  return board.leadMargin === null ? 'Lead — (sole candidate)' : `Lead +${board.leadMargin.toFixed(2)}`
+  return board.leadMargin === null ? 'นำอยู่ — (ตัวเดียวในรอบ)' : `นำอยู่ +${board.leadMargin.toFixed(2)}`
 }

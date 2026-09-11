@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { boardLabel, candidateLabel, defaultCalibration, leadLabel, percent, voteLabel, type AssetSyncState, type FeatureState, type MarketSnapshot, type OpportunityState, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
+import { boardLabel, defaultCalibration, percent, voteLabel, type AssetSyncState, type FeatureState, type MarketSnapshot, type OpportunityState, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
 import { PLATFORM_DETAILS } from '../platforms'
 import { useAppStore } from '../state/appStore'
 import { EngineStatus } from './EngineStatus'
@@ -137,17 +137,12 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       {sync?.error && <p role="alert">{sync.error}</p>}
       {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
       {(error || actionError) && <p role="alert" className="error-banner">{error || actionError}</p>}
-      <section className="opportunity-board" aria-label={`${details.name} opportunity board`}>
-        <h2>Opportunity Board — {details.name}</h2>
-        <p>{boardLabel(board)} · {board ? `${board.receivedSlots}/${board.expectedSlots} slots` : '—'} · {board?.primaryTimeframe ?? '—'} close
-          {board?.missingSlots.length ? ` · Missing slot ${board.missingSlots.join(', ')}` : ''}
-          {opportunity?.available === false ? ' · engine unreachable' : ''} · v{opportunity?.rankingVersion ?? '—'}</p>
-        {board?.watchlist.length
-          ? <ol>{board.watchlist.map(entry => <li key={entry.slotId}>{candidateLabel(entry)}</li>)}</ol>
-          : <p>No directional candidate in this cohort.</p>}
-        <p>{leadLabel(board)}</p>
-        <small>Top analysis, not an instruction. Score orders the markets currently observed; it is not a win probability.</small>
-      </section>
+      {/* The board and the execution controls open in their own window. Every row of chrome here
+          is height the broker's nine charts do not get, and the grid detector needs them big. */}
+      <p className="board-summary">บอร์ด: {boardLabel(board)}
+        {board?.selectedSlotId ? ` · ตัวนำช่อง ${board.selectedSlotId} ${board.selectedDirection}` : ' · ไม่มีตัวนำ'}
+        {' · '}<button onClick={() => void window.quantScreenTrader.openTrading(platform)
+          .catch(() => setActionError('เปิดแผงเทรดไม่สำเร็จ'))}>เปิดแผงเทรด</button></p>
       <div className="slot-summary" aria-label="Nine configured slots">{Array.from({ length: 9 }, (_, i) => {
         const slot = data?.configuration.slots.find((s) => s.id === i + 1)
         const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)
