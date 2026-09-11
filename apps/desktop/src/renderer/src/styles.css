@@ -350,6 +350,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .opportunity-board li { padding: 1px 0; }
 .opportunity-board p { margin: 3px 0; font-size: .72rem; }
 .opportunity-board small { color: #9aabc5; }
+.paper-panel { font-size: .72rem; background: #101d19; border: 1px solid #2f5a48; border-radius: 6px; padding: 7px 10px; margin: 7px 0; }
+.paper-panel h2 { font-size: .78rem; margin: 0 0 3px; }
+.paper-panel h3 { font-size: .72rem; margin: 5px 0 2px; color: #9fd9bd; font-weight: 600; }
+.paper-panel ol { margin: 3px 0; padding-left: 18px; }
+.paper-panel li { padding: 1px 0; }
+.paper-panel p { margin: 3px 0; }
+.paper-panel .paper-tally { color: #7ee0a1; font-weight: 700; }
+.paper-panel small { color: #8fae9f; display: block; margin-top: 4px; }
 .trading-controls { font-size: .72rem; background: #1b1526; border: 1px solid #4a3a63; border-radius: 6px; padding: 7px 10px; margin: 7px 0; }
 .trading-controls h2 { font-size: .78rem; margin: 0 0 3px; }
 .trading-controls p { margin: 3px 0; }

@@ -29,7 +29,7 @@ def seeded(client: TestClient) -> MarketEngine:
     ):
         snapshot = engine.features.ingest_candle(candle)
         if snapshot is not None:
-            engine.evaluate_primary_close(snapshot)
+            engine.evaluate_primary_close(snapshot, snapshot.featureTime)
     assert engine.opportunities.ingested > 0
     return engine
 

@@ -95,6 +95,25 @@ disarms the executor rather than continuing to send into the dark.
 | `UNVERIFIED` | The press was sent and the panel did not visibly react. |
 | `FAILED` | The press itself was refused or threw before any event was sent. |
 
+`CONFIRMED` is a statement about the broker panel, not about the market. It means the press
+landed and the panel reacted; it says nothing about whether the direction was right.
+
+## PAPER mode is not the paper simulator
+
+Two unrelated things in this project are called "paper".
+
+This layer's `PAPER` mode answers *would this board have produced a press?* It runs every gate,
+records an `OrderTicket` in state `PAPER`, and presses nothing.
+
+The Phase 9 [paper simulator](paper-simulation.md) answers *what did the market do after this
+board?* It lives in the Python engine, reads canonical prices rather than broker controls, and
+resolves a trade to `WIN`, `LOSS`, `DRAW` or `INVALID` five seconds later on CapitalBear and
+sixty on IQ Option. It imports nothing from this layer and cannot reach a broker.
+
+`CONFIRMED` and `WIN` are therefore different claims about different things and are never
+displayed together. The trading window renders them in separate panels with disjoint wording,
+and a test asserts the two label vocabularies do not overlap.
+
 ## Limits
 
 | Limit | Default | What it does |

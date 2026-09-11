@@ -167,7 +167,7 @@ def test_the_market_engine_writes_a_board_once_it_can_no_longer_change(
     ):
         snapshot = engine.features.ingest_candle(candle)
         if snapshot is not None:
-            engine.evaluate_primary_close(snapshot)
+            engine.evaluate_primary_close(snapshot, snapshot.featureTime)
     engine.storage.flush()
     boards = engine.storage.reload("opportunity_boards")
     candidates = engine.storage.reload("opportunity_candidates")

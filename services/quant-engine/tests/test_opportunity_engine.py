@@ -600,7 +600,7 @@ def drive(engine: MarketEngine, slot_id: int, closes: list[float]) -> None:
     ):
         snapshot = engine.features.ingest_candle(candle)
         if snapshot is not None:
-            engine.evaluate_primary_close(snapshot)
+            engine.evaluate_primary_close(snapshot, snapshot.featureTime)
 
 
 def test_one_new_phase_seven_ensemble_produces_exactly_one_candidate_update(
@@ -624,8 +624,8 @@ def test_a_repeated_primary_close_does_not_rank_twice(tmp_path: Path) -> None:
     for candle in candles:
         snapshot = engine.features.ingest_candle(candle)
         if snapshot is not None:
-            engine.evaluate_primary_close(snapshot)
-            engine.evaluate_primary_close(snapshot)  # the same close, delivered twice
+            engine.evaluate_primary_close(snapshot, snapshot.featureTime)
+            engine.evaluate_primary_close(snapshot, snapshot.featureTime)  # the same close, twice
     assert engine.opportunities.ingested == engine.strategy.evaluated
     assert engine.opportunities.duplicates == 0  # Phase 7 absorbed it before Phase 8 saw it
 
@@ -638,7 +638,7 @@ def test_both_platforms_rank_on_their_own_primary_horizon(tmp_path: Path) -> Non
     ):
         snapshot = engine.features.ingest_candle(candle)
         if snapshot is not None:
-            engine.evaluate_primary_close(snapshot)
+            engine.evaluate_primary_close(snapshot, snapshot.featureTime)
     capitalbear = engine.opportunities.latest_board("capitalbear")
     iqoption = engine.opportunities.latest_board("iqoption")
     assert capitalbear is not None and iqoption is not None

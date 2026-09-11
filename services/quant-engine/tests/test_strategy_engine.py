@@ -105,7 +105,7 @@ def test_one_closed_primary_snapshot_produces_exactly_one_ensemble(tmp_path: Pat
     for candle in fixtures.bars(fixtures.trending(), platform="capitalbear", timeframe="S5"):
         snapshot = market.features.ingest_candle(candle)
         assert snapshot is not None
-        market.evaluate_primary_close(snapshot)
+        market.evaluate_primary_close(snapshot, snapshot.featureTime)
     assert market.strategy.evaluated == len(fixtures.trending())
     assert market.strategy.duplicates == 0
     stored = [category for category, _ in market.storage.pending]
@@ -140,7 +140,7 @@ def test_a_closed_context_timeframe_does_not_trigger_an_evaluation(tmp_path: Pat
     for candle in fixtures.bars(fixtures.trending(), platform="capitalbear", timeframe="M1"):
         snapshot = market.features.ingest_candle(candle)
         assert snapshot is not None
-        market.evaluate_primary_close(snapshot)
+        market.evaluate_primary_close(snapshot, snapshot.featureTime)
     assert market.strategy.evaluated == 0
     assert market.strategy.latest("capitalbear", 1) is None
 

@@ -21,6 +21,7 @@ from quant_engine.market_api import MarketEngine
 from quant_engine.market_api import router as market_router
 from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity_api import router as opportunity_router
+from quant_engine.paper_api import router as paper_router
 from quant_engine.paths import AppPaths, ensure_app_paths
 from quant_engine.storage.database import database_is_healthy, initialize_database
 from quant_engine.strategy_api import router as strategy_router
@@ -78,6 +79,8 @@ def create_app(
         await asyncio.to_thread(initialize_database, paths.database_file)
         application.state.paths = paths
         market = MarketEngine(ParquetStorage(paths.market_data))
+        # Phase 9 never silently forgets a pending or open paper trade across a restart.
+        await asyncio.to_thread(market.restore_paper)
         application.state.market = market
 
         stopping = asyncio.Event()
@@ -116,6 +119,7 @@ def create_app(
     application.include_router(feature_router)
     application.include_router(strategy_router)
     application.include_router(opportunity_router)
+    application.include_router(paper_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

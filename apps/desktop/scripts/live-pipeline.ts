@@ -189,6 +189,44 @@ void app.whenReady().then(async () => {
           `quality=${String(candidate.analysisStatus)} excl=${(candidate.exclusionReasons as string[]).join(',') || 'none'}`)
     }
 
+    // Phase 9 acceptance. Read-only from the paper layer's point of view: it consumes the
+    // Phase 8 boards this run already produced and the canonical prices that produced them, and
+    // it never touches a broker control, an order panel or the execution layer's state. "NO
+    // ELIGIBLE PAPER TRADE" is a valid outcome — Phase 8's gates are not lowered to obtain one.
+    const paper = await readEngine(connection.healthUrl, '/api/paper/state')
+    report.paperState = paper
+    log(`engine: paper ${paper ? 'reachable' : 'UNREACHABLE'}`)
+    if (paper) log(`engine: paper ${String(paper.paperVersion)} · enabled ${String(paper.enabled)} ` +
+      `· accounting ${String(paper.accountingConfigured)} · pending ${String(paper.pending)} open ${String(paper.open)} ` +
+      `· resolved ${String(paper.resolved)} invalid ${String(paper.invalid)} cancelled ${String(paper.cancelled)} ` +
+      `· duplicates ${String(paper.duplicateSelections)} skippedOpen ${String(paper.skippedAlreadyOpen)} ` +
+      `· entryTimeouts ${String(paper.entryTimeouts)} resolutionTimeouts ${String(paper.resolutionTimeouts)}`)
+    const openPaper = await readEngine(connection.healthUrl, '/api/paper/open')
+    for (const trade of (openPaper?.trades as Record<string, unknown>[] | undefined) ?? [])
+      log(`${String(trade.platform)}: paper OPEN slot ${String(trade.slotId)} ${String(trade.assetName)} ${String(trade.direction)} ` +
+        `· status ${String(trade.status)} · entry ${String(trade.entryPrice ?? '—')} at ${String(trade.entryTime ?? '—')} ` +
+        `· expiry target ${String(trade.expiryTargetTime ?? '—')} · score ${String(trade.rankScore)}`)
+    for (const platform of observing) {
+      const history = await readEngine(connection.healthUrl, `/api/paper/history?platform=${platform}&limit=20`)
+      const stats = await readEngine(connection.healthUrl, `/api/paper/stats?platform=${platform}`)
+      const platformReport = report[platform] as Record<string, unknown> | undefined
+      if (platformReport) { platformReport.paperHistory = history; platformReport.paperStats = stats }
+      const rows = (history?.trades as Record<string, unknown>[] | undefined) ?? []
+      if (!rows.length) { log(`${platform}: NO ELIGIBLE PAPER TRADE`); continue }
+      for (const trade of rows)
+        log(`${platform}: paper ${String(trade.status)} ${String(trade.outcome)} · ${String(trade.assetName)} ${String(trade.direction)} ` +
+          `· boardAsOf ${String(trade.boardAsOf)} · decisionAvailableAt ${String(trade.decisionAvailableAt)} ` +
+          `· entry ${String(trade.entryPrice ?? '—')} at ${String(trade.entryTime ?? '—')} ` +
+          `· expiry ${String(trade.expiryPrice ?? '—')} at ${String(trade.expiryTime ?? '—')} ` +
+          `· ${trade.priceDeltaBps === null ? '—' : `${Number(trade.priceDeltaBps).toFixed(2)} bps`} ` +
+          `· score ${String(trade.rankScore)} · paperPnl ${String(trade.realizedPaperPnl ?? 'not configured')} ` +
+          `· reasons ${(trade.invalidReasons as string[]).join(',') || (trade.reasons as string[]).join(',')}`)
+      const tally = stats?.stats as Record<string, unknown> | undefined
+      if (tally) log(`${platform}: paper tally resolved ${String(tally.resolved)} · W ${String(tally.wins)} L ${String(tally.losses)} ` +
+        `D ${String(tally.draws)} · invalid ${String(tally.invalid)} · winRateExDraws ${String(tally.winRateExcludingDraws ?? '—')} ` +
+        `· avgBps ${String(tally.averagePriceDeltaBps ?? '—')} · netPaper ${String(tally.netPaperPnl ?? 'not configured')}`)
+    }
+
     for (const platform of observing) {
       const snapshot = market.command({ platform, operation: 'state' })
       const platformReport = report[platform] as Record<string, unknown> | undefined

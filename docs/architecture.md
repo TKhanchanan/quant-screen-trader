@@ -59,6 +59,8 @@ The layer never sets stake, expiry or account. It presses one direction control 
 
 `PlatformBrowserManager.pressPoint` is the single place that produces input for a broker page; nothing else in the application may send input events. The Python engine remains analysis-only and cannot trigger a press. See [Execution](execution.md).
 
+"Paper" names two unrelated things and they are never merged. The desktop execution layer's PAPER mode decides whether it *would* have pressed a broker control and does not press it; a ticket in state CONFIRMED means the broker panel visibly reacted. The Phase 9 `PaperEngine` lives in the Python engine, never sees a broker control at all, and measures what the market did after a Phase 8 selection; a trade in outcome WIN means the market moved the way the analysis said. Phase 9 imports no execution module, binds no execution name, and places nothing — the simulated stake and payout rate it can report are explicit operator parameters, not broker state. See [Paper simulation](paper-simulation.md).
+
 See [ADR 0001](adr/0001-lightweight-monorepo-and-local-health-transport.md) for the repository and local transport decision.
 
 

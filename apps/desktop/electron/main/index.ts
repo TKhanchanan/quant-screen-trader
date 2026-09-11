@@ -6,7 +6,8 @@ import {
   PlatformSchema,
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureEngineStateSchema,
   StrategyEngineStateSchema, OpportunityResponseSchema, ExecutionCommandSchema,
-  type Platform
+  PaperTradeSchema, PaperStatsSchema, PaperEngineStateSchema,
+  type Platform, type PaperState
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
 import { EngineProcessManager } from './engine-process'
@@ -263,6 +264,43 @@ void app.whenReady().then(() => {
       return { rankingVersion: value.rankingVersion, available: true, board: value.board }
     } catch {
       return { rankingVersion: 'unknown', available: false, board: null }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.paper, async (event, input: unknown) => {
+    // Read-only Phase 9 diagnostics. The desktop renders outcomes the engine resolved from
+    // canonical prices; it never enters, prices or settles anything, and a paper WIN is a
+    // measurement of the market, never a broker order.
+    const platform = PlatformSchema.parse(input)
+    authorize(event, platform)
+    const offline: PaperState = { paperVersion: 'unknown', available: false, enabled: false,
+      accountingConfigured: false, open: [], recent: [], stats: null }
+    const read = async (path: string): Promise<unknown> => {
+      const response = await fetch(new URL(path, connection.healthUrl),
+        { signal: AbortSignal.timeout(2000), redirect: 'error' })
+      // 429 means the engine is mid-ingest and 503 that storage is unavailable. Neither is an
+      // invented outcome, so the panel reports the gap rather than showing stale certainty.
+      if (!response.ok) throw new Error('Paper state unavailable')
+      return response.json()
+    }
+    try {
+      const [state, open, history, stats] = await Promise.all([
+        read('/api/paper/state'),
+        read('/api/paper/open'),
+        read(`/api/paper/history?platform=${platform}&limit=8`),
+        read(`/api/paper/stats?platform=${platform}`)
+      ])
+      const engine = PaperEngineStateSchema.parse(state)
+      const trades = (value: unknown): PaperState['open'] =>
+        PaperTradeSchema.array().parse((value as { trades?: unknown }).trades ?? [])
+          .filter(trade => trade.platform === platform)
+      return {
+        paperVersion: engine.paperVersion, available: true, enabled: engine.enabled,
+        accountingConfigured: engine.accountingConfigured,
+        open: trades(open).slice(0, 6), recent: trades(history).slice(0, 20),
+        stats: PaperStatsSchema.parse((stats as { stats: unknown }).stats)
+      } satisfies PaperState
+    } catch {
+      return offline
     }
   })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })

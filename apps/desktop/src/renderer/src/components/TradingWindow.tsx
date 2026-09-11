@@ -1,6 +1,7 @@
 import { useEffect, useState, type JSX } from 'react'
 import { boardLabel, candidateLabel, leadLabel, type OpportunityState, type Platform } from '@quant-screen-trader/shared-types'
 import { PLATFORM_DETAILS } from '../platforms'
+import { PaperPanel } from './PaperPanel'
 import { TradingControls } from './TradingControls'
 
 /**
@@ -37,6 +38,7 @@ export function TradingWindow({ platform }: { platform: Platform }): JSX.Element
       <p>{leadLabel(board)}</p>
       <small>เป็นผลวิเคราะห์ ไม่ใช่คำสั่ง คะแนนใช้เรียงลำดับตลาดที่กำลังดูอยู่ ไม่ใช่ความน่าจะเป็นที่จะชนะ</small>
     </section>
+    <PaperPanel platform={platform} />
     <TradingControls platform={platform} onError={setError} />
     <p className="trading-hint">ปุ่ม Sync Assets, Calibrate Chart Area และ Start observation ยังอยู่ในหน้าต่าง
       {' '}{details.name} workspace — เปิดหน้าต่างนั้นให้ใหญ่ไว้ ตัวตรวจตารางต้องเห็นกราฟทั้งเก้าในขนาดที่อ่านออก</p>

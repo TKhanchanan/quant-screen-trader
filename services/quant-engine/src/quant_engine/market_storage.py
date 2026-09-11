@@ -14,6 +14,7 @@ import duckdb
 from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_models import TIMEFRAMES, Candle, MarketObservation, PriceSample, Timeframe
 from quant_engine.opportunity.models import OpportunityBoard, OpportunityCandidate
+from quant_engine.paper.models import PaperTrade, PaperTradeEvent
 from quant_engine.strategy.models import EnsembleSnapshot, RegimeSnapshot, StrategyEvaluation
 
 type Category = Literal[
@@ -27,6 +28,8 @@ type Category = Literal[
     "ensembles",
     "opportunity_candidates",
     "opportunity_boards",
+    "paper_trades",
+    "paper_trade_events",
 ]
 type Record = (
     MarketObservation
@@ -38,6 +41,8 @@ type Record = (
     | EnsembleSnapshot
     | OpportunityCandidate
     | OpportunityBoard
+    | PaperTrade
+    | PaperTradeEvent
 )
 
 MODELS: dict[Category, type[Record]] = {
@@ -51,6 +56,8 @@ MODELS: dict[Category, type[Record]] = {
     "ensembles": EnsembleSnapshot,
     "opportunity_candidates": OpportunityCandidate,
     "opportunity_boards": OpportunityBoard,
+    "paper_trades": PaperTrade,
+    "paper_trade_events": PaperTradeEvent,
 }
 """Which model owns each category. Reloading a category through the wrong model would accept
 some rows and silently reshape others, so the mapping is explicit rather than inferred."""
@@ -84,6 +91,12 @@ def record_stamp(record: Record) -> datetime:
         return record.observedAt.astimezone(UTC)
     if isinstance(record, Candle):
         millis = record.openTime
+    elif isinstance(record, PaperTrade):
+        # The decision the trade came from, so every row of one trade lands in one partition
+        # however long the horizon ran.
+        millis = record.boardAsOf
+    elif isinstance(record, PaperTradeEvent):
+        millis = record.eventTime
     elif isinstance(record, FeatureSnapshot):
         millis = record.featureTime
     elif isinstance(

@@ -13,9 +13,11 @@ from quant_engine.features import FeatureEngine
 from quant_engine.features.engine import PRIMARY_TIMEFRAME
 from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_builder import TimeSeriesBuilder
-from quant_engine.market_models import Candle, MarketObservation, Timeframe
+from quant_engine.market_models import Candle, MarketObservation, PriceSample, Timeframe
 from quant_engine.market_storage import ParquetStorage
-from quant_engine.opportunity import OpportunityEngine
+from quant_engine.opportunity import OpportunityBoard, OpportunityEngine
+from quant_engine.paper import PaperEngine, PaperSettings, PaperTrade, settings_from_environment
+from quant_engine.paper.engine import PaperUpdate
 from quant_engine.strategy import StrategyEngine
 from quant_engine.strategy.models import EnsembleSnapshot
 
@@ -63,12 +65,16 @@ class ResetSlotsResult(Model):
 
 
 class MarketEngine:
-    def __init__(self, storage: ParquetStorage) -> None:
+    def __init__(self, storage: ParquetStorage, paper: PaperSettings | None = None) -> None:
         self.storage = storage
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
         self.features = FeatureEngine(hydrator=self._history)
         self.strategy = StrategyEngine()
         self.opportunities = OpportunityEngine()
+        self.availability: dict[tuple[str, int], int] = {}
+        settings, error = (paper, None) if paper is not None else _paper_settings()
+        self.paper = PaperEngine(settings)
+        self.paper.settingsError = error
         self.busy = False
         self.rejected = 0
         self.storage_error = False
@@ -101,25 +107,77 @@ class MarketEngine:
             else:
                 self.rejected += 1
             self.persist_events(builder)
+            if sample:
+                self.offer_paper_price(sample)
         self.storage_error = False
         return accepted
 
     def persist_events(self, builder: TimeSeriesBuilder) -> None:
-        """Canonical Phase 5 events feed the feature engine exactly once, as they are stored."""
+        """Canonical Phase 5 events feed the feature engine exactly once, as they are stored.
+
+        Each emission carries the watermark that made it available, and that time travels with
+        it all the way to Phase 9: a paper entry may never be priced at a bar's close time when
+        the decision built on that bar did not exist until later.
+        """
         while builder.emitted:
-            record = builder.emitted[0]
+            emission = builder.emitted[0]
+            record, available_at = emission.record, emission.availableAt
             if isinstance(record, Candle):
                 self.storage.append("candles", record)
                 snapshot = self.features.ingest_candle(record)
                 if snapshot is not None:
                     self.storage.append("features", snapshot)
-                    self.evaluate_primary_close(snapshot)
+                    self.evaluate_primary_close(snapshot, available_at)
             else:
                 self.storage.append("seconds", record)
                 self.features.ingest_second(record)
+            # Canonical market time advanced on this platform, whether or not anything was
+            # decided: a stalled paper intent times out on market events, never on a clock.
+            self.persist_paper(self.paper.on_market_time(record.platform, available_at))
             builder.emitted.popleft()
 
-    def evaluate_primary_close(self, snapshot: FeatureSnapshot) -> None:
+    def offer_paper_price(self, sample: PriceSample) -> None:
+        """Offer one canonical sample to Phase 9, after everything it caused has run.
+
+        Ordering is the point. The Phase 5-8 chain for this sample has already finished by the
+        time it reaches here, so a paper intent created *by* this sample already exists and this
+        sample is honestly the first canonical price at or after the decision became available.
+        Only accepted samples are offered: the per-second record carries the same timestamp and
+        price, and replaying it would re-offer a price the paper layer has already seen.
+        """
+        self.persist_paper(self.paper.on_market_sample(sample))
+
+    def persist_paper(self, update: PaperUpdate) -> None:
+        for trade in update.trades:
+            self.storage.append("paper_trades", trade)
+        for event in update.events:
+            self.storage.append("paper_trade_events", event)
+
+    def restore_paper(self) -> int:
+        """Rebuild Phase 9 state from the durable record at start-up.
+
+        Best effort by design: an unreadable paper history must never stop the engine from
+        starting, because live capture is the thing that cannot be recovered later. What it may
+        never do is silently forget an open trade, so anything that cannot be safely continued
+        is cancelled explicitly and that cancellation is itself persisted.
+        """
+        try:
+            rows = self.storage.reload("paper_trades")
+        except Exception:
+            return 0
+        latest: dict[str, PaperTrade] = {}
+        for row in rows:
+            if not isinstance(row, PaperTrade):
+                continue
+            key = str(row.paperTradeId)
+            previous = latest.get(key)
+            if previous is None or _state_rank(row) >= _state_rank(previous):
+                latest[key] = row
+        update = self.paper.restore(latest.values())
+        self.persist_paper(update)
+        return len(latest)
+
+    def evaluate_primary_close(self, snapshot: FeatureSnapshot, available_at: int) -> None:
         """Run and store the whole Phase 7 chain for one closed PRIMARY snapshot.
 
         Phase 7 is triggered by a closed primary bar and never by a UI poll.
@@ -142,7 +200,10 @@ class MarketEngine:
         for evaluation in ensemble.strategies:
             self.storage.append("strategy_evaluations", evaluation)
         self.storage.append("ensembles", ensemble)
-        self.rank_opportunity(ensemble)
+        # When this slot's opinion for this close first existed. A cohort is only as available
+        # as its latest member, so the board's own availability is derived from these.
+        self.availability[(ensemble.platform, ensemble.slotId)] = available_at
+        self.rank_opportunity(ensemble, available_at)
 
     def expected_slots(self, platform: Platform) -> set[int]:
         """Which slots this platform's live observation pipeline is actually carrying.
@@ -154,7 +215,7 @@ class MarketEngine:
         """
         return {slot_id for name, slot_id in self.builders if name == platform}
 
-    def rank_opportunity(self, ensemble: EnsembleSnapshot) -> None:
+    def rank_opportunity(self, ensemble: EnsembleSnapshot, available_at: int) -> None:
         """Rank one NEW Phase 7 ensemble against its platform's current cohort.
 
         Only new ones reach here — a repeated primary close returned above — so one close
@@ -162,17 +223,54 @@ class MarketEngine:
         supersedes it, which is the moment it stops being able to change.
         """
         result = self.opportunities.ingest(ensemble, self.expected_slots(ensemble.platform))
-        if result is None or result.finalized is None:
+        if result is None:
+            return
+        # Phase 9 sees the board that just became immutable before the live one, which is the
+        # chronological order in which they became available. Both are offered under the same
+        # watermark because that watermark is the moment each of them first existed: a
+        # superseded board becomes final exactly when the next epoch opens.
+        if result.finalized is not None:
+            self.persist_paper(
+                self.paper.on_board(
+                    result.finalized, self.board_available_at(result.finalized, available_at)
+                )
+            )
+        self.persist_paper(
+            self.paper.on_board(result.board, self.board_available_at(result.board, available_at))
+        )
+        if result.finalized is None:
             return
         for candidate in result.finalized.candidates:
             self.storage.append("opportunity_candidates", candidate)
         self.storage.append("opportunity_boards", result.finalized)
+
+    def board_available_at(self, board: OpportunityBoard, watermark: int) -> int:
+        """The canonical market time at which this whole board first existed.
+
+        A cohort is exactly as available as its slowest member. The ninth slot's bar closes on
+        its own sample, which can be hundreds of milliseconds after the close time every member
+        shares, so the completing arrival's watermark alone would understate when the finished
+        decision could first have been acted on. Taking the maximum over the members that are
+        actually on the board — never below the board's own close time — can only move an entry
+        later, which is the only direction a measurement layer is allowed to be wrong in.
+        """
+        times = [
+            self.availability[(board.platform, candidate.slotId)]
+            for candidate in board.candidates
+            if (board.platform, candidate.slotId) in self.availability
+        ]
+        return max(watermark, board.asOf, *times)
 
     def reset_slots(self, platform: Platform, slot_ids: list[int]) -> int:
         """Drop live series and every derived feature when a configured identity changes."""
         self.features.reset_slot(platform, slot_ids)
         self.strategy.reset_slot(platform, slot_ids)
         self.opportunities.reset_slot(platform, slot_ids)
+        for slot_id in slot_ids:
+            self.availability.pop((platform, slot_id), None)
+        # Phase 9 is last in the reset chain. A live paper trade on a reset slot is cancelled;
+        # resolved history is evidence about a market that really moved, and is never deleted.
+        self.persist_paper(self.paper.reset_slot(platform, slot_ids))
         return sum(self.builders.pop((platform, slot_id), None) is not None for slot_id in slot_ids)
 
     def status(self) -> list[SlotSeriesStatus]:
@@ -207,6 +305,29 @@ class MarketEngine:
                 # A 3-second watermark allows batches to arrive before closure.
                 builder.advance(now - 3000)
                 self.persist_events(builder)
+
+
+def _paper_settings() -> tuple[PaperSettings, str | None]:
+    """Settings from the environment, or safe defaults plus the reason they could not be read.
+
+    A malformed simulated stake must not stop the engine: refusing to record directional
+    outcomes over a typo would lose real evidence and protect nothing. Accounting simply stays
+    off and the reason is reported on the state endpoint.
+    """
+    try:
+        return settings_from_environment(), None
+    except ValueError as error:
+        return PaperSettings(), str(error)[:200]
+
+
+def _state_rank(trade: PaperTrade) -> tuple[int, int]:
+    """Newest-state-wins ordering for reloaded rows of one trade.
+
+    Terminal states are absorbing, so status precedence alone orders the transitions; the
+    resolution time breaks ties between rows written at the same stage.
+    """
+    order = {"PENDING_ENTRY": 0, "OPEN": 1, "CANCELLED": 2, "INVALID": 2, "RESOLVED": 3}
+    return (order[trade.status], trade.resolvedAtMarketTime or trade.createdAtMarketTime)
 
 
 def local_only(request: Request) -> None:

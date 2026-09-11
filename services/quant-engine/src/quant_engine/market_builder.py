@@ -1,6 +1,7 @@
 """Event-time builder: first equal timestamp wins; late data never rewrites history."""
 
 from collections import deque
+from dataclasses import dataclass
 
 from quant_engine.market_models import (
     TIMEFRAMES,
@@ -10,6 +11,25 @@ from quant_engine.market_models import (
     Timeframe,
     price_sample,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Emission:
+    """One canonical record together with the market time at which it became available.
+
+    A closed bar is *about* the window it covers, but it only exists once the watermark has
+    passed its close: the ninth slot of a cohort is assembled after the bar it describes ended.
+    Downstream layers that must not pretend they could have acted at ``closeTime`` — Phase 9
+    above all — need that availability time, and it can only be stated by the builder that
+    applied the watermark.
+
+    ``availableAt`` is a canonical market event time in every replayable path: while a series
+    is being rebuilt from stored data the watermark is always a sample's own timestamp, so the
+    same recorded events reproduce the same availability times exactly.
+    """
+
+    record: PriceSample | Candle
+    availableAt: int
 
 
 class TimeSeriesBuilder:
@@ -28,7 +48,7 @@ class TimeSeriesBuilder:
         self._last_sample = -1
         self.rejected = 0
         self.missingSeconds = 0
-        self.emitted: deque[PriceSample | Candle] = deque(maxlen=capacity * 5)
+        self.emitted: deque[Emission] = deque(maxlen=capacity * 5)
 
     def advance(self, timestamp: int) -> None:
         """Explicit availability watermark. Only close boundaries already reached."""
@@ -40,13 +60,13 @@ class TimeSeriesBuilder:
                 update={"bucketTime": self._pending.timestamp // 1000 * 1000}
             )
             self.seconds.append(second)
-            self.emitted.append(second)
+            self.emitted.append(Emission(second, timestamp))
             self._pending = None
         for tf, candle in list(self.forming.items()):
             if candle.closeTime <= timestamp:
                 closed = candle.model_copy(update={"state": "CLOSED"})
                 self.candles.append(closed)
-                self.emitted.append(closed)
+                self.emitted.append(Emission(closed, timestamp))
                 del self.forming[tf]
                 del self._seconds_seen[tf]
                 del self._degraded[tf]
@@ -133,6 +153,6 @@ class TimeSeriesBuilder:
         return sample
 
     def drain(self) -> list[PriceSample | Candle]:
-        result = list(self.emitted)
+        result = [emission.record for emission in self.emitted]
         self.emitted.clear()
         return result
