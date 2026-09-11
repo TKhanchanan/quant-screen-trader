@@ -15,6 +15,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from quant_engine import __version__
+from quant_engine.analytics import AnalyticsSnapshot
+from quant_engine.analytics_api import router as analytics_router
 from quant_engine.configuration_api import router as configuration_router
 from quant_engine.feature_api import router as feature_router
 from quant_engine.market_api import MarketEngine
@@ -24,6 +26,7 @@ from quant_engine.opportunity_api import router as opportunity_router
 from quant_engine.paper_api import router as paper_router
 from quant_engine.paths import AppPaths, ensure_app_paths
 from quant_engine.session_guard_api import router as session_guard_router
+from quant_engine.storage.analytics_repository import save_snapshot
 from quant_engine.storage.database import database_is_healthy, initialize_database
 from quant_engine.storage.session_guard_repository import load_settings
 from quant_engine.strategy_api import router as strategy_router
@@ -87,6 +90,14 @@ def create_app(
         # Phase 9.5 never comes back as a fresh trading day with a spent limit restored.
         await asyncio.to_thread(market.restore_paper)
         await asyncio.to_thread(market.restore_session_guard, int(time.time() * 1000))
+
+        # Phase 10 keeps its snapshots beside the market record, never inside it. Analysis is
+        # not restored at start-up: it is recomputed from the durable outcomes on first read, so
+        # a stale snapshot can never be mistaken for the current one.
+        def persist_analytics(snapshot: AnalyticsSnapshot) -> None:
+            save_snapshot(paths.market_data, snapshot)
+
+        market.analytics.sink = persist_analytics
         application.state.market = market
 
         stopping = asyncio.Event()
@@ -127,6 +138,7 @@ def create_app(
     application.include_router(opportunity_router)
     application.include_router(paper_router)
     application.include_router(session_guard_router)
+    application.include_router(analytics_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

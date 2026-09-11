@@ -409,6 +409,25 @@ input, select { color: #edf3ff; background: #101c30; border: 1px solid #3a4c69; 
 .resize-handle { position: absolute; right: 0; bottom: 0; width: 26px; height: 26px; cursor: nwse-resize; background: #76a5ff; color: #07101e; }
 .overlay-opacity { z-index: 20; position: absolute; bottom: 5px; left: 32px; display: flex; align-items: center; gap: 6px; background: #0d172be8; color: white; font-size: 11px; padding: 4px; }
 
+/* Phase 10 research. Styled to read as a report rather than a control surface: there is no
+   button in this panel, and nothing in it changes what the application will do next. */
+.analytics-panel { margin-top: 18px; border-top: 1px solid #2a3a55; padding-top: 12px; }
+.analytics-panel summary { cursor: pointer; }
+.analytics-card { margin: 10px 0; padding: 8px 10px; background: #0f1a2b; border-radius: 6px; }
+.analytics-card h4 { margin: 0 0 6px; font-size: 13px; }
+.analytics-bins { margin: 0; padding-left: 18px; font-variant-numeric: tabular-nums; }
+.analytics-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.analytics-table th, .analytics-table td { padding: 3px 6px; text-align: left; font-size: 12px; }
+.analytics-table th { color: #9fb4d4; font-weight: 600; }
+.low-sample { opacity: 0.55; }
+.analytics-verdict { margin: 6px 0 2px; }
+.analytics-warning { margin: 4px 0; color: #ffcf7a; }
+.analytics-notice { margin: 6px 0; color: #ffb4b4; font-weight: 600; }
+.analytics-research { border: 1px solid #6b3b3b; }
+.threshold-stable { color: #b9f0c6; }
+.threshold-unstable { color: #ffcf7a; }
+.analytics-footer { display: block; margin-top: 8px; }
+
 @media (max-width: 900px) {
   .app-shell {
     padding: 22px;

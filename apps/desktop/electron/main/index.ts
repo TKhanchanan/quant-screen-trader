@@ -9,8 +9,12 @@ import {
   PaperTradeSchema, PaperStatsSchema, PaperEngineStateSchema,
   SessionGuardCommandSchema, SessionGuardSettingsSchema, DailySessionSchema,
   DailySessionSummarySchema, SessionNotificationSchema, SessionBlockReasonSchema,
-  defaultSessionGuardSettings,
-  type Platform, type PaperState, type SessionGuardState
+  defaultSessionGuardSettings, emptyAnalyticsState,
+  AnalyticsQualitySchema, OutcomeMetricsSchema, MoneyMetricsSchema, CalibrationSchema,
+  SegmentMetricsSchema, MatrixSchema, ThresholdCandidateSchema, TemporalSplitSchema,
+  SampleLabelSchema,
+  type Platform, type PaperState, type SessionGuardState, type AnalyticsState,
+  type SegmentMetrics
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
 import { EngineProcessManager } from './engine-process'
@@ -362,6 +366,53 @@ void app.whenReady().then(() => {
       // A stop the operator asked for must not fail silently; a poll that cannot reach the
       // engine simply reports that, without inventing a permission either way.
       if (command.operation !== 'state') throw error
+      return offline
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.analytics, async (event, input: unknown) => {
+    // Read-only Phase 10 research. The desktop renders an analysis the engine computed from its
+    // own durable record; it fits nothing, and there is deliberately no command channel here —
+    // a threshold this returns describes outcomes that already happened and cannot be applied.
+    const platform = PlatformSchema.parse(input)
+    authorize(event, platform)
+    const offline = emptyAnalyticsState(platform)
+    try {
+      // One read of the whole snapshot rather than nine of its sections: the sections would be
+      // assembled from nine separate analyses, and a panel whose regime table came from a
+      // different dataset than its win rate would be quietly inconsistent.
+      const response = await fetch(
+        new URL(`/api/analytics/snapshot?platform=${platform}`, connection.healthUrl),
+        // Longer than the other readers on purpose. The first read after a restart rebuilds the
+        // analysis from the whole Parquet history; a 429 on the next poll is the retry path.
+        { signal: AbortSignal.timeout(20_000), redirect: 'error' })
+      if (response.status === 429) return { ...offline, busy: true } satisfies AnalyticsState
+      if (!response.ok) throw new Error('Analytics unavailable')
+      const body = await response.json() as Record<string, unknown>
+      const snapshot = body.snapshot as Record<string, unknown>
+      const segments = (value: unknown, limit: number): SegmentMetrics[] =>
+        SegmentMetricsSchema.array().parse(value ?? []).slice(0, limit)
+      return {
+        analyticsVersion: String(snapshot.analyticsVersion), available: true, busy: false,
+        platform, sampleCount: Number(snapshot.totalResolved ?? 0),
+        sampleLabel: SampleLabelSchema.parse(body.sampleLabel ?? 'INSUFFICIENT_SAMPLE'),
+        timezone: String(snapshot.timezone ?? 'Asia/Bangkok'),
+        quality: AnalyticsQualitySchema.parse(snapshot.quality),
+        overall: OutcomeMetricsSchema.parse(snapshot.overallMetrics),
+        money: MoneyMetricsSchema.parse(snapshot.overallMoney),
+        rank: CalibrationSchema.parse(snapshot.rankCalibration),
+        confidence: CalibrationSchema.parse(snapshot.confidenceCalibration),
+        regimes: segments(snapshot.regimeMetrics, 16),
+        assets: [...segments(snapshot.assetMetrics, 64)]
+          .sort((a, b) => b.outcomes.resolved - a.outcomes.resolved).slice(0, 24),
+        hours: segments(snapshot.hourMetrics, 24),
+        strategyRegime: MatrixSchema.parse(snapshot.strategyRegimeMatrix),
+        thresholds: ThresholdCandidateSchema.array().parse(snapshot.thresholdCandidates ?? [])
+          .slice(0, 8),
+        split: TemporalSplitSchema.parse(snapshot.temporalSplit),
+        warnings: (Array.isArray(snapshot.warnings) ? snapshot.warnings : [])
+          .filter((code): code is string => typeof code === 'string').slice(0, 24)
+      } satisfies AnalyticsState
+    } catch {
       return offline
     }
   })

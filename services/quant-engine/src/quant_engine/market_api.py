@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field, model_validator
 
+from quant_engine.analytics import AnalyticsService
 from quant_engine.configuration import Model, Platform
 from quant_engine.features import FeatureEngine
 from quant_engine.features.engine import PRIMARY_TIMEFRAME
@@ -26,7 +27,7 @@ from quant_engine.session_guard import (
 )
 from quant_engine.session_guard.engine import GuardUpdate
 from quant_engine.strategy import StrategyEngine
-from quant_engine.strategy.models import EnsembleSnapshot
+from quant_engine.strategy.models import EnsembleSnapshot, StrategyEvaluation
 
 router = APIRouter()
 
@@ -90,9 +91,30 @@ class MarketEngine:
         # Phase 9.5 sits downstream of Phase 9 and upstream of nothing. It reads settled
         # outcomes and publishes one permission; it cannot reach a board, a strategy or a press.
         self.guard = SessionGuard(guard)
+        # Phase 10 sits downstream of everything and upstream of nothing. It reads the durable
+        # record and produces an analysis of it; no layer in this engine reads that analysis
+        # back, and there is no path from it to a score, a gate, a limit or a press.
+        self.analytics = AnalyticsService(self.analysis_history)
         self.busy = False
         self.rejected = 0
         self.storage_error = False
+
+    def analysis_history(self) -> tuple[list[PaperTrade], list[StrategyEvaluation]]:
+        """The durable Phase 9 outcomes and the Phase 7 votes behind them, for Phase 10.
+
+        A read of the Parquet record, on a background thread, and nothing more: the analytics
+        layer is handed copies of finished rows and can neither ask this engine for a decision
+        nor write anything back through it. The strategy evaluations are joined to outcomes by
+        identity in the analytics layer, so a slot whose asset changed cannot lend its votes to
+        the previous asset's results.
+        """
+        trades = [row for row in self.storage.reload("paper_trades") if isinstance(row, PaperTrade)]
+        evaluations = [
+            row
+            for row in self.storage.reload("strategy_evaluations")
+            if isinstance(row, StrategyEvaluation)
+        ]
+        return (trades, evaluations)
 
     def _history(
         self, platform: Platform, asset_name: str, timeframe: Timeframe, before: int

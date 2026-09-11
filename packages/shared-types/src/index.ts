@@ -4,6 +4,7 @@ import type { FeatureState } from './features'
 import type { StrategyState } from './strategy'
 import type { OpportunityState } from './opportunity'
 import type { PaperState } from './paper'
+import type { AnalyticsState } from './analytics'
 import type { SessionGuardCommand, SessionGuardState } from './session-guard'
 import type { ExecutionCommand, ExecutionState } from './execution'
 import type { MarketCommand, MarketSnapshot } from './market'
@@ -60,7 +61,7 @@ export type EngineHealthSnapshot = z.infer<typeof EngineHealthSnapshotSchema>
 export const IPC_CHANNELS = {
   getEngineHealth: 'engine:get-health', market: 'market:command', assetSync: 'assets:sync',
   features: 'features:state', strategy: 'strategy:state', opportunities: 'opportunities:state',
-  paper: 'paper:state', sessionGuard: 'session-guard:command',
+  paper: 'paper:state', sessionGuard: 'session-guard:command', analytics: 'analytics:state',
   openWorkspace: 'workspace:open', openTrading: 'trading:open', execution: 'execution:command',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
@@ -81,6 +82,8 @@ export interface DesktopBridge {
   paper: (platform: Platform) => Promise<PaperState>
   /** Phase 9.5 daily accounting. It can stop the day; it can never start anything. */
   sessionGuard: (request: SessionGuardCommand) => Promise<SessionGuardState>
+  /** Read-only Phase 10 research. It measures what happened; it cannot apply what it finds. */
+  analytics: (platform: Platform) => Promise<AnalyticsState>
   /** The only bridge method that can lead to a press. Workspace main frames only. */
   execution: (request: ExecutionCommand) => Promise<ExecutionState>
 }
@@ -265,3 +268,4 @@ export * from './opportunity'
 export * from './execution'
 export * from './paper'
 export * from './session-guard'
+export * from './analytics'
