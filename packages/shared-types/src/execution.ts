@@ -174,7 +174,15 @@ const BLOCK_LABELS: Record<string, string> = {
   BOARD_STATUS: 'สถานะบอร์ดไม่อยู่ในเกณฑ์ที่ตั้งไว้',
   NO_SELECTION: 'บอร์ดไม่ได้ชี้ตัวนำ',
   BELOW_LIMITS: 'ตัวนำคะแนนต่ำกว่าเกณฑ์ที่ตั้งไว้',
-  SLOT_NOT_ALLOWED: 'ช่องนั้นถูกกันออกจากการเทรด'
+  SLOT_NOT_ALLOWED: 'ช่องนั้นถูกกันออกจากการเทรด',
+  // The Phase 9.5 daily session guard. It ends the trading day; it is not Disarm, and it is
+  // never a reason to change a score, a stake or a strategy.
+  SESSION_DAILY_PROFIT_TARGET: 'ถึงเป้ากำไรของวันแล้ว — รอบวันหยุดรับไม้ใหม่',
+  SESSION_DAILY_LOSS_LIMIT: 'ถึงขีดขาดทุนของวันแล้ว — รอบวันหยุดรับไม้ใหม่',
+  SESSION_MANUAL_STOP: 'หยุดรอบวันเอง',
+  SESSION_LOCKED_FOR_DAY: 'ล็อกรอบวันนี้แล้ว',
+  SESSION_ACCOUNTING_ERROR: 'บัญชีรอบวันเชื่อถือไม่ได้ — หยุดไว้ก่อน',
+  SESSION_STOPPED: 'รอบวันหยุดรับไม้ใหม่'
 }
 
 export function blockLabel(code: string): string { return BLOCK_LABELS[code] ?? code }

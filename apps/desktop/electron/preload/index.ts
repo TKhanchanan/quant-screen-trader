@@ -4,6 +4,7 @@ import {
   PlatformSchema,
   PlatformCommandSchema, BrowserSnapshotSchema, ConfigurationRequestSchema, ConfigurationResultSchema,
   FeatureStateSchema, StrategyStateSchema, OpportunityStateSchema, PaperStateSchema,
+  SessionGuardCommandSchema, SessionGuardStateSchema,
   ExecutionCommandSchema, ExecutionStateSchema,
   type DesktopBridge,
   type EngineHealthSnapshot,
@@ -25,6 +26,8 @@ const bridge: DesktopBridge = {
     await ipcRenderer.invoke(IPC_CHANNELS.opportunities, PlatformSchema.parse(platform))),
   paper: async (platform) => PaperStateSchema.parse(
     await ipcRenderer.invoke(IPC_CHANNELS.paper, PlatformSchema.parse(platform))),
+  sessionGuard: async (request) => SessionGuardStateSchema.parse(await ipcRenderer.invoke(
+    IPC_CHANNELS.sessionGuard, SessionGuardCommandSchema.parse(request))),
   execution: async (request) => ExecutionStateSchema.parse(await ipcRenderer.invoke(
     IPC_CHANNELS.execution, ExecutionCommandSchema.parse(request))),
   getEngineHealth: () =>

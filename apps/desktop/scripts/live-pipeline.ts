@@ -227,6 +227,28 @@ void app.whenReady().then(async () => {
         `· avgBps ${String(tally.averagePriceDeltaBps ?? '—')} · netPaper ${String(tally.netPaperPnl ?? 'not configured')}`)
     }
 
+    // Phase 9.5 acceptance. Read-only: the guard is reported, never armed, and the execution
+    // layer's own state is not touched. A day with no settlements is a valid outcome — the guard
+    // accounts what Phase 9 produced and invents nothing when Phase 8 selected nothing.
+    const guard = await readEngine(connection.healthUrl, '/api/session-guard/state')
+    const guardSettings = await readEngine(connection.healthUrl, '/api/session-guard/settings')
+    report.sessionGuardState = guard
+    report.sessionGuardSettings = guardSettings
+    log(`engine: session guard ${guard ? 'reachable' : 'UNREACHABLE'}`)
+    if (guard) {
+      const day = guard.session as Record<string, unknown> | null
+      log(`engine: guard ${String(guard.sessionGuardVersion)} · enabled ${String(guard.enabled)} ` +
+        `· canOpenNewEntry ${String(guard.canOpenNewEntry)} · block ${String(guard.blockReason ?? 'none')} ` +
+        `· shutdownRequested ${String(guard.shutdownRequested)} · openTrades ${String(guard.openTrades)}`)
+      if (!day) log('engine: NO DAILY SESSION YET')
+      else log(`engine: session ${String(day.sessionDate)} (${String(day.timezone)}) · ${String(day.status)} ` +
+        `· realized ${String(day.realizedPnl)} ${String(day.currency)} · target ${String(day.profitTarget ?? 'none')} ` +
+        `· loss limit ${String(day.lossLimit ?? 'none')} · W ${String(day.wins)} L ${String(day.losses)} ` +
+        `D ${String(day.draws)} · resolved ${String(day.resolvedTrades)} priced ${String(day.monetaryTrades)} ` +
+        `· duplicates ${String(day.duplicateSettlements)} mismatches ${String(day.currencyMismatches)} ` +
+        `· source ${String(day.accountingSource)}`)
+    }
+
     for (const platform of observing) {
       const snapshot = market.command({ platform, operation: 'state' })
       const platformReport = report[platform] as Record<string, unknown> | undefined

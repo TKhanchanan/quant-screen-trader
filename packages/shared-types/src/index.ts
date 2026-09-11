@@ -4,6 +4,7 @@ import type { FeatureState } from './features'
 import type { StrategyState } from './strategy'
 import type { OpportunityState } from './opportunity'
 import type { PaperState } from './paper'
+import type { SessionGuardCommand, SessionGuardState } from './session-guard'
 import type { ExecutionCommand, ExecutionState } from './execution'
 import type { MarketCommand, MarketSnapshot } from './market'
 
@@ -59,7 +60,7 @@ export type EngineHealthSnapshot = z.infer<typeof EngineHealthSnapshotSchema>
 export const IPC_CHANNELS = {
   getEngineHealth: 'engine:get-health', market: 'market:command', assetSync: 'assets:sync',
   features: 'features:state', strategy: 'strategy:state', opportunities: 'opportunities:state',
-  paper: 'paper:state',
+  paper: 'paper:state', sessionGuard: 'session-guard:command',
   openWorkspace: 'workspace:open', openTrading: 'trading:open', execution: 'execution:command',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
@@ -78,6 +79,8 @@ export interface DesktopBridge {
   opportunities: (platform: Platform) => Promise<OpportunityState>
   /** Read-only Phase 9 outcomes. A paper WIN is a measurement, never an order. */
   paper: (platform: Platform) => Promise<PaperState>
+  /** Phase 9.5 daily accounting. It can stop the day; it can never start anything. */
+  sessionGuard: (request: SessionGuardCommand) => Promise<SessionGuardState>
   /** The only bridge method that can lead to a press. Workspace main frames only. */
   execution: (request: ExecutionCommand) => Promise<ExecutionState>
 }
@@ -261,3 +264,4 @@ export * from './strategy'
 export * from './opportunity'
 export * from './execution'
 export * from './paper'
+export * from './session-guard'

@@ -18,6 +18,13 @@ from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity import OpportunityBoard, OpportunityEngine
 from quant_engine.paper import PaperEngine, PaperSettings, PaperTrade, settings_from_environment
 from quant_engine.paper.engine import PaperUpdate
+from quant_engine.session_guard import (
+    DailySession,
+    SessionGuard,
+    SessionGuardEvent,
+    SessionGuardSettings,
+)
+from quant_engine.session_guard.engine import GuardUpdate
 from quant_engine.strategy import StrategyEngine
 from quant_engine.strategy.models import EnsembleSnapshot
 
@@ -65,7 +72,12 @@ class ResetSlotsResult(Model):
 
 
 class MarketEngine:
-    def __init__(self, storage: ParquetStorage, paper: PaperSettings | None = None) -> None:
+    def __init__(
+        self,
+        storage: ParquetStorage,
+        paper: PaperSettings | None = None,
+        guard: SessionGuardSettings | None = None,
+    ) -> None:
         self.storage = storage
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
         self.features = FeatureEngine(hydrator=self._history)
@@ -75,6 +87,9 @@ class MarketEngine:
         settings, error = (paper, None) if paper is not None else _paper_settings()
         self.paper = PaperEngine(settings)
         self.paper.settingsError = error
+        # Phase 9.5 sits downstream of Phase 9 and upstream of nothing. It reads settled
+        # outcomes and publishes one permission; it cannot reach a board, a strategy or a press.
+        self.guard = SessionGuard(guard)
         self.busy = False
         self.rejected = 0
         self.storage_error = False
@@ -152,6 +167,50 @@ class MarketEngine:
             self.storage.append("paper_trades", trade)
         for event in update.events:
             self.storage.append("paper_trade_events", event)
+        # Settlements are handed to the session guard as they are produced, in the order Phase 9
+        # produced them. Nothing polls paper history to rebuild a daily total: a running sum that
+        # is recomputed from a bounded tail would quietly start disagreeing with the durable one.
+        for settlement in update.settlements:
+            self.persist_session(
+                self.guard.apply_settlement(settlement, unresolved=self.paper.unresolved())
+            )
+        if update.trades:
+            at = self.paper.market_time()
+            if at is not None:
+                self.persist_session(self.guard.observe(self.paper.unresolved(), at))
+
+    def persist_session(self, update: GuardUpdate) -> None:
+        for session in update.sessions:
+            self.storage.append("daily_sessions", session)
+        for event in update.events:
+            self.storage.append("session_guard_events", event)
+
+    def restore_session_guard(self, now_ms: int) -> int:
+        """Rebuild today's accounting at start-up.
+
+        Best effort, like the paper restore beside it: an unreadable history must not stop the
+        engine. What it must never do is come back as a fresh day — a session that already hit
+        its loss limit and reopened with permission restored would be the exact failure this
+        layer exists to prevent — so a failure here leaves the guard with no session at all
+        rather than an empty one.
+        """
+        try:
+            sessions = [
+                row
+                for row in self.storage.reload("daily_sessions")
+                if isinstance(row, DailySession)
+            ]
+            events = [
+                row
+                for row in self.storage.reload("session_guard_events")
+                if isinstance(row, SessionGuardEvent)
+            ]
+        except Exception:
+            return 0
+        self.persist_session(
+            self.guard.restore(sessions, events, now_ms, unresolved=self.paper.unresolved())
+        )
+        return len(sessions)
 
     def restore_paper(self) -> int:
         """Rebuild Phase 9 state from the durable record at start-up.
@@ -300,6 +359,10 @@ class MarketEngine:
         return slots
 
     def advance_live(self, now: int) -> None:
+        # The one place the guard is told what time it is. A trading day is born here, on the
+        # background tick, and never inside a read: opening a diagnostics panel must not be able
+        # to roll the calendar.
+        self.persist_session(self.guard.tick(now, unresolved=self.paper.unresolved()))
         for builder in self.builders.values():
             if builder.samples and builder.samples[-1].sourceType in ("DOM", "VISUAL"):
                 # A 3-second watermark allows batches to arrive before closure.

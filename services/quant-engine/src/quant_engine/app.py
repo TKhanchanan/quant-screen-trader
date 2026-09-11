@@ -23,7 +23,9 @@ from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity_api import router as opportunity_router
 from quant_engine.paper_api import router as paper_router
 from quant_engine.paths import AppPaths, ensure_app_paths
+from quant_engine.session_guard_api import router as session_guard_router
 from quant_engine.storage.database import database_is_healthy, initialize_database
+from quant_engine.storage.session_guard_repository import load_settings
 from quant_engine.strategy_api import router as strategy_router
 
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1.0
@@ -78,9 +80,13 @@ def create_app(
         paths = ensure_app_paths(data_dir)
         await asyncio.to_thread(initialize_database, paths.database_file)
         application.state.paths = paths
-        market = MarketEngine(ParquetStorage(paths.market_data))
-        # Phase 9 never silently forgets a pending or open paper trade across a restart.
+        guard_settings, guard_error = await asyncio.to_thread(load_settings, paths.database_file)
+        market = MarketEngine(ParquetStorage(paths.market_data), guard=guard_settings)
+        market.guard.settingsError = guard_error
+        # Phase 9 never silently forgets a pending or open paper trade across a restart, and
+        # Phase 9.5 never comes back as a fresh trading day with a spent limit restored.
         await asyncio.to_thread(market.restore_paper)
+        await asyncio.to_thread(market.restore_session_guard, int(time.time() * 1000))
         application.state.market = market
 
         stopping = asyncio.Event()
@@ -120,6 +126,7 @@ def create_app(
     application.include_router(strategy_router)
     application.include_router(opportunity_router)
     application.include_router(paper_router)
+    application.include_router(session_guard_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

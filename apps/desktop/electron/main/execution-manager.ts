@@ -45,9 +45,28 @@ function blankWorkspace(): WorkspaceExecution {
 export class ExecutionManager {
   private readonly workspaces = new Map<Platform, WorkspaceExecution>()
   private readonly timer: ReturnType<typeof setInterval>
+  /**
+   * The Phase 9.5 daily session veto, as last read. Sticky on purpose: a stop that has been
+   * seen stays in force until the engine positively says otherwise, because a limit that lifts
+   * itself whenever a poll fails is not a limit. It only ever adds a refusal — nothing here can
+   * turn a press on, and every other gate still applies on its own.
+   */
+  private sessionBlock: string | null = null
   constructor(private readonly browsers: PlatformBrowserManager, private readonly executor: OrderExecutor,
     private readonly connection: EngineConnectionConfig) {
     this.timer = setInterval(() => { void this.tick() }, 1000)
+  }
+
+  /** Refresh the daily veto. One read per tick, shared: the session is a day, not a platform. */
+  private async refreshSession(): Promise<void> {
+    try {
+      const response = await fetch(new URL('/api/session-guard/state', this.connection.healthUrl),
+        { signal: AbortSignal.timeout(2000), redirect: 'error' })
+      if (!response.ok) return
+      const state = await response.json() as { canOpenNewEntry?: unknown; blockReason?: unknown }
+      this.sessionBlock = state.canOpenNewEntry === false
+        ? `SESSION_${typeof state.blockReason === 'string' ? state.blockReason : 'STOPPED'}` : null
+    } catch { /* Unreachable engine leaves the last known answer standing. */ }
   }
 
   private workspace(platform: Platform): WorkspaceExecution {
@@ -160,6 +179,8 @@ export class ExecutionManager {
     if (workspace.lastPressAt !== null && Date.now() - workspace.lastPressAt < workspace.settings.limits.cooldownMs)
       reasons.push('COOLDOWN')
     if (workspace.unverifiedInARow >= workspace.settings.limits.maxUnverifiedInARow) reasons.push('UNVERIFIED_BREAKER')
+    // The daily session guard, last. It withdraws permission for the whole day and says why.
+    if (this.sessionBlock) reasons.push(this.sessionBlock)
     return reasons
   }
 
@@ -173,6 +194,7 @@ export class ExecutionManager {
   }
 
   private async tick(): Promise<void> {
+    await this.refreshSession()
     for (const [platform, workspace] of this.workspaces) {
       if (workspace.busy || workspace.testing || !workspace.armed || workspace.settings.mode === 'OFF') continue
       if (this.blockedReasons(platform, workspace).length) continue

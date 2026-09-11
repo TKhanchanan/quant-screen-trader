@@ -14,6 +14,7 @@ MIGRATION_FILES = (
     "0004_inner_chart_grid.sql",
     "0005_calibration_source.sql",
     "0006_auto_default_grids.sql",
+    "0007_session_guard.sql",
 )
 MIGRATIONS_PACKAGE = "quant_engine.storage.migrations"
 

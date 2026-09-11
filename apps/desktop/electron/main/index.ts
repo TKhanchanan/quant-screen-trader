@@ -7,7 +7,10 @@ import {
   PlatformCommandSchema, ConfigurationRequestSchema, PLATFORM_DETAILS, FeatureEngineStateSchema,
   StrategyEngineStateSchema, OpportunityResponseSchema, ExecutionCommandSchema,
   PaperTradeSchema, PaperStatsSchema, PaperEngineStateSchema,
-  type Platform, type PaperState
+  SessionGuardCommandSchema, SessionGuardSettingsSchema, DailySessionSchema,
+  DailySessionSummarySchema, SessionNotificationSchema, SessionBlockReasonSchema,
+  defaultSessionGuardSettings,
+  type Platform, type PaperState, type SessionGuardState
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
 import { EngineProcessManager } from './engine-process'
@@ -19,6 +22,7 @@ import { MarketManager } from './market-manager'
 import { OrderExecutor } from './order-executor'
 import { ExecutionManager } from './execution-manager'
 import { requestConfiguration } from './configuration-client'
+import { SessionWatcher } from './session-watcher'
 import { requireScope, type RendererScope } from './ipc-scope'
 import { prepareCalibration } from './calibration'
 
@@ -49,6 +53,7 @@ let engineProcess: EngineProcessManager | null = null
 let market: MarketManager | null = null
 let assetSync: AssetSyncManager | null = null
 let execution: ExecutionManager | null = null
+let sessionWatcher: SessionWatcher | null = null
 
 function rendererLocation(): { devServerUrl?: string; file: string } {
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
@@ -303,6 +308,63 @@ void app.whenReady().then(() => {
       return offline
     }
   })
+  ipcMain.handle(IPC_CHANNELS.sessionGuard, async (event, input: unknown) => {
+    // Phase 9.5 daily accounting. Reading is a read; the two writes are the operator's own
+    // limits and ending the trading day. Nothing here starts anything, and the engine's own
+    // local-only boundary is what actually enforces that.
+    const command = SessionGuardCommandSchema.parse(input)
+    authorize(event)
+    const offline: SessionGuardState = { sessionGuardVersion: 'unknown', available: false,
+      enabled: false, canOpenNewEntry: true, blockReason: null, shutdownRequested: false,
+      paperAccountingConfigured: false, settingsError: null, session: null,
+      settings: defaultSessionGuardSettings(), targetProgress: null, lossProgress: null,
+      remainingToTarget: null, nextResetAt: null, openTrades: 0, notifications: [], history: [] }
+    const read = async (path: string): Promise<Record<string, unknown>> => {
+      const response = await fetch(new URL(path, connection.healthUrl),
+        { signal: AbortSignal.timeout(2000), redirect: 'error' })
+      if (!response.ok) throw new Error('Session guard unavailable')
+      return await response.json() as Record<string, unknown>
+    }
+    try {
+      if (command.operation !== 'state') {
+        const body = command.operation === 'settings'
+          ? { operation: 'settings', ...command.settings } : { operation: 'stop' }
+        const response = await fetch(new URL('/api/session-guard/command', connection.healthUrl),
+          { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body), signal: AbortSignal.timeout(4000), redirect: 'error' })
+        if (!response.ok) throw new Error(response.status === 422
+          ? 'ค่าที่กรอกไม่ถูกต้อง' : 'ตั้งค่ารอบวันไม่สำเร็จ')
+      }
+      const [state, settings, history] = await Promise.all([
+        read('/api/session-guard/state'),
+        read('/api/session-guard/settings'),
+        read('/api/session-guard/history?limit=30')
+      ])
+      const session = state.session === null ? null : DailySessionSchema.parse(state.session)
+      return {
+        sessionGuardVersion: String(state.sessionGuardVersion), available: true,
+        enabled: Boolean(state.enabled), canOpenNewEntry: Boolean(state.canOpenNewEntry),
+        blockReason: state.blockReason === null ? null
+          : SessionBlockReasonSchema.parse(state.blockReason),
+        shutdownRequested: Boolean(state.shutdownRequested),
+        paperAccountingConfigured: Boolean(state.paperAccountingConfigured),
+        settingsError: (settings.settingsError as string | null) ?? null,
+        session, settings: SessionGuardSettingsSchema.parse(settings.settings),
+        targetProgress: (state.targetProgress as number | null) ?? null,
+        lossProgress: (state.lossProgress as number | null) ?? null,
+        remainingToTarget: (state.remainingToTarget as number | null) ?? null,
+        nextResetAt: (state.nextResetAt as number | null) ?? null,
+        openTrades: Number(state.openTrades ?? 0),
+        notifications: SessionNotificationSchema.array().parse(state.notifications ?? []).slice(0, 16),
+        history: DailySessionSummarySchema.array().parse(history.sessions ?? []).slice(0, 30)
+      } satisfies SessionGuardState
+    } catch (error) {
+      // A stop the operator asked for must not fail silently; a poll that cannot reach the
+      // engine simply reports that, without inventing a permission either way.
+      if (command.operation !== 'state') throw error
+      return offline
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })
   ipcMain.handle(IPC_CHANNELS.openWorkspace, (event, input: unknown) => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
@@ -346,13 +408,19 @@ void app.whenReady().then(() => {
     return execution!.command(command)
   })
 
+  // Phase 9.5 reports; Electron decides. The watcher shows the operator what happened and asks
+  // the application to close itself the same way a person closing the window would.
+  sessionWatcher = new SessionWatcher(connection, () => app.quit())
+
   openDashboard()
   app.on('activate', () => {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) openDashboard()
   })
 })
 
-app.on('before-quit', () => { execution?.stop(); assetSync?.stop(); market?.stop(); engineProcess?.stop() })
+app.on('before-quit', () => {
+  sessionWatcher?.stop(); execution?.stop(); assetSync?.stop(); market?.stop(); engineProcess?.stop()
+})
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

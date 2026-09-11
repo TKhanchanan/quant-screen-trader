@@ -15,6 +15,7 @@ from quant_engine.features.models import FeatureSnapshot
 from quant_engine.market_models import TIMEFRAMES, Candle, MarketObservation, PriceSample, Timeframe
 from quant_engine.opportunity.models import OpportunityBoard, OpportunityCandidate
 from quant_engine.paper.models import PaperTrade, PaperTradeEvent
+from quant_engine.session_guard.models import DailySession, SessionGuardEvent
 from quant_engine.strategy.models import EnsembleSnapshot, RegimeSnapshot, StrategyEvaluation
 
 type Category = Literal[
@@ -30,6 +31,8 @@ type Category = Literal[
     "opportunity_boards",
     "paper_trades",
     "paper_trade_events",
+    "daily_sessions",
+    "session_guard_events",
 ]
 type Record = (
     MarketObservation
@@ -43,6 +46,8 @@ type Record = (
     | OpportunityBoard
     | PaperTrade
     | PaperTradeEvent
+    | DailySession
+    | SessionGuardEvent
 )
 
 MODELS: dict[Category, type[Record]] = {
@@ -58,6 +63,8 @@ MODELS: dict[Category, type[Record]] = {
     "opportunity_boards": OpportunityBoard,
     "paper_trades": PaperTrade,
     "paper_trade_events": PaperTradeEvent,
+    "daily_sessions": DailySession,
+    "session_guard_events": SessionGuardEvent,
 }
 """Which model owns each category. Reloading a category through the wrong model would accept
 some rows and silently reshape others, so the mapping is explicit rather than inferred."""
@@ -72,6 +79,16 @@ An opportunity board ranks a whole platform cohort, so no single asset owns it a
 one into the path would be a lie about what the row contains. Every real asset partition
 carries a hash suffix, so this name cannot collide with one."""
 
+SESSION_PARTITION = "_session"
+"""Where a record that belongs to no asset and no broker lives.
+
+A trading day's accounting spans both platforms and every asset that settled in it. Filing it
+under one of them would make the daily total look like one broker's total, which is exactly the
+mistake a daily limit exists to prevent. Real platform names are a closed literal set and every
+real asset partition carries a hash suffix, so this name collides with neither."""
+
+CROSS_PLATFORM = (DailySession, SessionGuardEvent)
+
 
 def asset_partition(asset_name: str) -> str:
     """Sanitized, collision-resistant folder name. Raw asset text never reaches the path."""
@@ -83,7 +100,14 @@ def partition_asset(record: Record) -> str:
     """The asset folder a record belongs in. Cross-asset records get their own."""
     if isinstance(record, OpportunityBoard):
         return BOARD_PARTITION
+    if isinstance(record, CROSS_PLATFORM):
+        return SESSION_PARTITION
     return asset_partition(record.assetName)
+
+
+def partition_platform(record: Record) -> str:
+    """The platform folder a record belongs in, or the shared one for a record about both."""
+    return SESSION_PARTITION if isinstance(record, CROSS_PLATFORM) else record.platform
 
 
 def record_stamp(record: Record) -> datetime:
@@ -95,8 +119,12 @@ def record_stamp(record: Record) -> datetime:
         # The decision the trade came from, so every row of one trade lands in one partition
         # however long the horizon ran.
         millis = record.boardAsOf
-    elif isinstance(record, PaperTradeEvent):
+    elif isinstance(record, PaperTradeEvent | SessionGuardEvent):
         millis = record.eventTime
+    elif isinstance(record, DailySession):
+        # The instant the trading day opened, so every revision of one session lands in one
+        # partition however long the day ran.
+        millis = record.startedAt
     elif isinstance(record, FeatureSnapshot):
         millis = record.featureTime
     elif isinstance(
@@ -139,7 +167,7 @@ class ParquetStorage:
             folder = (
                 self.root
                 / category
-                / f"platform={record.platform}"
+                / f"platform={partition_platform(record)}"
                 / f"asset={asset}"
                 / f"date={stamp:%Y-%m-%d}"
             )

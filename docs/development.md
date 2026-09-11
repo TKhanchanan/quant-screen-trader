@@ -92,6 +92,7 @@ Reinstall the editable engine dependencies after updating (DuckDB is now require
 - `node scripts/market-smoke.mjs`: real native Electron capture and local OCR of generated synthetic chart text, with an isolated temporary OS profile and no stored screenshot.
 - `node scripts/python.mjs services/quant-engine/tests/benchmark_market.py`: 18-slot deterministic builder workload, with wall/CPU time and traced Python memory.
 - `node scripts/python.mjs services/quant-engine/tests/benchmark_paper.py`: 1,200 Phase 8 boards and 471,600 canonical samples through the Phase 9 paper lifecycle, with throughput and the bounded-memory assertions.
+- `node scripts/python.mjs services/quant-engine/tests/benchmark_session_guard.py`: 10,000 Phase 9 settlements across 40 trading days through the Phase 9.5 daily guard, with throughput and the bounded-memory assertions.
 - `npm test`: parser/provider, scheduler isolation/backpressure, quality, time-boundary, no-look-ahead, storage and existing Phase 0–3 regression tests.
 
 On macOS ARM64, the native synthetic OCR check read asset, price, payout and timer at 0.95 reported confidence: capture 188 ms, cold OCR 506 ms, warm OCR 107 ms in one run. The builder processed 21,618 fixture observations in 3.45 seconds (6264/s), 3.43 CPU seconds and 69 MB peak traced Python memory. These are synthetic local measurements, not live broker rates or OCR accuracy. Serial per-platform OCR is the expected bottleneck with nine visual slots; requested sampling targets are not guaranteed.

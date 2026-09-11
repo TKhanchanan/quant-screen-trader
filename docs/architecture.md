@@ -61,6 +61,13 @@ The layer never sets stake, expiry or account. It presses one direction control 
 
 "Paper" names two unrelated things and they are never merged. The desktop execution layer's PAPER mode decides whether it *would* have pressed a broker control and does not press it; a ticket in state CONFIRMED means the broker panel visibly reacted. The Phase 9 `PaperEngine` lives in the Python engine, never sees a broker control at all, and measures what the market did after a Phase 8 selection; a trade in outcome WIN means the market moved the way the analysis said. Phase 9 imports no execution module, binds no execution name, and places nothing — the simulated stake and payout rate it can report are explicit operator parameters, not broker state. See [Paper simulation](paper-simulation.md).
 
+The Phase 9.5 [daily session guard](session-guard.md) sits downstream of both and upstream of
+nothing. It accounts one trading day's realized profit and loss from Phase 9's settlements and
+publishes a single permission, `canOpenNewEntry`, which the execution layer reads as one more
+named refusal. It is a stop system: it can end a day, and it can never start, size or direct
+anything. Python reports `shutdownRequested`; Electron owns the application's lifetime and closes
+it gracefully.
+
 See [ADR 0001](adr/0001-lightweight-monorepo-and-local-health-transport.md) for the repository and local transport decision.
 
 

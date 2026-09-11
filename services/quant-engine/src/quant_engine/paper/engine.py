@@ -542,6 +542,20 @@ class PaperEngine:
 
     # --- reads -------------------------------------------------------------------------
 
+    def unresolved(self) -> int:
+        """How many paper trades have not finished.
+
+        The session guard needs this to know whether a stopped day may close yet, and it must
+        come from here rather than from execution tickets: a ticket describes a press, and a
+        paper trade describes a measurement that is still running.
+        """
+        return sum(1 for trade in self.live.values() if trade.status in LIVE_STATUSES)
+
+    def market_time(self) -> int | None:
+        """The latest canonical market event time seen on any platform, or ``None`` before the
+        first one. The paper layer has no other clock and neither does anything reading this."""
+        return max(self._clock.values()) if self._clock else None
+
     def open_trades(self) -> list[PaperTrade]:
         """Every live trade, oldest decision first."""
         return sorted(self.live.values(), key=lambda t: (t.decisionAvailableAt, t.slotId))

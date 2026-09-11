@@ -98,6 +98,20 @@ disarms the executor rather than continuing to send into the dark.
 `CONFIRMED` is a statement about the broker panel, not about the market. It means the press
 landed and the panel reacted; it says nothing about whether the direction was right.
 
+## The daily session guard is one more gate
+
+Since Phase 9.5 this layer reads one extra permission each tick: the
+[daily session guard](session-guard.md)'s `canOpenNewEntry`. When the day has reached its profit
+target or loss limit, been stopped by the operator, been locked, or lost confidence in its own
+accounting, a named refusal (`SESSION_DAILY_LOSS_LIMIT`, `SESSION_LOCKED_FOR_DAY`, …) joins the
+block list and no press happens.
+
+It only ever adds a refusal. Every gate described here still applies on its own, nothing about
+AUTO, PAPER, Arm, Disarm, the control map, the Higher/Lower mapping or the all-controls test
+changed, and no daily total can reach a stake, a score or a threshold — the guard has none of
+those. The veto is sticky: once a stop has been read it stays in force until the engine
+positively says otherwise, so an unreachable engine cannot lift a limit.
+
 ## PAPER mode is not the paper simulator
 
 Two unrelated things in this project are called "paper".

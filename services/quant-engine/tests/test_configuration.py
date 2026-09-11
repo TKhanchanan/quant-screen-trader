@@ -194,7 +194,7 @@ def test_upgrade_phase_one_preserves_existing_data(tmp_path: Path) -> None:
             "Existing asset",
             "MANUAL",
         )
-        assert db.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 6
+        assert db.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 7
 
 
 def test_upgrade_migrates_only_the_legacy_full_browser_grid(tmp_path: Path) -> None:
