@@ -13,8 +13,9 @@ import {
   AnalyticsQualitySchema, OutcomeMetricsSchema, MoneyMetricsSchema, CalibrationSchema,
   SegmentMetricsSchema, MatrixSchema, ThresholdCandidateSchema, TemporalSplitSchema,
   SampleLabelSchema,
+  ReplayCommandSchema, ReplayStatusSchema, ReplaySummarySchema, emptyReplayState,
   type Platform, type PaperState, type SessionGuardState, type AnalyticsState,
-  type SegmentMetrics
+  type SegmentMetrics, type ReplayState
 } from '@quant-screen-trader/shared-types'
 import { getEngineConnectionConfig } from './engine-config'
 import { EngineProcessManager } from './engine-process'
@@ -34,6 +35,12 @@ const trustedRenderers = new Map<number, RendererScope>()
 function authorize(event: IpcMainInvokeEvent, platform?: Platform): RendererScope {
   return requireScope(trustedRenderers.get(event.sender.id), event.senderFrame === event.sender.mainFrame, platform)
 }
+/**
+ * The replay run this window is following. A replay is offline compute over a recorded file, so
+ * this is a view handle and nothing else: it can be lost, reacquired from the engine's own
+ * listing, and it authorises nothing.
+ */
+let activeReplayJob: string | null = null
 const browsers = new PlatformBrowserManager((platform) => {
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, '../preload/index.cjs'),
     sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true } })
@@ -418,6 +425,75 @@ void app.whenReady().then(() => {
     }
   })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })
+  ipcMain.handle(IPC_CHANNELS.replay, async (event, input: unknown) => {
+    // Read-only Phase 11 research. The two commands here start and cancel *offline compute*
+    // over the engine's own recorded file; there is no path from this handler to an order, a
+    // broker control, an arm state or the trading day, and no command that applies a finding.
+    const command = ReplayCommandSchema.parse(input)
+    authorize(event)
+    const base = emptyReplayState('ต่อเอ็นจิ้นไม่ได้')
+    try {
+      if (command.operation === 'start') {
+        const body = {
+          includeCapitalBear: command.platform === null || command.platform === 'capitalbear',
+          includeIqOption: command.platform === null || command.platform === 'iqoption',
+          warmupDurationMs: command.warmupMs,
+          latencyScenarios: command.latencyScenarios,
+          ...(command.windowMs === null ? {} : { fromTime: Date.now() - command.windowMs })
+        }
+        const started = await fetch(new URL('/api/replay/runs', connection.healthUrl), {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(20_000), redirect: 'error' })
+        if (started.status === 409) return { ...base, available: true, busy: true,
+          message: 'มีการจำลองย้อนหลังทำงานอยู่แล้ว — รอให้จบก่อน' } satisfies ReplayState
+        if (!started.ok) throw new Error('Replay could not be started')
+        activeReplayJob = String(((await started.json()) as Record<string, unknown>).jobId)
+      }
+      if (command.operation === 'cancel' && activeReplayJob) {
+        await fetch(new URL(`/api/replay/runs/${activeReplayJob}/cancel`, connection.healthUrl),
+          { method: 'POST', signal: AbortSignal.timeout(10_000), redirect: 'error' })
+      }
+      if (!activeReplayJob) {
+        const listing = await fetch(new URL('/api/replay/runs', connection.healthUrl),
+          { signal: AbortSignal.timeout(10_000), redirect: 'error' })
+        if (!listing.ok) throw new Error('Replay unavailable')
+        const body = await listing.json() as Record<string, unknown>
+        const runs = Array.isArray(body.runs) ? body.runs as Record<string, unknown>[] : []
+        const latest = runs[0]
+        if (!latest) return { ...base, available: true, message: 'ยังไม่เคยรันย้อนหลัง' }
+        activeReplayJob = String(latest.replayRunId)
+      }
+      const status = await fetch(
+        new URL(`/api/replay/runs/${activeReplayJob}`, connection.healthUrl),
+        { signal: AbortSignal.timeout(10_000), redirect: 'error' })
+      if (!status.ok) throw new Error('Replay status unavailable')
+      const body = await status.json() as Record<string, unknown>
+      const run = (body.run ?? {}) as Record<string, unknown>
+      const state: ReplayState = {
+        replayVersion: String(body.replayVersion ?? 'unknown'), available: true, busy: false,
+        jobId: body.jobId === undefined ? null : String(body.jobId),
+        replayRunId: body.replayRunId === null || body.replayRunId === undefined
+          ? null : String(body.replayRunId),
+        status: ReplayStatusSchema.parse(body.status ?? run.status ?? 'PENDING'),
+        phase: String(body.phase ?? 'DONE'),
+        totalEvents: Number(body.totalEvents ?? run.totalEvents ?? 0),
+        processedEvents: Number(body.processedEvents ?? run.processedEvents ?? 0),
+        percent: typeof body.percent === 'number' ? body.percent : null,
+        currentMarketTime: typeof body.currentMarketTime === 'number' ? body.currentMarketTime : null,
+        error: body.error === null || body.error === undefined ? null : String(body.error),
+        summary: null, message: ''
+      }
+      if (state.status !== 'COMPLETED' || state.replayRunId === null) return state
+      const summary = await fetch(
+        new URL(`/api/replay/runs/${state.replayRunId}/summary`, connection.healthUrl),
+        { signal: AbortSignal.timeout(20_000), redirect: 'error' })
+      if (!summary.ok) return state
+      const payload = await summary.json() as Record<string, unknown>
+      return { ...state, summary: ReplaySummarySchema.parse(payload.summary) } satisfies ReplayState
+    } catch {
+      return base
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.openWorkspace, (event, input: unknown) => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
     workspaceWindows.open(PlatformSchema.parse(input))

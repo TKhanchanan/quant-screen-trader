@@ -5,6 +5,7 @@ import type { StrategyState } from './strategy'
 import type { OpportunityState } from './opportunity'
 import type { PaperState } from './paper'
 import type { AnalyticsState } from './analytics'
+import type { ReplayCommand, ReplayState } from './replay'
 import type { SessionGuardCommand, SessionGuardState } from './session-guard'
 import type { ExecutionCommand, ExecutionState } from './execution'
 import type { MarketCommand, MarketSnapshot } from './market'
@@ -62,6 +63,7 @@ export const IPC_CHANNELS = {
   getEngineHealth: 'engine:get-health', market: 'market:command', assetSync: 'assets:sync',
   features: 'features:state', strategy: 'strategy:state', opportunities: 'opportunities:state',
   paper: 'paper:state', sessionGuard: 'session-guard:command', analytics: 'analytics:state',
+  replay: 'replay:command',
   openWorkspace: 'workspace:open', openTrading: 'trading:open', execution: 'execution:command',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
@@ -84,6 +86,11 @@ export interface DesktopBridge {
   sessionGuard: (request: SessionGuardCommand) => Promise<SessionGuardState>
   /** Read-only Phase 10 research. It measures what happened; it cannot apply what it finds. */
   analytics: (platform: Platform) => Promise<AnalyticsState>
+  /**
+   * Read-only Phase 11 research. It starts and cancels *offline compute* over a recorded
+   * file; it cannot reach an order, a control, an arm state or the trading day.
+   */
+  replay: (request: ReplayCommand) => Promise<ReplayState>
   /** The only bridge method that can lead to a press. Workspace main frames only. */
   execution: (request: ExecutionCommand) => Promise<ExecutionState>
 }
@@ -269,3 +276,4 @@ export * from './execution'
 export * from './paper'
 export * from './session-guard'
 export * from './analytics'
+export * from './replay'

@@ -25,6 +25,8 @@ from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity_api import router as opportunity_router
 from quant_engine.paper_api import router as paper_router
 from quant_engine.paths import AppPaths, ensure_app_paths
+from quant_engine.replay.service import ReplayService
+from quant_engine.replay_api import router as replay_router
 from quant_engine.session_guard_api import router as session_guard_router
 from quant_engine.storage.analytics_repository import save_snapshot
 from quant_engine.storage.database import database_is_healthy, initialize_database
@@ -100,6 +102,12 @@ def create_app(
         market.analytics.sink = persist_analytics
         application.state.market = market
 
+        # Phase 11 sits beside the engine rather than inside it. It reads the durable record as
+        # input, owns its own analytical engine per run, writes only under its own namespace, and
+        # is never consulted by anything that makes a live decision. A replay that failed, or one
+        # that never ran, changes nothing about the live pipeline.
+        application.state.replay = ReplayService(paths.market_data)
+
         stopping = asyncio.Event()
 
         async def maintain_market() -> None:
@@ -139,6 +147,7 @@ def create_app(
     application.include_router(paper_router)
     application.include_router(session_guard_router)
     application.include_router(analytics_router)
+    application.include_router(replay_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

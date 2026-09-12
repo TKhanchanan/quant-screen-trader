@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 
-from quant_engine.features.math import bps, finite, mean
+from quant_engine.features.math import bps, clamp, finite, mean
 from quant_engine.features.trend import EMAState
 
 FLAT_RSI = 50.0
@@ -78,7 +78,13 @@ class StochasticState:
             lowest = min(lows[-self.period :])
             span = highest - lowest
             if span > 0:
-                percent_k = finite(100.0 * (close - lowest) / span)
+                # Clamped, because the division is not exact. A close that *is* the window's
+                # high is mathematically 100 and can evaluate to 100.00000000000001, which the
+                # wire model refuses — so an ordinary new high would raise instead of producing
+                # a feature, and the whole ingestion batch behind it would fail. The bound is a
+                # rounding repair and nothing else: every value inside the range is untouched.
+                raw = finite(100.0 * (close - lowest) / span)
+                percent_k = None if raw is None else clamp(raw, 0.0, 100.0)
         self._k.append(percent_k)
         recent = list(self._k)
         percent_d = (

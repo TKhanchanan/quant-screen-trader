@@ -236,3 +236,15 @@ def test_candle_fixture_keeps_close_inside_its_range() -> None:
     fixture = candle(0, 1.0, 1.2, 0.9, 1.1)
     assert fixture.low <= fixture.close <= fixture.high
     assert fixture.state == "CLOSED"
+
+
+def test_a_close_at_the_window_high_stays_inside_the_reported_bound() -> None:
+    # The division is not exact: a close that *is* the fourteen-bar high can evaluate to
+    # 100.00000000000001, which the wire model refuses. An ordinary new high must not be able
+    # to stop the feature engine, so the value is clamped rather than left to overflow.
+    stochastic = StochasticState()
+    highs = [0.1 * index for index in range(1, 15)]
+    lows = [0.1 * index - 0.1 for index in range(1, 15)]
+    percent_k, _ = stochastic.update(highs, lows, highs[-1])
+    assert percent_k is not None
+    assert 0.0 <= percent_k <= 100.0
