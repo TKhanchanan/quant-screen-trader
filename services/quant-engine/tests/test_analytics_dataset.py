@@ -13,6 +13,8 @@ that lets a reader tell the two apart.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import fields, replace
+from typing import Any
 
 import analytics_fixtures as fixtures
 from quant_engine.analytics import (
@@ -26,7 +28,7 @@ from quant_engine.analytics import (
     supported,
     terminal_rows,
 )
-from quant_engine.analytics.models import AnalyticsRow
+from quant_engine.analytics.models import AnalyticsRow, StrategyVoteRow
 
 # --- T-D the canonical input -----------------------------------------------------------
 
@@ -184,21 +186,79 @@ def test_changing_one_outcome_changes_the_fingerprint() -> None:
     assert build(altered).fingerprint != before
 
 
-def test_the_fingerprint_ignores_nothing_a_metric_depends_on() -> None:
-    trades = fixtures.sequence(fixtures.outcomes("W", 10))
-    base = build(trades).fingerprint
-    for field, value in (
-        ("rankScore", 0.99),
-        ("ensembleConfidence", 0.11),
-        ("agreement", 0.22),
-        ("regimeConfidence", 0.33),
-        ("leadMargin", None),
-        ("primaryRegime", "NOISY"),
-        ("priceDeltaBps", 99.0),
-        ("realizedPaperPnl", 1.0),
-    ):
-        altered = [*trades[:-1], trades[-1].model_copy(update={field: value})]
-        assert build(altered).fingerprint != base, field
+MUTATIONS: dict[str, Any] = {
+    "paperTradeId": fixtures.identity("someone-else"),
+    "platform": "iqoption",
+    "slotId": 7,
+    "assetName": "Silver OTC",
+    "contextId": fixtures.identity("another-context"),
+    "direction": "DOWN",
+    "boardAsOf": fixtures.BASE_MS + 1,
+    "decisionAvailableAt": fixtures.BASE_MS + 2,
+    "entryTime": fixtures.BASE_MS + 3,
+    "expiryTime": fixtures.BASE_MS + 4,
+    "rank": 4,
+    "rankScore": 0.11,
+    "ensembleConfidence": 0.12,
+    "agreement": 0.13,
+    "primaryRegime": "NOISY",
+    "regimeConfidence": 0.14,
+    "leadMargin": None,
+    "boardStatus": "PARTIAL",
+    "entryQuality": "DEGRADED",
+    "expiryQuality": "DEGRADED",
+    "entrySource": "DOM",
+    "expirySource": "DOM",
+    "outcome": "LOSS",
+    "priceDeltaBps": 9.0,
+    "paperStake": 99.0,
+    "paperPayoutRate": 0.5,
+    "realizedPaperPnl": 1.0,
+    "paperCurrency": "USD",
+    "featureVersion": "qfe-v3",
+    "regimeVersion": "qst-regime-v2",
+    "strategyVersion": "qst-strategy-v2",
+    "rankingVersion": "qst-ranking-v2",
+    "paperVersion": "qst-paper-v2",
+    "hourOfDay": 3,
+    "dayOfWeek": 5,
+    "localDate": "2020-01-01",
+    "timezone": "UTC",
+    "analyticsVersion": "qst-analytics-v2",
+    "strategyVotes": (StrategyVoteRow("other_v1", "DOWN", 0.9, False),),
+    "strategyCount": 3,
+    "directionalBreadth": 0.25,
+}
+"""One materially different value per field of ``AnalyticsRow``.
+
+Kept as an exhaustive map rather than a sample so the test below fails loudly when a field is
+added: a new column with no entry here is a column nobody decided about.
+"""
+
+
+def test_every_field_of_an_analysis_row_changes_the_fingerprint() -> None:
+    # A curated list of "fields a metric depends on" is a list that drifts. A field added for
+    # one table and forgotten in the hash would let two materially different datasets share a
+    # snapshot id, and a deterministic identifier is only worth having if that cannot happen.
+    source = fixtures.trade("fp", expiry=fixtures.BASE_MS)
+    row = build([source], [fixtures.evaluation(source, "trend_follow_v1", "UP")]).rows[0]
+    assert row.strategyVotes, "the joined votes must be present for this test to cover them"
+    base = fingerprint([row])
+    names = [item.name for item in fields(AnalyticsRow)]
+    assert set(names) == set(MUTATIONS), "every row field needs a mutation to test it with"
+    for name in names:
+        altered = replace(row, **{name: MUTATIONS[name]})
+        assert fingerprint([altered]) != base, name
+
+
+def test_a_changed_strategy_vote_changes_the_dataset_even_when_the_outcome_did_not() -> None:
+    # The strategy tables are built from exactly these, so a vote is part of the analysed data
+    # and not merely context attached to it.
+    source = fixtures.trade("votes", expiry=fixtures.BASE_MS)
+    agreed = build([source], [fixtures.evaluation(source, "trend_follow_v1", "UP")])
+    against = build([source], [fixtures.evaluation(source, "trend_follow_v1", "DOWN")])
+    assert agreed.rows[0].outcome == against.rows[0].outcome
+    assert agreed.fingerprint != against.fingerprint
 
 
 def test_an_empty_history_still_has_a_stable_fingerprint() -> None:

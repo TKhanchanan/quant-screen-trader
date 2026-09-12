@@ -396,6 +396,7 @@ void app.whenReady().then(() => {
         platform, sampleCount: Number(snapshot.totalResolved ?? 0),
         sampleLabel: SampleLabelSchema.parse(body.sampleLabel ?? 'INSUFFICIENT_SAMPLE'),
         timezone: String(snapshot.timezone ?? 'Asia/Bangkok'),
+        stale: Boolean(body.stale), pendingOutcomes: Number(body.pendingOutcomes ?? 0),
         quality: AnalyticsQualitySchema.parse(snapshot.quality),
         overall: OutcomeMetricsSchema.parse(snapshot.overallMetrics),
         money: MoneyMetricsSchema.parse(snapshot.overallMoney),

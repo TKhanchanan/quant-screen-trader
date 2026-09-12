@@ -25,6 +25,7 @@ from quant_engine.analytics import (
 )
 from quant_engine.analytics.models import AnalyticsRow
 from quant_engine.analytics.thresholds import METRICS
+from quant_engine.paper.models import PaperTrade
 
 SETTINGS = AnalyticsSettings()
 MODULE = (
@@ -266,3 +267,80 @@ def test_every_candidate_says_on_its_own_record_that_it_is_not_applied() -> None
         assert candidate.operator == ">="
     assert snapshot.researchOnly is True
     assert snapshot.appliedToLiveExecution is False
+
+
+# --- directional stability is not monetary stability ------------------------------------
+
+
+def winning_but_unprofitable() -> list[PaperTrade]:
+    """A threshold that lifts the win rate in every period and loses money in every period.
+
+    At a 0.8 payout a rule needs roughly 55.6% to break even, so 54% is a real directional
+    improvement over a 46% baseline and still bleeds. This is the case a single stability flag
+    would report as a finding.
+    """
+    rows: list[PaperTrade] = []
+    for index in range(400):
+        high = index % 2 == 0
+        outcome = "WIN" if fixtures.scatter(index) < (54 if high else 38) else "LOSS"
+        rows.append(
+            fixtures.trade(
+                f"thin-edge-{index}",
+                outcome=outcome,
+                rank_score=0.85 if high else 0.25,
+                stake=50.0,
+                payout=0.8,
+                expiry=fixtures.BASE_MS + index * 1_000,
+            )
+        )
+    return rows
+
+
+def test_a_threshold_that_wins_more_and_still_loses_money_is_not_recommended() -> None:
+    split = chronological_split(build(winning_but_unprofitable()).rows, settings=SETTINGS)
+    candidates, _ = discover(split, settings=SETTINGS)
+    rank = next(item for item in candidates if item.metric == "rankScore")
+    assert rank.directionalStability == "STABLE"
+    for period in (rank.train, rank.validation, rank.test):
+        assert period.lift is not None and period.lift > 0
+        assert period.money.expectancyPerTrade is not None
+        assert period.money.expectancyPerTrade < 0
+    assert rank.monetaryStability == "UNSTABLE"
+    assert rank.stability == "UNSTABLE"
+    assert rank.stable is False
+    assert "EXPECTANCY_NOT_CONSISTENT" in rank.reasons
+    assert any(reason.startswith("UNPROFITABLE_IN_") for reason in rank.reasons)
+
+
+def test_a_threshold_that_wins_more_and_earns_more_is_stable_on_both_counts() -> None:
+    trades, evaluations = fixtures.corpus()
+    split = chronological_split(build(trades, evaluations).rows, settings=SETTINGS)
+    candidates, _ = discover(split, settings=SETTINGS)
+    rank = next(item for item in candidates if item.metric == "rankScore")
+    assert rank.directionalStability == "STABLE"
+    assert rank.monetaryStability == "STABLE"
+    assert rank.stable is True
+
+
+def test_an_unpriced_history_leaves_expectancy_unverified_rather_than_assumed() -> None:
+    # Directional evidence is still evidence. It is not silently promoted to monetary evidence,
+    # and the candidate carries the gap on its own record.
+    trades, _ = fixtures.corpus()
+    bare = [
+        trade.model_copy(
+            update={
+                "paperStake": None,
+                "paperPayoutRate": None,
+                "paperCurrency": None,
+                "realizedPaperPnl": None,
+            }
+        )
+        for trade in trades
+    ]
+    split = chronological_split(build(bare).rows, settings=SETTINGS)
+    candidates, _ = discover(split, settings=SETTINGS)
+    rank = next(item for item in candidates if item.metric == "rankScore")
+    assert rank.directionalStability == "STABLE"
+    assert rank.monetaryStability == "UNTESTED"
+    assert "MONETARY_UNVERIFIED" in rank.reasons
+    assert rank.stable is True

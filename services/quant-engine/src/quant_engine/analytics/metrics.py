@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from statistics import fmean, median
 
@@ -108,23 +109,56 @@ def outcome_metrics(rows: Sequence[AnalyticsRow], *, minimum: int) -> OutcomeMet
     )
 
 
+def dominant_currency(rows: Sequence[AnalyticsRow]) -> tuple[str | None, list[str]]:
+    """The one currency a money total may be denominated in, and every currency seen.
+
+    Most priced outcomes wins; an exact tie is broken alphabetically so the choice is
+    reproducible rather than dependent on iteration order. A row carrying a realized result but
+    no currency label cannot be added to anything and is never the dominant one.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if row.realizedPaperPnl is not None and row.paperCurrency is not None:
+            counts[row.paperCurrency] += 1
+    if not counts:
+        return (None, [])
+    best = min(counts, key=lambda code: (-counts[code], code))
+    return (best, sorted(counts))
+
+
 def money_metrics(
     rows: Sequence[AnalyticsRow],
     *,
     bootstrap_iterations: int = 0,
     seed: int = 0,
 ) -> MoneyMetrics:
-    """Simulated money for one slice, or an explicit unavailable.
+    """Simulated money for one slice, in exactly one currency, or an honest unavailable.
 
-    Only rows that actually carry a realized simulated result take part. A resolved trade that
+    Two rules, and the second one is the reason this function is longer than it looks.
+
+    Only rows that actually carry a realized simulated result take part: a resolved trade that
     ran with no configured stake contributes its direction to the outcome metrics and nothing
     at all here, so the two sample counts legitimately differ and both are reported.
+
+    And **nothing is ever pooled across currencies.** A run that switched the simulated currency
+    halfway through holds two incomparable sets of numbers, and adding them would produce a
+    total that is not wrong in any particular row and is meaningless as a whole — the one number
+    an operator is most likely to act on and least able to check. The dominant currency is
+    aggregated and labelled; the rest are counted in ``excludedByCurrency`` and left out. There
+    is no conversion anywhere in this application, exactly as Phase 9.5 refuses one.
     """
+    currency, observed = dominant_currency(rows)
     priced = [row for row in rows if row.realizedPaperPnl is not None]
-    if not priced:
-        return MoneyMetrics(available=False, monetaryTrades=0)
-    values = [row.realizedPaperPnl for row in priced if row.realizedPaperPnl is not None]
-    currencies = {row.paperCurrency for row in priced if row.paperCurrency is not None}
+    if currency is None:
+        return MoneyMetrics(
+            available=False,
+            monetaryTrades=0,
+            currenciesObserved=observed,
+            excludedByCurrency=len(priced),
+            mixedCurrency=False,
+        )
+    counted = [row for row in priced if row.paperCurrency == currency]
+    values = [row.realizedPaperPnl for row in counted if row.realizedPaperPnl is not None]
     wins = [value for value in values if value > 0]
     losses = [value for value in values if value < 0]
     gross_profit = math.fsum(wins)
@@ -139,17 +173,17 @@ def money_metrics(
     return MoneyMetrics(
         available=True,
         monetaryTrades=len(values),
-        # A mixed-currency slice reports no currency rather than labelling the sum with one of
-        # them. Nothing here converts, and a total that silently pooled two currencies would be
-        # a number with no meaning.
-        currency=next(iter(currencies)) if len(currencies) == 1 else None,
+        currency=currency,
+        currenciesObserved=observed,
+        excludedByCurrency=len(priced) - len(counted),
+        mixedCurrency=len(observed) > 1,
         grossProfit=gross_profit,
         grossLoss=gross_loss,
         netPaperPnl=math.fsum(values),
         averageWin=average_win,
         averageLoss=average_loss,
         profitFactor=gross_profit / gross_loss if gross_loss > 0 else None,
-        expectancyPerTrade=fmean(values),
+        expectancyPerTrade=fmean(values) if values else None,
         payoffRatio=(
             average_win / abs(average_loss)
             if average_win is not None and average_loss is not None and average_loss != 0

@@ -20,7 +20,8 @@ const outcomes = (changes: Record<string, unknown> = {}): Record<string, unknown
   ...changes
 })
 const money = (changes: Record<string, unknown> = {}): Record<string, unknown> => ({
-  available: true, monetaryTrades: 240, currency: 'THB', grossProfit: 4416, grossLoss: 4800,
+  available: true, monetaryTrades: 240, currency: 'THB', currenciesObserved: ['THB'],
+  excludedByCurrency: 0, mixedCurrency: false, grossProfit: 4416, grossLoss: 4800,
   netPaperPnl: -384, profitFactor: 0.92, expectancyPerTrade: -1.6, ...changes
 })
 const bin = (index: number, label: string, resolved: number, rate: number): Record<string, unknown> => ({
@@ -55,12 +56,14 @@ const candidate = (changes: Record<string, unknown> = {}): Record<string, unknow
   metric: 'rankScore', operator: '>=', threshold: 0.61,
   train: split('TRAIN', 520, 0.59), validation: split('VALIDATION', 160, 0.58),
   test: split('TEST', 150, 0.57), stable: true, stability: 'STABLE',
+  directionalStability: 'STABLE', monetaryStability: 'STABLE',
   reasons: ['CONSISTENT_ACROSS_SPLITS'], appliedToLiveExecution: false, ...changes
 })
 const state = (changes: Record<string, unknown> = {}): AnalyticsState =>
   AnalyticsStateSchema.parse({
     analyticsVersion: 'qst-analytics-v1', available: true, busy: false, platform: 'capitalbear',
-    sampleCount: 940, sampleLabel: 'OK', timezone: 'Asia/Bangkok',
+    sampleCount: 940, sampleLabel: 'OK', timezone: 'Asia/Bangkok', stale: false,
+    pendingOutcomes: 0,
     quality: { totalTrades: 1200, eligibleTrades: 1180, resolved: 940, invalid: 30, cancelled: 20,
       pendingEntry: 40, open: 150, unsupportedVersions: 20, resolvedRate: 940 / 1180 },
     overall: outcomes({ resolved: 940, sampleCount: 940 }), money: money(),
@@ -130,6 +133,8 @@ describe('analytics bridge', () => {
     expect(empty.money).toBeNull()
     expect(empty.sampleCount).toBe(0)
     expect(empty.thresholds).toEqual([])
+    expect(empty.stale).toBe(false)
+    expect(empty.pendingOutcomes).toBe(0)
     // A zero win rate over zero trades would read as a losing system.
     expect(outcomeLine(empty.overall)).toBe('ยังไม่มีไม้ที่รู้ผล')
   })
@@ -175,6 +180,32 @@ describe('analytics labels', () => {
     expect(moneyLine(MoneyMetricsSchema.parse(money({ available: false }))))
       .toBe('ยังไม่ได้ตั้งค่าเงินจำลอง')
     expect(moneyLine(MoneyMetricsSchema.parse(money()))).toContain('profit factor 0.92')
+  })
+
+  it('never presents a total that pooled two currencies', () => {
+    // Nothing converts between currencies, so the label has to say which currency the total is
+    // in and how much of the record it left out. A bare number would be read as all of it.
+    const mixed = moneyLine(MoneyMetricsSchema.parse(money({
+      currency: 'THB', monetaryTrades: 200, excludedByCurrency: 40, mixedCurrency: true,
+      currenciesObserved: ['THB', 'USD']
+    })))
+    expect(mixed).toContain('นับเงินได้ 200 ไม้ (THB)')
+    expect(mixed).toContain('ไม่นับอีก 40 ไม้')
+    expect(mixed).toContain('THB, USD')
+    expect(warningLabel('MIXED_CURRENCY')).toContain('ไม่มีการแปลงค่า')
+    // A single-currency slice says nothing about exclusions, because there were none.
+    expect(moneyLine(MoneyMetricsSchema.parse(money()))).not.toContain('ไม่นับอีก')
+  })
+
+  it('reports directional and monetary stability separately', () => {
+    // They disagree, and the disagreement is the finding: at a 0.8 payout a rule can lift the
+    // win rate in every period and still lose money in all three.
+    const line = thresholdLine(ThresholdCandidateSchema.parse(candidate({
+      stable: false, stability: 'UNSTABLE', directionalStability: 'STABLE',
+      monetaryStability: 'UNSTABLE', reasons: ['EXPECTANCY_NOT_CONSISTENT']
+    })))
+    expect(line).toContain('ทิศทาง: นิ่งข้ามช่วงเวลา')
+    expect(line).toContain('เงิน: ไม่นิ่ง — ใช้ไม่ได้')
   })
 
   it('states a threshold as a research observation across all three periods', () => {
@@ -265,6 +296,15 @@ describe('analytics panel', () => {
     expect(unstable).toContain('threshold-unstable')
     expect(unstable).toContain('ไม่นิ่ง')
     expect(unstable).toContain('WEAK_IN_TEST')
+  })
+
+  it('says when the analysis has not caught up with new outcomes yet', () => {
+    const html = renderToStaticMarkup(createElement(AnalyticsTables, {
+      state: state({ stale: true, pendingOutcomes: 7 })
+    }))
+    expect(html).toContain('มีผลใหม่ 7 ไม้')
+    const current = renderToStaticMarkup(createElement(AnalyticsTables, { state: state() }))
+    expect(current).not.toContain('มีผลใหม่')
   })
 
   it('surfaces a score that does not work instead of hiding it', () => {

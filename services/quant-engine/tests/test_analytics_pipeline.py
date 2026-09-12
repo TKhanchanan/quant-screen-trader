@@ -20,6 +20,7 @@ import test_paper_pipeline as pipeline
 from quant_engine.analytics import AnalyticsService, build
 from quant_engine.market_api import MarketEngine
 from quant_engine.market_storage import ParquetStorage
+from quant_engine.paper.engine import PaperUpdate
 from quant_engine.paper.models import PaperTrade
 from quant_engine.storage.analytics_repository import (
     MAX_RETAINED,
@@ -191,3 +192,72 @@ def test_an_unreadable_snapshot_file_is_skipped_rather_than_guessed_at(tmp_path:
     save_snapshot(tmp_path, snapshot)
     (snapshot_dir(tmp_path) / "0000000000001-broken.json").write_text("{not json")
     assert len(load_snapshots(tmp_path)) == 1
+
+
+# --- invalidation: a cached analysis must not outlive the record it describes -----------
+
+
+def test_a_newly_resolved_outcome_makes_the_cached_analysis_stale(tmp_path: Path) -> None:
+    engine = seeded(tmp_path)
+    engine.analytics.refresh()
+    before = engine.analytics.snapshot
+    assert before is not None and engine.analytics.current is True
+
+    # One more resolved outcome reaches the durable record the way live ingestion delivers it.
+    trade = next(item for item in engine.paper.history if item.status == "RESOLVED")
+    later = trade.model_copy(
+        update={
+            "paperTradeId": fixtures.identity("late-outcome"),
+            "expiryTime": (trade.expiryTime or 0) + 60_000,
+            "outcome": "LOSS",
+        }
+    )
+    engine.persist_paper(PaperUpdate(trades=(later,)))
+    assert engine.analytics.stale is True
+    assert engine.analytics.pendingOutcomes == 1
+    assert engine.analytics.current is False
+    # The cached snapshot is untouched until something asks for an answer.
+    assert engine.analytics.snapshot is before
+
+    engine.storage.flush()
+    after = engine.analytics.refresh()
+    assert after is not None
+    assert after.totalResolved == before.totalResolved + 1
+    assert after.datasetFingerprint != before.datasetFingerprint
+    assert engine.analytics.stale is False and engine.analytics.pendingOutcomes == 0
+
+
+def test_an_unresolved_transition_does_not_invalidate_anything(tmp_path: Path) -> None:
+    # A pending or open trade changes nothing an analysis measured, and rebuilding on every
+    # lifecycle write would make the diagnostics layer cost the capture layer its samples.
+    engine = seeded(tmp_path)
+    engine.analytics.refresh()
+    pending = next(item for item in engine.paper.history if item.status == "RESOLVED").model_copy(
+        update={"status": "OPEN", "outcome": "UNRESOLVED"}
+    )
+    engine.persist_paper(PaperUpdate(trades=(pending,)))
+    assert engine.analytics.stale is False
+    assert engine.analytics.current is True
+
+
+def test_a_restart_brings_the_whole_history_back_into_view(tmp_path: Path) -> None:
+    seeded(tmp_path)
+    restarted = MarketEngine(ParquetStorage(tmp_path))
+    assert restarted.analytics.stale is False
+    assert restarted.restore_paper() > 0
+    assert restarted.analytics.stale is True
+
+
+def test_a_failed_rebuild_leaves_the_analysis_stale_so_the_next_read_tries_again() -> None:
+    service = AnalyticsService()
+    service.adopt(*fixtures.corpus())
+    service.mark_stale(3)
+
+    def broken() -> tuple[list[PaperTrade], list[StrategyEvaluation]]:
+        raise OSError("parquet is not readable")
+
+    service.loader = broken
+    service.refresh()
+    assert service.stale is True
+    assert service.pendingOutcomes == 3
+    assert service.loadError is not None

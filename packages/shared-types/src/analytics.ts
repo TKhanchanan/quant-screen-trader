@@ -47,8 +47,17 @@ export type OutcomeMetrics = z.infer<typeof OutcomeMetricsSchema>
 export const MoneyMetricsSchema = z.looseObject({
   /** False whenever no stake and payout rate were configured. Never rendered as zero. */
   available: z.boolean(),
+  /** Priced outcomes **in `currency`**. Never a count across currencies. */
   monetaryTrades: z.number().int().nonnegative(),
   currency: z.string().max(8).nullable(),
+  currenciesObserved: z.array(z.string().max(8)).max(8),
+  /**
+   * Priced outcomes in some other currency, excluded from every number here. Nothing in this
+   * application converts between currencies, so a total that pooled two of them would be the
+   * one number an operator is most likely to act on and least able to check.
+   */
+  excludedByCurrency: z.number().int().nonnegative(),
+  mixedCurrency: z.boolean(),
   grossProfit: z.number().nullable(),
   grossLoss: z.number().nullable(),
   netPaperPnl: z.number().nullable(),
@@ -139,6 +148,13 @@ export const ThresholdCandidateSchema = z.looseObject({
   test: SplitMetricsSchema,
   stable: z.boolean(),
   stability: StabilitySchema,
+  /**
+   * Reported apart because they disagree, and the disagreement is the point: at a 0.8 payout a
+   * rule needs roughly 56% to break even, so a threshold can lift the win rate in every period
+   * and lose money in all three.
+   */
+  directionalStability: StabilitySchema,
+  monetaryStability: StabilitySchema,
   reasons: z.array(z.string()).max(24),
   /** A literal on the wire too, so a panel cannot render one as if it were in force. */
   appliedToLiveExecution: z.literal(false)
@@ -179,6 +195,9 @@ export const AnalyticsStateSchema = z.strictObject({
   sampleCount: z.number().int().nonnegative(),
   sampleLabel: SampleLabelSchema,
   timezone: z.string().min(1).max(64),
+  /** True when Phase 9 has resolved outcomes this analysis has not seen yet. */
+  stale: z.boolean(),
+  pendingOutcomes: z.number().int().nonnegative(),
   quality: AnalyticsQualitySchema.nullable(),
   overall: OutcomeMetricsSchema.nullable(),
   money: MoneyMetricsSchema.nullable(),
@@ -205,7 +224,8 @@ export function emptyAnalyticsState(
 ): AnalyticsState {
   return {
     analyticsVersion: 'unknown', available: false, busy, platform, sampleCount: 0,
-    sampleLabel: 'INSUFFICIENT_SAMPLE', timezone: 'Asia/Bangkok', quality: null, overall: null,
+    sampleLabel: 'INSUFFICIENT_SAMPLE', timezone: 'Asia/Bangkok', stale: false,
+    pendingOutcomes: 0, quality: null, overall: null,
     money: null, rank: null, confidence: null, regimes: [], assets: [], hours: [],
     strategyRegime: null, thresholds: [], split: null, warnings: []
   }
@@ -222,6 +242,7 @@ const WARNINGS: Record<string, string> = {
   THRESHOLD_UNSTABLE: 'เกณฑ์ที่ค้นเจอไม่นิ่งข้ามช่วงเวลา',
   MULTIPLE_TESTING_WARNING: 'ค้นหลายเกณฑ์พร้อมกัน — ตัวที่ดูดีที่สุดอาจดีเพราะบังเอิญ',
   VERSION_MIXED: 'มีข้อมูลหลายเวอร์ชัน — ตัวที่ไม่รองรับถูกแยกออกแล้ว',
+  MIXED_CURRENCY: 'มีหลายสกุลเงิน — ตัวเลขเงินนับเฉพาะสกุลหลัก ไม่มีการแปลงค่า',
   PAPER_ACCOUNTING_UNAVAILABLE: 'ยังไม่ได้ตั้งค่าเงินจำลอง จึงไม่มีตัวเลขกำไร/ขาดทุน',
   NO_STRATEGY_EVIDENCE: 'ยังไม่มีคะแนนโหวตรายกลยุทธ์ที่จับคู่กับผลได้',
   SINGLE_PLATFORM: 'มีข้อมูลแค่แพลตฟอร์มเดียวในมุมมองนี้'
@@ -275,12 +296,22 @@ export function outcomeLine(metrics: OutcomeMetrics | null): string {
     `เสมอ ${metrics.draws} · สัดส่วนถูก (ไม่นับเสมอ) ${winRateLabel(metrics)}`
 }
 
+/**
+ * The money total, always labelled with the one currency it is a total of.
+ *
+ * When more than one currency was recorded the excluded count is stated in the same sentence.
+ * A reader who sees only the total would read a partial sum as the whole record, and nothing in
+ * this application converts between currencies.
+ */
 export function moneyLine(money: MoneyMetrics | null): string {
   if (!money || !money.available) return 'ยังไม่ได้ตั้งค่าเงินจำลอง'
   const factor = money.profitFactor === null ? '—' : money.profitFactor.toFixed(2)
+  const excluded = money.excludedByCurrency > 0
+    ? ` · ไม่นับอีก ${money.excludedByCurrency} ไม้ (คนละสกุลเงิน: ${money.currenciesObserved.join(', ')})`
+    : ''
   return `${paperMoneyLabel(money.netPaperPnl, money.currency)} · profit factor ${factor} · ` +
     `เฉลี่ยต่อไม้ ${paperMoneyLabel(money.expectancyPerTrade, money.currency)} · ` +
-    `นับเงินได้ ${money.monetaryTrades} ไม้`
+    `นับเงินได้ ${money.monetaryTrades} ไม้ (${money.currency ?? '—'})${excluded}`
 }
 
 /** One calibration band. `n` first, because the count is what qualifies the rate. */
@@ -320,7 +351,8 @@ export function thresholdLine(candidate: ThresholdCandidate): string {
   return `${candidate.metric} ${candidate.operator} ${candidate.threshold.toFixed(2)} · ` +
     `ฝึก ${period(candidate.train)} · ตรวจ ${period(candidate.validation)} · ` +
     `ทดสอบ ${period(candidate.test)} · ครอบคลุม ${percentLabel(candidate.train.coverage)} · ` +
-    stabilityLabel(candidate.stability)
+    `ทิศทาง: ${stabilityLabel(candidate.directionalStability)} · ` +
+    `เงิน: ${stabilityLabel(candidate.monetaryStability)}`
 }
 
 /** The one sentence that must appear wherever a threshold does. */

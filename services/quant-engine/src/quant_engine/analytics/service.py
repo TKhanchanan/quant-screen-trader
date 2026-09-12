@@ -48,6 +48,15 @@ class AnalyticsService:
         self.loaded = False
         self.loadError: str | None = None
         self.rebuilds = 0
+        self.stale = False
+        """Set the moment Phase 9 resolves an outcome the cached analysis has never seen.
+
+        A cached snapshot is a statement about a record that has since changed, and serving it
+        as if it were current is the quiet failure this flag exists to prevent: the panel would
+        keep reporting yesterday's win rate through a whole session and give no sign of it. The
+        flag costs one assignment on the ingestion path and the rebuild happens on the next
+        read, off that thread."""
+        self.pendingOutcomes = 0
         self.trades: Sequence[PaperTrade] = ()
         self.evaluations: Sequence[StrategyEvaluation] = ()
         self.dataset: AnalyticsDataset | None = None
@@ -57,6 +66,16 @@ class AnalyticsService:
     def settings(self) -> AnalyticsSettings:
         return self.engine.settings
 
+    def mark_stale(self, outcomes: int = 1) -> None:
+        """Record that the durable record has moved on. Called from the ingestion path.
+
+        Deliberately does no work: a rebuild reads the whole Parquet history, and doing that
+        inside the thread that is trying to keep up with nine live charts would make the
+        analysis layer cost the capture layer its samples.
+        """
+        self.stale = True
+        self.pendingOutcomes += max(outcomes, 0)
+
     def adopt(
         self, trades: Sequence[PaperTrade], evaluations: Sequence[StrategyEvaluation] = ()
     ) -> AnalyticsSnapshot:
@@ -65,14 +84,17 @@ class AnalyticsService:
         self.evaluations = evaluations
         self.loaded = True
         self.loadError = None
+        self.stale = False
+        self.pendingOutcomes = 0
         return self._recompute()
 
     def refresh(self) -> AnalyticsSnapshot | None:
         """Reload the durable record and recompute. Blocking; call it off the request thread.
 
-        A failure leaves the previous analysis in place and names the reason. An unreadable
-        history is a diagnostics outage, and replacing a real snapshot with an empty one would
-        turn it into a claim that nothing ever happened.
+        A failure leaves the previous analysis in place, names the reason, and leaves the stale
+        flag up so the next read tries again. An unreadable history is a diagnostics outage, and
+        replacing a real snapshot with an empty one would turn it into a claim that nothing ever
+        happened.
         """
         if self.loader is None:
             return self.snapshot
@@ -81,6 +103,8 @@ class AnalyticsService:
             self.trades, self.evaluations = self.loader()
             self.loaded = True
             self.loadError = None
+            self.stale = False
+            self.pendingOutcomes = 0
             return self._recompute()
         except Exception as error:
             self.loadError = f"Analytics history unreadable: {error}"[:200]
@@ -100,6 +124,11 @@ class AnalyticsService:
                 # answering the question that was asked.
                 self.loadError = "Analytics snapshot could not be persisted"
         return self.snapshot
+
+    @property
+    def current(self) -> bool:
+        """Whether the cached analysis still describes the record it was built from."""
+        return self.loaded and not self.stale
 
     def view(self, filters: AnalyticsFilters | None = None) -> AnalyticsSnapshot | None:
         """The unfiltered snapshot, or a fresh one over the filtered slice of the same history.

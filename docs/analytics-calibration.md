@@ -120,6 +120,23 @@ because `0.3 * 10` is `2.9999999999999996` in IEEE 754 and the shortcut puts 0.3
 Empty bands are returned rather than skipped: a curve that omitted the bands nothing scored in
 would look far better covered than it is.
 
+## Money is never pooled across currencies
+
+A slice's money total is denominated in **exactly one currency**, named on the record beside it.
+When a history contains more than one — an operator changed the simulated currency mid-run — the
+most-represented one is aggregated, the rest are counted in `excludedByCurrency` and left out of
+every monetary number, and the snapshot raises `MIXED_CURRENCY`.
+
+Nothing in this application converts between currencies, exactly as Phase 9.5 refuses to. The
+excluded outcomes still contribute their direction to the win rate; only their money is dropped.
+
+> Pooling ฿40 and −$50 into "−10" produces a number that is not wrong in any single row and is
+> meaningless as a whole — the one number an operator is most likely to act on and least able to
+> check.
+
+A tie in representation is broken alphabetically so the choice is reproducible, and a row that
+carries a realized result with no currency label is never the one that gets counted.
+
 ## Wilson intervals
 
 Every win rate carries a 95% Wilson score interval. Wilson rather than the normal approximation,
@@ -228,12 +245,28 @@ than against a pooled average of periods it never saw. The square root is a docu
 fitted to nothing; it exists so a rule that fires four times cannot outrank one that fires four
 hundred on a fractionally smaller edge. **It is a research ordering, not a production objective.**
 
-### Stability
+### Stability: directional and monetary are reported separately
 
-| Verdict | When |
+A threshold gets two verdicts, because they disagree and the disagreement is the finding.
+
+| | Measures | `STABLE` when |
+| --- | --- | --- |
+| `directionalStability` | win rate | positive lift over the period's own baseline in all three |
+| `monetaryStability` | expectancy | positive expectancy per trade in all three |
+
+> At a 0.8 payout a rule has to win about **55.6%** of the time to break even. A threshold that
+> lifts the win rate from 52% to 55% in *every* period is directionally stable and loses money in
+> all three.
+
+One combined flag would report that as a finding. The overall verdict requires **both** whenever
+both can be measured; when Phase 9 priced nothing the monetary verdict is `UNTESTED` and the
+candidate carries `MONETARY_UNVERIFIED` — directional evidence is still evidence, and discarding
+it would be as wrong as promoting it.
+
+| Overall verdict | When |
 | --- | --- |
-| `STABLE` | TRAIN ≥ 50 passing, VALIDATION and TEST ≥ 20 each, and positive lift in all three |
-| `UNSTABLE` | the direction did not hold in one of the periods — the failing period is named |
+| `STABLE` | TRAIN ≥ 50 passing, VALIDATION and TEST ≥ 20 each, and both verdicts clear |
+| `UNSTABLE` | the direction or the expectancy did not hold — the failing periods are named |
 | `UNTESTED` | the out-of-sample periods were too small to have tested anything |
 
 Train good, validation good, test bad is `UNSTABLE` and is not recommended. `UNTESTED` is a
@@ -260,15 +293,37 @@ this layer that could.
 
 ## Determinism
 
-* **Dataset fingerprint** — SHA-256 over each row's identity, timing, scores, regime, outcome and
-  money. Never over a modification time, which changes when nothing did and stays put when an
-  outcome is rewritten.
+* **Dataset fingerprint** — SHA-256 over **every field of every row**, in declaration order,
+  including the joined Phase 7 votes. Not a curated list of "fields a metric uses": a curated
+  list drifts, and a field added for one table and forgotten in the hash would let two materially
+  different datasets share a snapshot id. A test mutates each field in turn and asserts the
+  fingerprint changes, which is only possible because the hash is exhaustive. Never over a
+  modification time, which changes when nothing did and stays put when an outcome is rewritten.
 * **Snapshot id** — UUID5 over `analyticsVersion | datasetFingerprint | settingsFingerprint`. The
   same history analysed twice is the same snapshot; one changed outcome is a different one.
 * **No clock.** Nothing in the package can see what time it is now. `datetime` appears only to put
   an outcome in its local hour bucket.
 * **Seeded bootstrap.** Optional, off by default. An interval that moved on every refresh would
   invite rerunning until it looked narrow.
+
+## Invalidation
+
+A cached analysis describes the record it was built from, and that record grows while the
+application runs. So the moment Phase 9 resolves an outcome, `persist_paper` marks the analysis
+stale — one assignment on the ingestion path, no work — and the **next read rebuilds**.
+
+Correctness over caching. A snapshot that silently describes a record from three hours ago is not
+a cheaper answer, it is a different question's answer, and the panel would report a win rate that
+stopped being true mid-session with no sign of it.
+
+* Only a **resolved** transition invalidates. A pending or open trade changes nothing an analysis
+  measured, and rebuilding on every lifecycle write would make diagnostics cost the capture layer
+  its samples.
+* A restart marks stale too: outcomes resolved while the process was down are new to the analysis.
+* A failed rebuild leaves the flag up so the next read tries again, and keeps the previous
+  snapshot rather than replacing a real answer with an empty one.
+* `stale` and `pendingOutcomes` are on every API response and in the panel, so a rebuild that has
+  not happened yet is visible rather than silent.
 
 ## Storage
 
@@ -324,13 +379,29 @@ once at the top and once beside the thresholds.
 `INSUFFICIENT_SAMPLE` · `LOW_RESOLUTION_RATE` · `LOW_SAMPLE_SEGMENTS` ·
 `NON_MONOTONIC_RANK_SCORE` · `NON_MONOTONIC_CONFIDENCE` · `INVERSE_RANK_SCORE` ·
 `INVERSE_CONFIDENCE` · `THRESHOLD_UNSTABLE` · `MULTIPLE_TESTING_WARNING` · `VERSION_MIXED` ·
-`PAPER_ACCOUNTING_UNAVAILABLE` · `NO_STRATEGY_EVIDENCE` · `SINGLE_PLATFORM`
+`MIXED_CURRENCY` · `PAPER_ACCOUNTING_UNAVAILABLE` · `NO_STRATEGY_EVIDENCE` · `SINGLE_PLATFORM`
 
 ## Output for a later adaptive phase
 
 Each snapshot persists a small `research` list — stable score bands, regime observations,
 strategy-regime relationships and candidate skip conditions — so a future adaptive phase inherits
 evidence rather than starting from an empty table.
+
+**`stable` means the same thing here as it does for a threshold**, and is earned the same way.
+A regime and a strategy pairing are slices chosen *after* seeing the history they describe, which
+is the same selection bias a threshold search has, so they are held to the same standard:
+
+* a pooled effect must exist at all — Wilson lower bound above 0.5 (favourable) or upper bound
+  below it (a candidate skip condition) — otherwise the finding records `NO_POOLED_EFFECT`;
+* the effect must hold in **every** chronological period against *that period's own baseline*;
+* each period must carry at least `MIN_DISPLAY_SAMPLE` outcomes, and the pooled slice at least
+  `MIN_RECOMMENDATION_SAMPLE`.
+
+Every finding reports `trainCount` / `validationCount` / `testCount` and the win rate in each, so
+a reader can check the claim rather than take it. A regime that looks excellent pooled and only
+ever won in the first third of the history is recorded as an observation with `NOT_HELD_IN_TEST`
+named — never as stable. That shape is exactly what a decayed edge looks like, and a tight pooled
+interval is the most convincing thing it can produce.
 
 Every finding carries `appliedToLiveExecution: false` as a literal, and **nothing in this
 application reads one.** Persisting them without a consumer is the point.

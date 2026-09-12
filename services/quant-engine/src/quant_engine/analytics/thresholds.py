@@ -185,41 +185,78 @@ def _grid(settings: AnalyticsSettings) -> list[float]:
     ]
 
 
+def _consistent(
+    periods: Sequence[SplitMetrics], value: Callable[[SplitMetrics], float | None]
+) -> bool:
+    """Whether a quantity was positive in every period. A missing period is not a pass."""
+    return all((measured := value(period)) is not None and measured > 0 for period in periods)
+
+
 def _stability(
     train: SplitMetrics,
     validation: SplitMetrics,
     test: SplitMetrics,
     *,
     settings: AnalyticsSettings,
-) -> tuple[Stability, bool, list[Code]]:
-    """STABLE only when the same direction held in all three periods, with evidence in each.
+) -> tuple[Stability, Stability, Stability, bool, list[Code]]:
+    """Directional stability, monetary stability, and the overall verdict built from both.
 
-    Train strong, validation strong, test weak is UNSTABLE and is not recommended. So is a
-    candidate whose later periods are simply too small to have tested anything — that is
-    UNTESTED, which is a different statement from "it failed" and is kept distinct.
+    They are separate because they disagree, and the case where they disagree is the one worth
+    catching. At a 0.8 payout a rule has to win about 56% of the time to break even, so a
+    threshold that lifts the win rate from 52% to 55% in *every* period is directionally stable
+    and loses money in all three. One combined flag would report that as a finding.
+
+    So the overall verdict requires both whenever both can be measured. When Phase 9 priced
+    nothing the monetary verdict is ``UNTESTED`` — a different statement from "it failed" — and
+    the candidate stays eligible while carrying ``MONETARY_UNVERIFIED``, because directional
+    evidence is still evidence and pretending otherwise would discard it.
+
+    Train strong, validation strong, test weak is UNSTABLE and is not recommended. A candidate
+    whose later periods are simply too small to have tested anything is UNTESTED.
     """
+    periods = (train, validation, test)
+    names = ("TRAIN", "VALIDATION", "TEST")
     reasons: list[Code] = []
     if train.count < settings.minRecommendationSample:
         reasons.append("TRAIN_SAMPLE_BELOW_MINIMUM")
     if validation.count < settings.minDisplaySample or test.count < settings.minDisplaySample:
         reasons.append("OUT_OF_SAMPLE_TOO_SMALL")
-        return ("UNTESTED", False, reasons)
-    positives = [
-        period.lift is not None and period.lift > 0 for period in (train, validation, test)
-    ]
-    if not all(positives):
-        failed = [
-            name
-            for name, ok in zip(("TRAIN", "VALIDATION", "TEST"), positives, strict=True)
-            if not ok
-        ]
+        return ("UNTESTED", "UNTESTED", "UNTESTED", False, reasons)
+
+    directional_ok = [period.lift is not None and period.lift > 0 for period in periods]
+    if all(directional_ok):
+        directional: Stability = "STABLE"
+    else:
+        directional = "UNSTABLE"
         reasons.append("DIRECTION_NOT_CONSISTENT")
-        reasons.extend(f"WEAK_IN_{name}" for name in failed)
-        return ("UNSTABLE", False, reasons)
-    if reasons:
-        return ("UNSTABLE", False, reasons)
+        reasons.extend(
+            f"WEAK_IN_{name}" for name, ok in zip(names, directional_ok, strict=True) if not ok
+        )
+
+    priced = [period.money.available for period in periods]
+    if not any(priced):
+        monetary: Stability = "UNTESTED"
+        reasons.append("MONETARY_UNVERIFIED")
+    elif not all(priced):
+        monetary = "UNTESTED"
+        reasons.append("MONETARY_PARTIALLY_PRICED")
+    elif _consistent(periods, lambda period: period.money.expectancyPerTrade):
+        monetary = "STABLE"
+    else:
+        monetary = "UNSTABLE"
+        reasons.append("EXPECTANCY_NOT_CONSISTENT")
+        reasons.extend(
+            f"UNPROFITABLE_IN_{name}"
+            for name, period in zip(names, periods, strict=True)
+            if period.money.expectancyPerTrade is None or period.money.expectancyPerTrade <= 0
+        )
+
+    if any(reason == "TRAIN_SAMPLE_BELOW_MINIMUM" for reason in reasons):
+        return ("UNSTABLE", directional, monetary, False, reasons)
+    if directional == "UNSTABLE" or monetary == "UNSTABLE":
+        return ("UNSTABLE", directional, monetary, False, reasons)
     reasons.append("CONSISTENT_ACROSS_SPLITS")
-    return ("STABLE", True, reasons)
+    return ("STABLE", directional, monetary, True, reasons)
 
 
 def discover(
@@ -278,7 +315,9 @@ def discover(
             settings=settings,
             baseline=baselines["TEST"],
         )
-        stability, stable, reasons = _stability(train, validation, test, settings=settings)
+        stability, directional, monetary, stable, reasons = _stability(
+            train, validation, test, settings=settings
+        )
         candidates.append(
             ThresholdCandidate(
                 metric=metric,
@@ -288,6 +327,8 @@ def discover(
                 test=test,
                 stable=stable,
                 stability=stability,
+                directionalStability=directional,
+                monetaryStability=monetary,
                 researchScore=score,
                 reasons=reasons,
             )

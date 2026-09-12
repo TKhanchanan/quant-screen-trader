@@ -96,6 +96,7 @@ WARNING_CODES = (
     "THRESHOLD_UNSTABLE",
     "MULTIPLE_TESTING_WARNING",
     "VERSION_MIXED",
+    "MIXED_CURRENCY",
     "PAPER_ACCOUNTING_UNAVAILABLE",
     "NO_STRATEGY_EVIDENCE",
     "SINGLE_PLATFORM",
@@ -339,7 +340,18 @@ class MoneyMetrics(Model):
 
     available: bool = False
     monetaryTrades: int = Field(ge=0)
+    """Priced outcomes **in ``currency``**. Never a count across currencies."""
     currency: str | None = Field(default=None, max_length=8)
+    """The one currency every number below is denominated in. Never ``None`` while
+    ``available`` is true: an unlabelled money total is a number with no meaning."""
+
+    currenciesObserved: list[str] = Field(default_factory=list, max_length=8)
+    excludedByCurrency: int = Field(default=0, ge=0)
+    """Priced outcomes in some *other* currency. They contribute their direction to the
+    outcome metrics and nothing at all here. Nothing in this application converts between
+    currencies, and a total that silently pooled two of them would be the one number an
+    operator is most likely to act on and least able to check."""
+    mixedCurrency: bool = False
 
     grossProfit: float | None = None
     grossLoss: float | None = None
@@ -506,6 +518,14 @@ class ThresholdCandidate(Model):
     test: SplitMetrics
     stable: bool = False
     stability: Stability = "UNTESTED"
+    directionalStability: Stability = "UNTESTED"
+    """Whether the *win rate* held up out of sample."""
+    monetaryStability: Stability = "UNTESTED"
+    """Whether the *expectancy* did. Deliberately separate, because they disagree: at a 0.8
+    payout a rule needs roughly 56% to break even, so a threshold can lift the win rate from
+    52% to 55% in every period and still lose money in all three. A candidate that is
+    directionally stable and monetarily unstable is not a finding, and collapsing the two into
+    one flag would hide exactly that case. ``UNTESTED`` when Phase 9 priced nothing."""
     researchScore: float | None = None
     """A documented ordering for the research table only. Not an expected value, not an edge,
     and explicitly not optimized toward any daily profit or loss target."""
@@ -547,7 +567,24 @@ class ResearchFinding(Model):
     winRate: float | None = Field(default=None, ge=0, le=1)
     lower95: float | None = Field(default=None, ge=0, le=1)
     upper95: float | None = Field(default=None, ge=0, le=1)
+
+    trainCount: int = Field(default=0, ge=0)
+    validationCount: int = Field(default=0, ge=0)
+    testCount: int = Field(default=0, ge=0)
+    trainWinRate: float | None = Field(default=None, ge=0, le=1)
+    validationWinRate: float | None = Field(default=None, ge=0, le=1)
+    testWinRate: float | None = Field(default=None, ge=0, le=1)
+    """The same chronological split the threshold search uses.
+
+    A regime or a strategy pairing is a slice of history chosen after seeing the history, which
+    is the same selection bias a threshold search has — so it is held to the same standard. A
+    pooled Wilson bound over all-time data is not out-of-sample evidence, however tight it
+    looks."""
+
     stable: bool = False
+    """Only when the effect held in *every* period against that period's own baseline, with
+    enough sample in each. Everything else is recorded as an observation."""
+    reasons: list[Code] = Field(default_factory=list, max_length=MAX_WARNINGS)
     appliedToLiveExecution: Literal[False] = False
 
 

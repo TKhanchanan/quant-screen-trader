@@ -8,6 +8,7 @@ a correlation.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import analytics_fixtures as fixtures
@@ -22,6 +23,7 @@ from quant_engine.analytics import (
 )
 from quant_engine.analytics.dataset import build
 from quant_engine.analytics.models import AnalyticsRow
+from quant_engine.paper.models import PaperTrade
 
 FLOOR = 20
 
@@ -90,14 +92,63 @@ def test_a_slice_with_no_losses_reports_no_profit_factor_rather_than_infinity() 
     assert money.netPaperPnl == 80.0
 
 
-def test_a_mixed_currency_slice_reports_no_currency_rather_than_one_of_them() -> None:
-    baht = fixtures.trade("cur-thb", outcome="WIN", currency="THB", expiry=fixtures.BASE_MS)
-    dollar = fixtures.trade(
-        "cur-usd", outcome="WIN", currency="USD", expiry=fixtures.BASE_MS + 1_000
-    )
-    money = money_metrics(build([baht, dollar]).rows)
-    assert money.currency is None
+def test_two_currencies_are_never_added_together() -> None:
+    # The failure being prevented: a net total that is not wrong in any single row and is
+    # meaningless as a whole. Nothing in this application converts between currencies, and the
+    # one number an operator is most likely to act on is the one they can least easily check.
+    rows = build(
+        [
+            fixtures.trade("cur-thb", outcome="WIN", currency="THB", expiry=fixtures.BASE_MS),
+            fixtures.trade(
+                "cur-usd-a", outcome="WIN", currency="USD", expiry=fixtures.BASE_MS + 1_000
+            ),
+            fixtures.trade(
+                "cur-usd-b", outcome="LOSS", currency="USD", expiry=fixtures.BASE_MS + 2_000
+            ),
+        ]
+    ).rows
+    money = money_metrics(rows)
+    assert money.currency == "USD"
+    assert money.mixedCurrency is True
+    assert money.currenciesObserved == ["THB", "USD"]
     assert money.monetaryTrades == 2
+    assert money.excludedByCurrency == 1
+    # 40 − 50 in USD. The pooled sum across both currencies would have been +30.
+    assert money.netPaperPnl == -10.0
+    # The excluded trade still contributes its direction.
+    assert outcome_metrics(rows, minimum=FLOOR).wins == 2
+
+
+def test_the_counted_currency_is_the_most_represented_one_and_ties_are_reproducible() -> None:
+    def priced(code: str, index: int) -> PaperTrade:
+        return fixtures.trade(
+            f"tie-{code}-{index}", currency=code, expiry=fixtures.BASE_MS + index * 1_000
+        )
+
+    even = build([priced("USD", 0), priced("THB", 1)]).rows
+    assert money_metrics(even).currency == "THB"
+    assert money_metrics(list(reversed(even))).currency == "THB"
+    uneven = build([priced("THB", 0), priced("USD", 1), priced("USD", 2)]).rows
+    assert money_metrics(uneven).currency == "USD"
+
+
+def test_money_with_no_currency_label_is_not_added_to_anything() -> None:
+    labelled = fixtures.trade("lab", outcome="WIN", expiry=fixtures.BASE_MS)
+    unlabelled = build([labelled]).rows[0]
+    stripped = replace(unlabelled, paperCurrency=None)
+    money = money_metrics([unlabelled, stripped])
+    assert money.currency == "THB"
+    assert money.monetaryTrades == 1
+    assert money.excludedByCurrency == 1
+    assert money.netPaperPnl == 40.0
+
+
+def test_a_single_currency_slice_reports_it_and_flags_no_mixing() -> None:
+    money = money_metrics(rows(["WIN", "LOSS"]))
+    assert money.currency == "THB"
+    assert money.mixedCurrency is False
+    assert money.excludedByCurrency == 0
+    assert money.currenciesObserved == ["THB"]
 
 
 # --- T-BK no monetary data -------------------------------------------------------------

@@ -185,6 +185,13 @@ class MarketEngine:
         self.persist_paper(self.paper.on_market_sample(sample))
 
     def persist_paper(self, update: PaperUpdate) -> None:
+        # Phase 10 caches an analysis of the durable record, so a newly resolved outcome makes
+        # that cache a statement about a record that no longer exists. Flagging it here — one
+        # assignment, no work — is what keeps the panel from reporting a win rate that stopped
+        # being true hours ago. The rebuild happens on the next read, off this thread.
+        resolved = sum(1 for trade in update.trades if trade.status == "RESOLVED")
+        if resolved:
+            self.analytics.mark_stale(resolved)
         for trade in update.trades:
             self.storage.append("paper_trades", trade)
         for event in update.events:
@@ -256,6 +263,9 @@ class MarketEngine:
                 latest[key] = row
         update = self.paper.restore(latest.values())
         self.persist_paper(update)
+        # A restart brings a whole history back into view at once, including outcomes that
+        # resolved while this process was not running.
+        self.analytics.mark_stale(len(latest))
         return len(latest)
 
     def evaluate_primary_close(self, snapshot: FeatureSnapshot, available_at: int) -> None:

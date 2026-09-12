@@ -104,7 +104,10 @@ async def _analysis(
     """
     engine = _engine(request)
     service = engine.analytics
-    if refresh or not service.loaded:
+    # Rebuilt whenever Phase 9 has resolved an outcome this analysis has never seen. Correctness
+    # over caching: a snapshot that silently describes a record from three hours ago is not a
+    # cheaper answer, it is a different question's answer.
+    if refresh or not service.current:
         await asyncio.to_thread(service.refresh)
     snapshot = service.view(filters)
     if snapshot is None:
@@ -124,6 +127,9 @@ def _envelope(service: AnalyticsService, snapshot: AnalyticsSnapshot) -> dict[st
         "timezone": snapshot.timezone,
         "warnings": snapshot.warnings,
         "loadError": service.loadError,
+        "stale": service.stale,
+        "pendingOutcomes": service.pendingOutcomes,
+        "rebuilds": service.rebuilds,
         "researchOnly": True,
         "appliedToLiveExecution": False,
     }

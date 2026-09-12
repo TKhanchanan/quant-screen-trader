@@ -289,3 +289,58 @@ def test_reading_every_analytics_endpoint_changes_nothing_in_the_engine(
         assert engine.guard.settings.model_dump(mode="json") == before[1]
         assert engine.guard.state(fixtures.BASE_MS).model_dump(mode="json") == before[2]
         assert engine.paper.stats().model_dump(mode="json") == before[3]
+
+
+# --- invalidation over the read surface -------------------------------------------------
+
+
+def test_a_read_after_a_new_outcome_reflects_it_without_being_asked(tmp_path: Path) -> None:
+    from quant_engine.paper.engine import PaperUpdate
+
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        engine = seeded(client)
+        first = client.get("/api/analytics/summary").json()
+        assert first["sampleCount"] == SAMPLE
+        assert first["stale"] is False
+
+        trades, _ = fixtures.corpus()
+        engine.persist_paper(PaperUpdate(trades=(trades[SAMPLE],)))
+        engine.storage.flush()
+        assert engine.analytics.stale is True
+
+        # No refresh flag, no second call: a cached answer about a record that has since changed
+        # is not a cheaper answer, it is a different question's answer.
+        second = client.get("/api/analytics/summary").json()
+        assert second["sampleCount"] == SAMPLE + 1
+        assert second["stale"] is False
+        assert second["rebuilds"] > first["rebuilds"]
+        assert second["datasetFingerprint"] != first["datasetFingerprint"]
+
+
+def test_a_repeat_read_with_nothing_new_does_not_rebuild(tmp_path: Path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        seeded(client)
+        first = client.get("/api/analytics/summary").json()
+        second = client.get("/api/analytics/summary").json()
+        assert second["rebuilds"] == first["rebuilds"]
+        assert second["snapshotId"] == first["snapshotId"]
+
+
+def test_a_money_total_over_two_currencies_is_never_pooled_on_the_wire(tmp_path: Path) -> None:
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        engine = seeded(client)
+        trades, _ = fixtures.corpus()
+        foreign = [
+            trade.model_copy(update={"paperCurrency": "USD"})
+            for trade in trades[SAMPLE : SAMPLE + 20]
+        ]
+        for trade in foreign:
+            engine.storage.append("paper_trades", trade)
+        engine.storage.flush()
+        engine.analytics.mark_stale(len(foreign))
+        money = client.get("/api/analytics/summary").json()["money"]
+        assert money["mixedCurrency"] is True
+        assert sorted(money["currenciesObserved"]) == ["THB", "USD"]
+        assert money["currency"] == "THB"
+        assert money["monetaryTrades"] == SAMPLE
+        assert money["excludedByCurrency"] == len(foreign)

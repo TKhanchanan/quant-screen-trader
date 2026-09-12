@@ -68,6 +68,8 @@ export function AnalyticsTables({ state }: { state: AnalyticsState }): JSX.Eleme
           ? `แบ่งตามเวลา (ไม่สุ่ม): ฝึก ${state.split.train} · ตรวจ ${state.split.validation}` +
             ` · ทดสอบ ${state.split.test}`
           : 'ยังแบ่งช่วงเวลาไม่ได้'}</p>
+        {state.stale && <p role="status" className="analytics-warning">
+          มีผลใหม่ {state.pendingOutcomes} ไม้ที่ยังไม่ได้รวม — ระบบจะคำนวณใหม่ในรอบอ่านถัดไป</p>}
       </div>
 
       <Curve title="คะแนน rankScore เทียบผลจริง" calibration={state.rank} />
@@ -148,13 +150,15 @@ export function AnalyticsTables({ state }: { state: AnalyticsState }): JSX.Eleme
               <li key={`${candidate.metric}-${candidate.threshold}`}
                 className={candidate.stable ? 'threshold-stable' : 'threshold-unstable'}>
                 {thresholdLine(candidate)}
-                <small> · {stabilityLabel(candidate.stability)}
+                <small> · สรุป {stabilityLabel(candidate.stability)}
                   {candidate.reasons.length ? ` · ${candidate.reasons.join(', ')}` : ''}</small>
               </li>)}</ol>
           : <p>ยังไม่มีเกณฑ์ที่ผ่านเงื่อนไขตัวอย่างขั้นต่ำ</p>}
         <p role="alert" className="analytics-notice">{NOT_APPLIED_NOTICE}</p>
         <small>ค้นจากช่วง “ฝึก” เท่านั้น แล้วเอาไปวัดกับช่วง “ตรวจ” และ “ทดสอบ”
-          {' '}ตัวที่ไม่นิ่งข้ามช่วงจะถูกทำเครื่องหมายไว้ และไม่ใช่ข้อเสนอแนะ</small>
+          {' '}ตัวที่ไม่นิ่งข้ามช่วงจะถูกทำเครื่องหมายไว้ และไม่ใช่ข้อเสนอแนะ
+          {' '}· “ทิศทาง” กับ “เงิน” แยกกันเพราะมันขัดกันได้ — สัดส่วนถูกเพิ่มขึ้นแต่ยังขาดทุนก็เกิดได้
+          {' '}ถ้าอัตราจ่ายต่ำกว่าจุดคุ้มทุน</small>
       </div>
 
       <small className="analytics-footer">

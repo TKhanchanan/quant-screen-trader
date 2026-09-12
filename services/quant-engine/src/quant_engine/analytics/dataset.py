@@ -16,6 +16,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import fields
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -337,42 +338,46 @@ def _row(
 def fingerprint(rows: Sequence[AnalyticsRow]) -> str:
     """Content hash of the analysed outcomes.
 
-    Over what an analysis would actually change on — identity, timing, scores, outcome and
-    money — and never over a file's modification time, which changes when nothing did and stays
-    put when an outcome is rewritten.
+    Over **every field of every row**, in declaration order, rather than over a hand-picked list
+    of the ones that happen to feed a metric today. A curated list is a list that drifts: a
+    field added for one table and forgotten here would let two materially different datasets
+    share an identifier, and a snapshot id is only worth having if that cannot happen. The
+    exhaustive version costs a few microseconds a row and is asserted field by field in the
+    tests, which a curated one could not be.
+
+    Never over a file's modification time, which changes when nothing did and stays put when an
+    outcome is rewritten.
     """
+    columns = tuple(item.name for item in fields(AnalyticsRow))
     digest = hashlib.sha256()
     for row in rows:
-        digest.update(
-            "|".join(
-                (
-                    str(row.paperTradeId),
-                    row.platform,
-                    row.assetName,
-                    row.direction,
-                    row.outcome,
-                    str(row.expiryTime),
-                    _number(row.rankScore),
-                    _number(row.ensembleConfidence),
-                    _number(row.agreement),
-                    _number(row.regimeConfidence),
-                    _number(row.leadMargin),
-                    row.primaryRegime,
-                    _number(row.priceDeltaBps),
-                    _number(row.realizedPaperPnl),
-                    row.paperVersion,
-                )
-            ).encode()
-        )
+        digest.update("|".join(_scalar(getattr(row, name)) for name in columns).encode())
         digest.update(b"\n")
     return digest.hexdigest()
 
 
-def _number(value: float | None) -> str:
-    """A float spelled the same way every time. ``repr`` round-trips; ``str`` formatting does
-    not always, and a fingerprint that depended on formatting would be a fingerprint of the
-    formatter."""
-    return "null" if value is None else repr(float(value))
+def _scalar(value: object) -> str:
+    """One value, spelled the same way every run.
+
+    ``repr`` for floats because it round-trips; ``str`` formatting does not always, and a
+    fingerprint that depended on formatting would be a fingerprint of the formatter. Strategy
+    votes are folded in as a nested record, so a changed vote on an unchanged outcome still
+    changes the dataset — the strategy tables are built from exactly those.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, tuple):
+        return "[" + ";".join(_scalar(item) for item in value) + "]"
+    if isinstance(value, StrategyVoteRow):
+        return (
+            f"{value.strategyId}:{value.direction}:"
+            f"{repr(float(value.confidence))}:{_scalar(value.eligible)}"
+        )
+    return str(value)
 
 
 def settings_fingerprint(settings: AnalyticsSettings, filters: AnalyticsFilters) -> str:

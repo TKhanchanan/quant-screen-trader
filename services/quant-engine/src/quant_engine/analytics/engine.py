@@ -11,7 +11,8 @@ them or not.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Literal
 from uuid import UUID, uuid5
 
 from quant_engine.analytics import calibration, segmentation, thresholds
@@ -25,6 +26,7 @@ from quant_engine.analytics.metrics import (
 from quant_engine.analytics.models import (
     ANALYTICS_VERSION,
     MAX_FINDINGS,
+    MAX_WARNINGS,
     AnalyticsDataset,
     AnalyticsFilters,
     AnalyticsRow,
@@ -33,10 +35,13 @@ from quant_engine.analytics.models import (
     CalibrationReport,
     Code,
     MatrixCell,
+    MoneyMetrics,
+    OutcomeMetrics,
     ResearchFinding,
     SegmentMetrics,
     ThresholdCandidate,
 )
+from quant_engine.analytics.segmentation import stance_of
 
 ANALYTICS_NAMESPACE = UUID("2c9b6f41-8d3e-4f70-9a52-6b1c8d0e5a37")
 """Fixed UUID5 namespace for snapshot identity. Never regenerated: a new namespace would give
@@ -107,7 +112,7 @@ class AnalyticsEngine:
             comparisons=comparisons,
             platforms=platforms,
             segments=[*regimes, *assets, *hours, *weekdays],
-            money_available=money.available,
+            money=money,
             strategy_samples=strategy_regime.sampleCount,
             settings=settings,
         )
@@ -147,6 +152,7 @@ class AnalyticsEngine:
             thresholdCandidates=candidates,
             comparisonsEvaluated=comparisons,
             research=research_findings(
+                split=split,
                 candidates=candidates,
                 regimes=regimes,
                 strategy_cells=strategy_regime.cells,
@@ -170,7 +176,7 @@ def _warnings(
     comparisons: int,
     platforms: Sequence[SegmentMetrics],
     segments: Sequence[SegmentMetrics],
-    money_available: bool,
+    money: MoneyMetrics,
     strategy_samples: int,
     settings: AnalyticsSettings,
 ) -> list[Code]:
@@ -193,7 +199,11 @@ def _warnings(
     warnings.extend(confidence.warnings)
     if any(item.outcomes.sampleLabel != "OK" for item in segments):
         warnings.append("LOW_SAMPLE_SEGMENTS")
-    if not money_available:
+    if money.mixedCurrency:
+        # Named separately from the money itself: the total on screen is real, and it is a
+        # total of part of the record. A reader who cannot see that would read it as all of it.
+        warnings.append("MIXED_CURRENCY")
+    if not money.available:
         warnings.append("PAPER_ACCOUNTING_UNAVAILABLE")
     if not strategy_samples:
         warnings.append("NO_STRATEGY_EVIDENCE")
@@ -206,8 +216,134 @@ def _warnings(
     return warnings
 
 
+def _periods(
+    split: thresholds.TemporalSplit,
+    predicate: Callable[[AnalyticsRow], bool],
+    *,
+    settings: AnalyticsSettings,
+) -> tuple[list[OutcomeMetrics], list[OutcomeMetrics]]:
+    """One slice measured inside each chronological period, beside that period's own baseline.
+
+    The baseline travels with the slice because a period is not a constant: a stretch of history
+    where everything won makes any subset of it look good, and comparing a slice to a pooled
+    all-time average would credit it for sitting in an easy month.
+    """
+    names: tuple[str, ...] = ("TRAIN", "VALIDATION", "TEST")
+    selected = []
+    baselines = []
+    for name in names:
+        rows = split.of(name)  # type: ignore[arg-type]
+        selected.append(
+            outcome_metrics(
+                [row for row in rows if predicate(row)], minimum=settings.minDisplaySample
+            )
+        )
+        baselines.append(outcome_metrics(rows, minimum=settings.minDisplaySample))
+    return (selected, baselines)
+
+
+def _out_of_sample(
+    pooled: OutcomeMetrics,
+    periods: Sequence[OutcomeMetrics],
+    baselines: Sequence[OutcomeMetrics],
+    *,
+    favourable: bool,
+    settings: AnalyticsSettings,
+) -> tuple[bool, list[Code]]:
+    """Whether a slice held its direction in every period, with evidence in each.
+
+    Applied to regimes and strategy pairings for the same reason it is applied to thresholds: a
+    regime table is a set of slices chosen *after* seeing the history it is describing, which is
+    the same selection bias a threshold search has. A tight pooled Wilson bound is not
+    out-of-sample evidence, however convincing it looks on one pass through the data.
+    """
+    reasons: list[Code] = []
+    if pooled.sampleCount < settings.minRecommendationSample:
+        reasons.append("POOLED_SAMPLE_BELOW_MINIMUM")
+    thin = [
+        name
+        for name, period in zip(("TRAIN", "VALIDATION", "TEST"), periods, strict=True)
+        if period.sampleCount < settings.minDisplaySample
+    ]
+    if thin:
+        reasons.append("OUT_OF_SAMPLE_TOO_SMALL")
+        reasons.extend(f"THIN_IN_{name}" for name in thin)
+        return (False, reasons)
+    held = []
+    for name, period, baseline in zip(
+        ("TRAIN", "VALIDATION", "TEST"), periods, baselines, strict=True
+    ):
+        rate, base = period.winRateExcludingDraws, baseline.winRateExcludingDraws
+        if rate is None or base is None or (rate > base) != favourable:
+            reasons.append(f"NOT_HELD_IN_{name}")
+            held.append(False)
+        else:
+            held.append(True)
+    if not all(held):
+        reasons.append("DIRECTION_NOT_CONSISTENT")
+        return (False, reasons)
+    if reasons:
+        return (False, reasons)
+    reasons.append("CONSISTENT_ACROSS_SPLITS")
+    return (True, reasons)
+
+
+def _in_regime(regime: str) -> Callable[[AnalyticsRow], bool]:
+    """A closure rather than a lambda with a default argument.
+
+    Both avoid late binding; only one of them says so to a reader who has not been bitten by it.
+    """
+
+    def matches(row: AnalyticsRow) -> bool:
+        return row.primaryRegime == regime
+
+    return matches
+
+
+def _agreed_in(strategy: str, regime: str) -> Callable[[AnalyticsRow], bool]:
+    """Outcomes in one regime where one strategy agreed with the selection that was taken."""
+
+    def matches(row: AnalyticsRow) -> bool:
+        return row.primaryRegime == regime and any(
+            vote.strategyId == strategy and stance_of(vote.direction, row.direction) == "AGREED"
+            for vote in row.strategyVotes
+        )
+
+    return matches
+
+
+def _finding(
+    *,
+    kind: Literal["SCORE_BAND", "REGIME", "STRATEGY_REGIME", "SKIP_CONDITION"],
+    subject: str,
+    detail: str,
+    pooled: OutcomeMetrics,
+    periods: Sequence[OutcomeMetrics],
+    stable: bool,
+    reasons: Sequence[Code],
+) -> ResearchFinding:
+    return ResearchFinding(
+        kind=kind,
+        subject=subject,
+        detail=detail,
+        sampleCount=pooled.sampleCount,
+        winRate=pooled.winRateExcludingDraws,
+        lower95=pooled.lower95,
+        upper95=pooled.upper95,
+        trainCount=periods[0].sampleCount,
+        validationCount=periods[1].sampleCount,
+        testCount=periods[2].sampleCount,
+        trainWinRate=periods[0].winRateExcludingDraws,
+        validationWinRate=periods[1].winRateExcludingDraws,
+        testWinRate=periods[2].winRateExcludingDraws,
+        stable=stable,
+        reasons=list(reasons)[:MAX_WARNINGS],
+    )
+
+
 def research_findings(
     *,
+    split: thresholds.TemporalSplit,
     candidates: Sequence[ThresholdCandidate],
     regimes: Sequence[SegmentMetrics],
     strategy_cells: Sequence[MatrixCell],
@@ -220,63 +356,73 @@ def research_findings(
     from an empty table — and persisting them *without* a consumer is the point: there is no
     code path in this application that reads a finding and changes a decision with it.
 
-    A finding is only ``stable`` when its Wilson bound clears an even split on a sample large
-    enough to recommend from. Everything else is recorded as an observation.
+    ``stable`` means the same thing here as it does for a threshold, and is earned the same way:
+    the effect held in every chronological period against that period's own baseline, with
+    enough sample in each. A regime that looks excellent pooled and only ever won in the first
+    third of the history is recorded as an observation with its reasons named, never as stable.
     """
     findings: list[ResearchFinding] = []
     for candidate in candidates:
+        periods = [candidate.train.outcomes, candidate.validation.outcomes, candidate.test.outcomes]
         findings.append(
-            ResearchFinding(
+            _finding(
                 kind="SCORE_BAND",
                 subject=f"{candidate.metric} >= {candidate.threshold:.2f}",
                 detail=(
-                    f"train n={candidate.train.count} "
-                    f"validation n={candidate.validation.count} "
-                    f"test n={candidate.test.count} · {candidate.stability}"
+                    f"{candidate.stability} · direction {candidate.directionalStability} · "
+                    f"expectancy {candidate.monetaryStability}"
                 ),
-                sampleCount=candidate.train.count,
-                winRate=candidate.train.outcomes.winRateExcludingDraws,
-                lower95=candidate.train.outcomes.lower95,
-                upper95=candidate.train.outcomes.upper95,
+                pooled=candidate.train.outcomes,
+                periods=periods,
                 stable=candidate.stable,
+                reasons=candidate.reasons,
             )
         )
     for item in regimes:
-        outcomes = item.outcomes
-        if outcomes.sampleCount < settings.minDisplaySample:
+        pooled = item.outcomes
+        if pooled.sampleCount < settings.minDisplaySample:
             continue
-        enough = outcomes.sampleCount >= settings.minRecommendationSample
-        favourable = enough and outcomes.lower95 is not None and outcomes.lower95 > 0.5
-        adverse = enough and outcomes.upper95 is not None and outcomes.upper95 < 0.5
+        regime = item.key
+        periods, baselines = _periods(split, _in_regime(regime), settings=settings)
+        favourable = pooled.lower95 is not None and pooled.lower95 > 0.5
+        adverse = pooled.upper95 is not None and pooled.upper95 < 0.5
+        stable, reasons = (
+            _out_of_sample(pooled, periods, baselines, favourable=favourable, settings=settings)
+            if favourable or adverse
+            else (False, ["NO_POOLED_EFFECT"])
+        )
         findings.append(
-            ResearchFinding(
+            _finding(
                 kind="SKIP_CONDITION" if adverse else "REGIME",
-                subject=item.key,
-                detail=(
-                    f"n={outcomes.sampleCount} "
-                    f"wins={outcomes.wins} losses={outcomes.losses} draws={outcomes.draws}"
-                ),
-                sampleCount=outcomes.sampleCount,
-                winRate=outcomes.winRateExcludingDraws,
-                lower95=outcomes.lower95,
-                upper95=outcomes.upper95,
-                stable=favourable or adverse,
+                subject=regime,
+                detail=(f"wins={pooled.wins} losses={pooled.losses} draws={pooled.draws}"),
+                pooled=pooled,
+                periods=periods,
+                stable=stable,
+                reasons=reasons,
             )
         )
     for cell in strategy_cells:
-        if cell.agreed < settings.minRecommendationSample:
+        pooled = cell.outcomes
+        if cell.agreed < settings.minDisplaySample:
             continue
-        bound = cell.outcomes.lower95
+        strategy, regime = cell.row, cell.column
+        periods, baselines = _periods(split, _agreed_in(strategy, regime), settings=settings)
+        favourable = pooled.lower95 is not None and pooled.lower95 > 0.5
+        stable, reasons = (
+            _out_of_sample(pooled, periods, baselines, favourable=True, settings=settings)
+            if favourable
+            else (False, ["NO_POOLED_EFFECT"])
+        )
         findings.append(
-            ResearchFinding(
+            _finding(
                 kind="STRATEGY_REGIME",
-                subject=f"{cell.row} in {cell.column}",
+                subject=f"{strategy} in {regime}",
                 detail=f"agreed n={cell.agreed} of {cell.samples} votes present",
-                sampleCount=cell.agreed,
-                winRate=cell.outcomes.winRateExcludingDraws,
-                lower95=bound,
-                upper95=cell.outcomes.upper95,
-                stable=bound is not None and bound > 0.5,
+                pooled=pooled,
+                periods=periods,
+                stable=stable,
+                reasons=reasons,
             )
         )
     return findings[:MAX_FINDINGS]
