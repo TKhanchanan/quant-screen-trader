@@ -13,7 +13,7 @@ from quant_engine.configuration import Model, Platform
 from quant_engine.features import FeatureEngine
 from quant_engine.features.engine import PRIMARY_TIMEFRAME
 from quant_engine.features.models import FeatureSnapshot
-from quant_engine.market_builder import TimeSeriesBuilder
+from quant_engine.market_builder import AVAILABILITY_LAG_MS, TimeSeriesBuilder
 from quant_engine.market_models import Candle, MarketObservation, PriceSample, Timeframe
 from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity import OpportunityBoard, OpportunityEngine
@@ -397,8 +397,9 @@ class MarketEngine:
         self.persist_session(self.guard.tick(now, unresolved=self.paper.unresolved()))
         for builder in self.builders.values():
             if builder.samples and builder.samples[-1].sourceType in ("DOM", "VISUAL"):
-                # A 3-second watermark allows batches to arrive before closure.
-                builder.advance(now - 3000)
+                # The watermark allows batches to arrive before closure. Shared with replay, so
+                # a replayed series closes its bars at the same point this one does.
+                builder.advance(now - AVAILABILITY_LAG_MS)
                 self.persist_events(builder)
 
 

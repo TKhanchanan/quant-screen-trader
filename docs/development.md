@@ -76,6 +76,52 @@ On macOS ARM64, Node 26 and Python 3.14: lint, TypeScript/mypy, 49 TypeScript te
 
 Electron GUI input/debugger checks used a separate temporary application-data directory and engine port. Verified both unauthenticated platform documents loaded concurrently, distinct native session objects/storage directories, independent reload and close/reopen, and isolated renderer-crash reporting/recovery. Verified all nine asset fields, enabled/disabled retention, preset CRUD/load, profile CRUD/load, pointer drag/resize, transparent overlay DOM, and full app-restart persistence. Native resize changed both browser and overlay to the same 1050×451 content region; saved normalized geometry remained unchanged and rendered proportionally. Individual renderer captures do not include sibling native views, so these captures are not evidence of full-window compositing on every OS.
 
+### Phase 11 replay benchmark
+
+The replay benchmark is a developer acceptance run, not a CI job: a million events is several
+minutes of CPU and every pull request would pay for it. Run it by hand after touching anything in
+Phases 5-9, because a million events reaches states the fixtures never do — the Phase 6 stochastic
+bound was found exactly that way.
+
+```bash
+python services/quant-engine/tests/benchmark_replay.py 100000
+python services/quant-engine/tests/benchmark_replay.py 1000000
+```
+
+The source *generates* its rows rather than holding them, so the measurement is of the engine and
+not of the fixture, and a record larger than memory is genuinely exercised. The benchmark asserts
+`causalityViolations == 0` and that market time advances faster than wall time — a replay that
+waited out its own history would fail that and nothing else would catch it.
+
+#### Measured results — 2026-09-12, macOS ARM64, Python 3.14
+
+Actual output of the two runs above, not a target:
+
+| | 100,000 events | 1,000,000 events |
+| --- | --- | --- |
+| Status | COMPLETED | COMPLETED |
+| Wall time | 24.5 s | 312.9 s |
+| Events / second | 4,080 | 3,196 |
+| Market minutes / wall second | 3.78 | 2.96 |
+| Market time replayed | 1.5 h | 15.4 h |
+| Phase 7 ensembles | 10,827 | 108,324 |
+| Phase 8 boards / selected | 1,201 / 730 | 12,034 / 7,966 |
+| Paper outcomes resolved | 620 | 6,812 |
+| Analytics build | 0.02 s | 0.32 s |
+| Walk-forward | 0.05 s | 0.51 s |
+| Peak resident memory | 668 MB | 1.79 GB |
+| Bytes / event | 6,686 | 1,792 |
+| Causality violations | 0 | 0 |
+
+Memory is bounded rather than proportional: ten times the events cost 2.7 times the memory, and
+the per-event figure *falls* from 6.7 kB to 1.8 kB. What is held is the bounded per-slot buffers
+and the retained evidence, not the record. At a million events the strategy-vote retention bound
+is reached and the run reports `strategyEvidenceTruncated`, which is the designed behaviour and
+is surfaced as `STRATEGY_EVIDENCE_TRUNCATED` rather than silently dropped.
+
+Throughput falls about 22% from 100k to 1M because nine slots on two platforms are carrying more
+mature indicator state, not because anything accumulates without limit.
+
 ## Troubleshooting
 
 - **Python is not found:** create `services/quant-engine/.venv` using the README commands, or set `QST_PYTHON_EXECUTABLE` to a Python 3.12+ executable.

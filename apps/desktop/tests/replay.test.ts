@@ -53,7 +53,7 @@ const summary = (changes: Record<string, unknown> = {}): Record<string, unknown>
       candidateThreshold: null, directionalStable: false, warnings: ['NO_STABLE_CANDIDATE'] })],
     warnings: ['PARAMETER_INSTABILITY'] },
   warnings: ['MULTIPLE_TESTING_WARNING', 'MONETARY_UNVERIFIED'],
-  researchOnly: true, appliedToLiveExecution: false, ...changes
+  partial: false, researchOnly: true, appliedToLiveExecution: false, ...changes
 })
 const state = (changes: Record<string, unknown> = {}): ReplayState => ReplayStateSchema.parse({
   replayVersion: 'qst-replay-v1', available: true, busy: false,
@@ -62,6 +62,21 @@ const state = (changes: Record<string, unknown> = {}): ReplayState => ReplayStat
   totalEvents: 21_239, processedEvents: 21_239, percent: 1, currentMarketTime: 1_789_139_284_475,
   error: null, summary: summary(), message: '', ...changes
 })
+/**
+ * The element a fixture promises, or a failure naming what went missing.
+ *
+ * The desktop compiles with `noUncheckedIndexedAccess`, so indexing an array yields
+ * `T | undefined` — and that is correct rather than inconvenient: a fixture that silently lost a
+ * row would otherwise make the assertion below pass vacuously. Narrowing here proves the element
+ * exists before it is used, without a non-null assertion and without weakening the check. It
+ * also covers the nullable halves of the wire model, which are nullable for the same reason:
+ * a replay that produced no walk-forward reports `null`, never an empty table.
+ */
+function present<T>(value: T | null | undefined, what: string): T {
+  if (value === null || value === undefined) throw new Error(`fixture is missing ${what}`)
+  return value
+}
+
 const source = (file: string): string => readFileSync(join(import.meta.dirname, '..', file), 'utf8')
 /** The same file with its comments removed, so prose can neither fail nor hide a check. */
 const code = (file: string): string =>
@@ -117,15 +132,21 @@ describe('replay formatting', () => {
   })
 
   it('says plainly when a fold found nothing', () => {
-    const nothing = ReplaySummarySchema.parse(summary()).walkForward?.rows[1]
-    expect(nothing).toBeDefined()
-    expect(replayFoldLine(nothing!)).toContain('ไม่พบเกณฑ์')
+    const folds = present(ReplaySummarySchema.parse(summary()).walkForward, 'walk-forward').rows
+    expect(folds).toHaveLength(2)
+    expect(replayFoldLine(present(folds[1], 'the second fold'))).toContain('ไม่พบเกณฑ์')
   })
 
   it('shows a latency scenario against the zero-delay baseline', () => {
     const rows = ReplaySummarySchema.parse(summary()).latency
-    expect(replayLatencyLine(rows[0])).not.toContain('ต่างจาก 0ms')
-    expect(replayLatencyLine(rows[1])).toContain('ต่างจาก 0ms')
+    expect(rows).toHaveLength(2)
+    const baseline = present(rows[0], 'the zero-delay baseline')
+    const delayed = present(rows[1], 'the delayed scenario')
+    expect(baseline.delayMs).toBe(0)
+    expect(delayed.delayMs).toBe(500)
+    // The baseline is never compared against itself, and every other row is compared to it.
+    expect(replayLatencyLine(baseline)).not.toContain('ต่างจาก 0ms')
+    expect(replayLatencyLine(delayed)).toContain('ต่างจาก 0ms')
   })
 
   it('renders an unknown share as a dash rather than as zero', () => {
@@ -135,7 +156,8 @@ describe('replay formatting', () => {
 
   it('translates every warning code the engine can raise', () => {
     for (const codeName of ['INSUFFICIENT_HISTORY', 'NARROW_TIME_COVERAGE', 'MONETARY_UNVERIFIED',
-      'SYNTHETIC_BEHAVIOR_TEST', 'NO_STABLE_CANDIDATE', 'ASSET_CONCENTRATION_WARNING'])
+      'SYNTHETIC_BEHAVIOR_TEST', 'NO_STABLE_CANDIDATE', 'ASSET_CONCENTRATION_WARNING',
+      'UNREADABLE_INPUT_FILES', 'CANCELLED_PARTIAL_RESULT'])
       expect(replayWarningLabel(codeName)).not.toBe(codeName)
   })
 })
@@ -154,6 +176,19 @@ describe('replay panel', () => {
     const markup = renderToStaticMarkup(createElement(ReplayResult, { state: state() }))
     expect(markup.indexOf('ช่องว่างข้อมูล')).toBeLessThan(markup.indexOf('ผลฐาน'))
     expect(markup).toContain('ไม่ได้เติมค่าให้')
+  })
+
+  it('says on its face when a cancelled job produced only part of the work', () => {
+    const stopped = state({
+      status: 'CANCELLED',
+      summary: summary({ partial: true, warnings: ['CANCELLED_PARTIAL_RESULT'] })
+    })
+    const markup = renderToStaticMarkup(createElement(ReplayResult, { state: stopped }))
+    expect(markup).toContain('ผลนี้ไม่ครบ')
+    expect(markup).toContain(replayWarningLabel('CANCELLED_PARTIAL_RESULT'))
+    // And a complete one carries neither.
+    const done = renderToStaticMarkup(createElement(ReplayResult, { state: state() }))
+    expect(done).not.toContain('ผลนี้ไม่ครบ')
   })
 
   it('renders nothing rather than an empty backtest when there is no result', () => {

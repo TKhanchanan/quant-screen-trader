@@ -68,10 +68,42 @@ Nothing is fabricated. A row that will not validate is counted as `malformed` an
 gap in the record stays a gap, with no interpolation, forward fill or manufactured candle; and
 quality and degraded states travel through exactly as recorded.
 
-Provenance is relabelled and the original is kept: replayed rows carry `REPLAY` (or `SYNTHETIC`
-for a constructed fixture) so a recorded reading can never masquerade as a live DOM read further
-down the pipeline, while the dataset summary reports the source types as they were stored. The
-quality block itself is untouched.
+### Provenance is relabelled; identity is not
+
+Two labels, deliberately, because they answer two different questions.
+
+`sourceType` becomes `REPLAY` (or `SYNTHETIC` for a constructed fixture), so a recorded reading
+can never masquerade as something a broker surface produced just now.
+
+`identitySourceType` keeps the source that was actually recorded, because **Phase 5 keys a series
+partly on it**. The capture layer falls back from DOM to OCR mid-series on purpose, and that
+fallback ends one series and starts another — the forming bars are dropped and the series begins
+again. Collapsing both DOM and VISUAL into one replay label would erase that transition, and the
+replayed series would run straight through a reset the live run really performed, inheriting
+candle continuity, warm-up, regime context and ranking history it never had. The replay would
+then be reporting what the pipeline *would* have done on a record the pipeline never saw.
+
+| | `sourceType` | identity turns on |
+| --- | --- | --- |
+| Live | `DOM` / `VISUAL` | its own `sourceType` |
+| Replay of a recorded run | `REPLAY` | the recorded `DOM` / `VISUAL` |
+| Synthetic fixture | `SYNTHETIC` | `SYNTHETIC` |
+
+`identitySourceType` is excluded from serialization, so the durable record is byte-for-byte what
+it always was — this is an in-flight distinction, not a new column — and a validator refuses it
+on any reading labelled `DOM` or `VISUAL`, so nothing arriving over the local ingest endpoint can
+fake a series reset.
+
+The quality block, the parser confidence, the latencies and the timestamps are untouched, because
+the whole point of replaying real history is to put the real degraded states back through the
+real gates.
+
+`test_replay_equivalence.py` drives a record whose capture path changes hands twice — VISUAL, then
+DOM, then VISUAL, on one platform, slot, asset, context and calibration profile — through the live
+entry point under its recorded labels and through the replay driver under `REPLAY`, and requires
+the same candles, features, ensembles, boards and outcomes from both. A second test proves the
+comparison is not vacuous: the bar spanning each hand-over comes back with half a minute of a
+minute, and a control run pinned to one source keeps the whole minute.
 
 ## Input fingerprint and run identity
 
@@ -125,6 +157,28 @@ availability watermark — is a function of the instant itself, so every orderin
 rows produces the same watermark.
 
 Duplicates, identity collisions and malformed rows are reported, never silently repaired.
+
+### A file that will not open
+
+Files are only read together when their schemas are identical — reading a whole record with
+`union_by_name` unifies mismatched column types instead, so one file whose price column came back
+as text would retype *every* file's price as text.
+
+A file that cannot be opened at all — a damaged footer, a truncated write, bytes that are not
+Parquet — is **left out of the query entirely** rather than given a group of its own. A group that
+cannot be read is still a branch of the union, so keeping it would take the readable history down
+with it. Each candidate file is probed by pulling one real row, not merely described: describing
+reads the footer, so a file whose footer survives but whose data pages are damaged would describe
+cleanly and then fail halfway through the replay.
+
+The count appears as `diagnostics.unreadableFiles` and raises `UNREADABLE_INPUT_FILES`. The file
+is never repaired, never defaulted and never read as zeroes: its absence is a gap in the evidence.
+The readable half of a record fingerprints identically with and without a damaged file beside it.
+
+**When every file is unreadable**, the deliberate behaviour is an honest empty dataset rather than
+a crash: zero events, the damaged files counted, and the run finishing with `INSUFFICIENT_HISTORY`.
+From here that is indistinguishable from a record holding nothing, and both are things the replay
+can say truthfully. What it must never do is continue as though some history had been recovered.
 
 ## Warm-up
 
@@ -287,8 +341,15 @@ appending history cannot change a calendar fold that has already been cut.
 This is the part that decides whether the numbers mean anything.
 
 * **Membership is by expiry**, because that is when an outcome became knowable.
-* **Purge**: a trade that resolved inside a window but was *selected* before it opened was
-  already running across the boundary, so it is removed from that window.
+* **Purge is by `decisionAvailableAt`**, because that is when the completed decision first
+  existed — never `boardAsOf`, which is only the close of the bar the cohort describes. The two
+  are never the same instant: a board is assembled *after* the bar it is about has closed, so a
+  selection can describe a bar from before the window and still have become actionable inside it.
+  Purging on `boardAsOf` would throw that selection away as though it had leaked, when nothing
+  about it was knowable before the window opened. Phase 9 introduced `decisionAvailableAt` for
+  exactly this distinction and prices every entry from it.
+  A decision available at the very first instant of a window is **inside** it: the bound is
+  inclusive, matching the way Phase 9 admits an entry at `decisionAvailableAt` itself.
 * **Embargo**: a gap the width of the longest possible trade lifetime is inserted at every
   boundary, derived from `qst-paper-v1` — `maxEntryDelay + horizon + maxResolutionLag`, which is
   15,000 ms for CapitalBear and 80,000 ms for IQ Option. Rows falling inside a gap belong to no
@@ -387,6 +448,13 @@ python services/quant-engine/tests/benchmark_replay.py 100000
 python services/quant-engine/tests/benchmark_replay.py 1000000
 ```
 
+Neither size runs in CI — a million events is several minutes of CPU and would make every pull
+request pay for it. They are developer acceptance runs. The measured results are recorded in
+[Development](development.md#phase-11-replay-benchmark): on this machine, **4,080 events/second at
+100k** and **3,196 events/second at 1M**, both COMPLETED with zero causality violations, and peak
+memory of 668 MB and 1.79 GB — bounded rather than proportional, since ten times the events cost
+2.7 times the memory and the per-event figure falls.
+
 The benchmark's source *generates* its rows rather than holding them, so the measurement is of
 the engine and not of the fixture, and a record larger than memory is genuinely exercised. The
 Parquet reader streams in bounded batches with the sort done inside DuckDB, which spills to disk
@@ -416,9 +484,25 @@ that. A replay runs on its own worker so a progress poll answers immediately, an
 runtime-only — the replay advances on recorded events whether or not anybody is watching.
 
 Cancelling stops the offline replay. It does not stop capture, does not touch the live trading
-day, does not disarm anything and could not reach a broker control if it tried. A cancelled run
-is persisted as `CANCELLED` with its progress; a failed one as `FAILED` with its reason, and no
-partial result is ever presented as a completed one.
+day, does not disarm anything and could not reach a broker control if it tried.
+
+**Cancellation is sticky for the whole job, not for the phase that happened to be running.** A
+replay runs a baseline first and then one research scenario per configured latency delay, and the
+failure this rule exists to prevent is quiet and plausible: the baseline finishes, the operator
+cancels, the scenarios never run, and the job reports `COMPLETED` on the strength of half the work
+that was asked for. So:
+
+* the flag is read again at every phase boundary and nothing resets it;
+* no later scenario begins once it is raised;
+* a scenario that did not finish is dropped rather than reported half-measured beside the ones
+  that did;
+* the job's final status is `CANCELLED` however much of it completed;
+* the baseline work is kept — throwing away what an operator paid for helps nobody — but the
+  summary carries `partial: true` and `CANCELLED_PARTIAL_RESULT`, and the desktop panel says so
+  in a banner above the numbers.
+
+A failed run is persisted as `FAILED` with its reason. No partial result is ever presented as a
+completed one.
 
 ## CLI
 

@@ -504,6 +504,8 @@ def warnings_for(
         found.append("MALFORMED_INPUT_ROWS")
     if dataset.diagnostics.duplicates or dataset.diagnostics.identityCollisions:
         found.append("DUPLICATE_INPUT_ROWS")
+    if dataset.diagnostics.unreadableFiles:
+        found.append("UNREADABLE_INPUT_FILES")
     return found
 
 

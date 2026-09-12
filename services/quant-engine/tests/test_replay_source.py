@@ -242,3 +242,67 @@ def test_platform_selection_excludes_the_other_broker_entirely() -> None:
     ]
     summary = InMemoryObservationSource(rows, platforms=("capitalbear",)).prepare()
     assert summary.platforms == ["capitalbear"]
+
+
+# --- T-FA a physically damaged file ----------------------------------------------------
+
+
+def corrupt(folder: Path, name: str = "damaged.parquet") -> Path:
+    """A file that ends in .parquet and is not Parquet. Not a bad row — a bad file."""
+    target = folder / name
+    target.write_bytes(b"PAR1" + bytes(range(256)) * 8 + b"not-a-footer")
+    return target
+
+
+def test_one_unreadable_file_cannot_take_the_readable_history_down_with_it(
+    tmp_path: Path,
+) -> None:
+    rows = fixtures.session(seconds=60, tag="corrupt")
+    store(tmp_path, list(rows))
+    folder = next((tmp_path / "observations").rglob("*.parquet")).parent
+    corrupt(folder)
+
+    summary = ParquetObservationSource(tmp_path).prepare()
+    assert summary.diagnostics.unreadableFiles == 1
+    # Every readable row still replays, and nothing was invented to stand in for the bad file.
+    assert summary.events == len(rows)
+    assert summary.diagnostics.malformed == 0
+    streamed = [event for batch in ParquetObservationSource(tmp_path).stream() for event in batch]
+    assert len(streamed) == len(rows)
+    assert all(event.observation.price is not None for event in streamed)
+
+
+def test_a_damaged_file_changes_no_price_and_fabricates_no_reading(tmp_path: Path) -> None:
+    rows = fixtures.session(seconds=40, tag="intact")
+    store(tmp_path / "clean", list(rows))
+    store(tmp_path / "broken", list(rows))
+    corrupt(next((tmp_path / "broken" / "observations").rglob("*.parquet")).parent)
+    clean = ParquetObservationSource(tmp_path / "clean").prepare()
+    broken = ParquetObservationSource(tmp_path / "broken").prepare()
+    # The readable half of the record fingerprints identically with and without the bad file:
+    # its absence is a gap in the evidence, never a zero, a default or an interpolation.
+    assert broken.inputFingerprint == clean.inputFingerprint
+    assert broken.events == clean.events
+    assert broken.diagnostics.unreadableFiles == 1
+    assert clean.diagnostics.unreadableFiles == 0
+
+
+def test_a_record_of_nothing_but_damaged_files_is_empty_rather_than_invented(
+    tmp_path: Path,
+) -> None:
+    """The deliberate choice for the worst case: an honest empty dataset, not a failure.
+
+    Every file unreadable is indistinguishable, from here, from a record that holds nothing —
+    and both are things the replay can report truthfully. It is reported as zero events with the
+    damaged files counted, so the run finishes with INSUFFICIENT_HISTORY instead of throwing;
+    what it must never do is continue as though some history had been recovered.
+    """
+    folder = tmp_path / "observations" / "platform=capitalbear" / "asset=x" / "date=2026-03-02"
+    folder.mkdir(parents=True)
+    corrupt(folder, "one.parquet")
+    corrupt(folder, "two.parquet")
+    summary = ParquetObservationSource(tmp_path).prepare()
+    assert summary.events == 0
+    assert summary.diagnostics.unreadableFiles == 2
+    assert summary.startTime is None and summary.endTime is None
+    assert [event for batch in ParquetObservationSource(tmp_path).stream() for event in batch] == []

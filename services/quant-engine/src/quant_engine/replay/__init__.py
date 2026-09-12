@@ -100,7 +100,7 @@ from quant_engine.replay.service import (
     ReplayReport,
     ReplayService,
     default_source,
-    execute,
+    run_replay,
 )
 from quant_engine.replay.source import (
     REPLAY_ENTRY_LAYER,
@@ -194,7 +194,7 @@ __all__ = [
     "embargo_for",
     "equity",
     "event_digest",
-    "execute",
+    "run_replay",
     "guard_report",
     "latency_report",
     "latency_scenario",

@@ -28,8 +28,8 @@ from quant_engine.replay import (
     ReplayEngine,
     ReplayEvidence,
     ReplayManifest,
-    execute,
     replay_root,
+    run_replay,
 )
 from quant_engine.session_guard.engine import SessionGuard
 from quant_engine.session_guard.settings import SessionGuardSettings
@@ -74,8 +74,20 @@ EXECUTION_NAMES = frozenset(
         "positionsize",
         "stakemultiplier",
         "increasestake",
+        "execute",
+        "auto",
+        "automode",
+        "brokercontrol",
+        "sendinput",
     }
 )
+"""Every name that could reach a broker, plus the two that could only ever be mistaken for one.
+
+``execute`` and ``auto`` are on the list deliberately. Neither is dangerous on its own — running
+a replay is a perfectly good thing to call executing it — but in an application that really does
+have an AUTO mode and a real order executor, a replay function called ``execute`` is one careless
+import away from reading as the wrong thing. The replay layer calls its own entry point
+``run_replay`` so the word can stay banned outright."""
 
 MUTATION_NAMES = frozenset(
     {
@@ -216,6 +228,35 @@ def test_no_name_in_the_replay_layer_refers_to_a_broker_control() -> None:
     assert offences == set()
 
 
+def test_the_replay_http_surface_exposes_no_route_that_could_be_read_as_an_order() -> None:
+    routes = [
+        node.value
+        for node in ast.walk(ast.parse(API.read_text()))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.startswith("/api/")
+    ]
+    assert routes, "the scan must actually be reading the router"
+    for route in routes:
+        assert route.startswith("/api/replay/")
+        for forbidden in ("apply", "execute", "arm", "press", "auto", "order", "stake"):
+            assert forbidden not in route.casefold(), route
+
+
+def test_the_live_execution_layer_is_still_present_and_untouched_by_this_package() -> None:
+    # Phase 11 is not allowed to reach the execution layer, and it is equally not allowed to
+    # remove it. An application made "safer" by deleting the operator's functionality is a
+    # different application, not a safer one.
+    desktop = REPOSITORY / "apps" / "desktop" / "electron" / "main"
+    for name in ("execution-manager.ts", "order-executor.ts", "order-panel.ts"):
+        assert (desktop / name).is_file(), name
+    assert (REPOSITORY / "packages" / "shared-types" / "src" / "execution.ts").is_file()
+    # And nothing in the replay layer names any of them.
+    text = " ".join(path.read_text() for path in [*sources(), API])
+    for name in ("execution-manager", "order-executor", "order-panel", "ExecutionManager"):
+        assert name not in text, name
+
+
 def test_the_replay_layer_imports_nothing_that_could_reach_a_broker() -> None:
     roots = {module.split(".")[0] for module in modules_imported(sources())}
     assert roots <= {name.split(".")[0] for name in ALLOWED_IMPORTS}
@@ -338,7 +379,7 @@ def seed_live_record(root: Path) -> dict[str, bytes]:
 
 def test_a_replay_writes_only_under_its_own_namespace(tmp_path: Path) -> None:
     before = seed_live_record(tmp_path)
-    report = execute(
+    report = run_replay(
         manifest(),
         market_data=tmp_path,
         factory=lambda spec: InMemoryObservationSource(
@@ -364,7 +405,7 @@ def test_a_replay_leaves_the_live_paper_history_and_analytics_untouched(tmp_path
     before = seed_live_record(tmp_path)
     live_trades = [name for name in before if name.startswith("paper_trades/")]
     assert live_trades
-    execute(
+    run_replay(
         manifest(),
         market_data=tmp_path,
         factory=lambda spec: InMemoryObservationSource(
@@ -400,6 +441,85 @@ def test_a_replay_cannot_move_the_live_daily_session(tmp_path: Path) -> None:
     after = live.state(at).model_dump(mode="json")
     assert after == before
     assert after["canOpenNewEntry"] is True
+
+
+def test_neither_starting_nor_cancelling_a_replay_touches_the_live_trading_day(
+    tmp_path: Path,
+) -> None:
+    """A replay's whole lifecycle, against a live day that is mid-session and counting.
+
+    Starting one, letting it settle simulated outcomes, and cancelling it must all leave the
+    real day exactly where it was — the same realized total, the same permission, the same lock
+    state. A research run that could reset the operator's day would be the single worst failure
+    this layer could have, because it would look like nothing happened.
+    """
+    from quant_engine.paper.models import PaperSettlement
+
+    live = SessionGuard(
+        SessionGuardSettings(
+            enabled=True, dailyProfitTarget=500, dailyLossLimit=300, currency="THB"
+        )
+    )
+    at = fixtures.BASE_MS
+    live.apply_settlement(
+        PaperSettlement(
+            tradeId=fixtures.identity("live-settlement"),
+            platform="capitalbear",
+            assetName="EUR/USD OTC",
+            settledAt=at,
+            outcome="WIN",
+            currency="THB",
+            stake=50,
+            payoutRate=0.82,
+            realizedPnl=41.0,
+            paperVersion="qst-paper-v1",
+        )
+    )
+    before = live.state(at).model_dump(mode="json")
+    assert before["session"]["realizedPnl"] == 41.0
+
+    scenario = SessionGuardSettings(
+        enabled=True, dailyProfitTarget=41.0, currency="THB", timezone="UTC"
+    )
+    started = replay(tmp_path / "start", sessionGuardScenario=scenario)
+    assert started.run.paperResolved > 0, "the replay must really have settled something"
+    assert started.sessions, "the sandbox must really have kept a trading day"
+    assert live.state(at).model_dump(mode="json") == before
+
+    cancelled = ReplayEngine(
+        manifest(sessionGuardScenario=scenario),
+        InMemoryObservationSource(
+            fixtures.small_history(), mode="SYNTHETIC", platforms=("capitalbear",)
+        ),
+        root=tmp_path / "cancel",
+        persist=False,
+        cancelled=lambda: True,
+    ).run()
+    assert cancelled.run.status == "CANCELLED"
+    assert live.state(at).model_dump(mode="json") == before
+
+
+def test_a_sandbox_settlement_never_reaches_the_live_session_record(tmp_path: Path) -> None:
+    # The sandbox keeps a real trading day with real transitions — and writes every one of them
+    # under the run's own namespace. Nothing lands where the live guard would read it back.
+    seed_live_record(tmp_path)
+    report = run_replay(
+        manifest(
+            sessionGuardScenario=SessionGuardSettings(
+                enabled=True, dailyLossLimit=100.0, currency="THB", timezone="UTC"
+            )
+        ),
+        market_data=tmp_path,
+        factory=lambda spec: InMemoryObservationSource(
+            fixtures.small_history(), mode="SYNTHETIC", platforms=spec.platforms
+        ),
+        persist=True,
+    )
+    storage = ParquetStorage(tmp_path)
+    assert storage.reload("daily_sessions") == []
+    assert storage.reload("session_guard_events") == []
+    sandbox = ParquetStorage(replay_root(tmp_path) / str(report.run.replayRunId) / "market")
+    assert sandbox.reload("daily_sessions"), "the sandbox day must exist under the run"
 
 
 def test_the_sandbox_guard_is_a_different_object_from_any_live_one(tmp_path: Path) -> None:
@@ -441,7 +561,7 @@ def test_a_full_replay_changes_no_phase_six_to_ten_contract(tmp_path: Path) -> N
 
 
 def test_a_replay_states_on_its_own_record_that_it_changes_nothing(tmp_path: Path) -> None:
-    report = execute(
+    report = run_replay(
         manifest(),
         market_data=tmp_path,
         factory=lambda spec: InMemoryObservationSource(
@@ -504,3 +624,50 @@ def test_the_evidence_model_says_on_its_face_that_it_is_not_applied() -> None:
     fields = ReplayEvidence.model_fields
     assert fields["researchOnly"].default is True
     assert fields["appliedToLiveExecution"].default is False
+
+
+# --- T-FC the serialized contract did not change ---------------------------------------
+
+
+def test_a_result_written_before_this_hardening_still_loads_unchanged(tmp_path: Path) -> None:
+    """Why ``qst-replay-v1`` is still ``qst-replay-v1``.
+
+    The hardening added two reported fields — whether a job was cancelled part-way, and how many
+    stored files would not open — and one in-flight distinction that is never serialized at all.
+    Every one of them is additive with a default, so a result written by the previous build reads
+    back under the current model and means exactly what it meant when it was written. That is the
+    test for whether a version bump is warranted, and it says no: bumping would orphan every
+    stored comparison to buy nothing.
+
+    Built by taking a real summary and deleting the new fields, rather than by hand: a
+    hand-written payload would only prove that *this* payload parses.
+    """
+    from quant_engine.replay.models import ReplaySummary
+
+    report = run_replay(
+        manifest(),
+        market_data=tmp_path,
+        factory=lambda spec: InMemoryObservationSource(
+            fixtures.small_history(), mode="SYNTHETIC", platforms=spec.platforms
+        ),
+        persist=False,
+    )
+    payload = report.summary.model_dump(mode="json")
+    assert payload.pop("partial") is False
+    assert payload["dataset"]["diagnostics"].pop("unreadableFiles") == 0
+
+    restored = ReplaySummary.model_validate(payload)
+    assert restored.partial is False
+    assert restored.dataset.diagnostics.unreadableFiles == 0
+    assert restored.replayVersion == "qst-replay-v1"
+    # And everything that was already on the record still says the same thing.
+    assert restored.model_dump(mode="json") == report.summary.model_dump(mode="json")
+
+
+def test_the_identity_source_never_reaches_the_stored_record() -> None:
+    # The Parquet record is byte-for-byte what it always was, which is the other half of why no
+    # version moved: a replay cannot change the shape of the record it reads.
+    from quant_engine.market_models import MarketObservation, PriceSample
+
+    assert MarketObservation.model_fields["identitySourceType"].exclude is True
+    assert PriceSample.model_fields["identitySourceType"].exclude is True

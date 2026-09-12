@@ -106,7 +106,7 @@ def default_source(market_data: Path) -> SourceFactory:
     return factory
 
 
-def execute(
+def run_replay(
     manifest: ReplayManifest,
     *,
     market_data: Path,
@@ -128,9 +128,19 @@ def execute(
     if observe is not None:
         observe(baseline_engine, "BASELINE")
     baseline = baseline_engine.run()
+    if observe is not None:
+        observe(baseline_engine, "BASELINE_DONE")
     scenarios: list[tuple[int, ReplayResult]] = []
+    # Cancellation is sticky for the whole job, not for the phase that happened to be running.
+    # A baseline that finished before the operator pressed cancel is still a cancelled job: the
+    # research studies beside it never ran, so presenting it as a complete result would be
+    # presenting partial evidence as acceptance evidence.
+    stopped = baseline.run.status == "CANCELLED"
     if baseline.run.status == "COMPLETED":
         for delay in sorted({value for value in manifest.latencyScenarios if value > 0}):
+            if cancelled is not None and cancelled():
+                stopped = True
+                break
             engine = ReplayEngine(
                 manifest,
                 factory(manifest),
@@ -141,7 +151,13 @@ def execute(
             )
             if observe is not None:
                 observe(engine, f"LATENCY_{delay}")
-            scenarios.append((delay, engine.run()))
+            result = engine.run()
+            if result.run.status != "COMPLETED":
+                # Whatever this scenario managed is not a scenario. It is dropped rather than
+                # reported half-measured beside the ones that finished.
+                stopped = True
+                break
+            scenarios.append((delay, result))
     rows: tuple[AnalyticsRow, ...] = baseline.analysis.rows if baseline.analysis is not None else ()
     folds = (
         walk_forward.analyse(
@@ -164,20 +180,22 @@ def execute(
         latency=report.latency_report(baseline, scenarios) if scenarios else (),
         walk_forward=folds,
         guard=guard,
+        partial=stopped,
     )
+    run = baseline.run if not stopped else baseline.run.model_copy(update={"status": "CANCELLED"})
     evidence = report.build_evidence(baseline, summary)
     if persist:
-        repository.save_manifest(market_data, baseline.run.replayRunId, manifest)
-        repository.save_run(market_data, baseline.run)
+        repository.save_manifest(market_data, run.replayRunId, manifest)
+        repository.save_run(market_data, run)
         repository.save_summary(market_data, summary)
         repository.save_equity(
             market_data,
-            baseline.run.replayRunId,
+            run.replayRunId,
             [point.model_dump(mode="json") for point in equity(rows)],
         )
         repository.save_evidence(market_data, evidence)
         repository.trim(market_data)
-    return ReplayReport(run=baseline.run, summary=summary, evidence=evidence, result=baseline)
+    return ReplayReport(run=run, summary=summary, evidence=evidence, result=baseline)
 
 
 class ReplayService:
@@ -280,7 +298,7 @@ class ReplayService:
             job.phase = phase
 
         try:
-            report_ = execute(
+            report_ = run_replay(
                 job.manifest,
                 market_data=self.market_data,
                 factory=self.factory,

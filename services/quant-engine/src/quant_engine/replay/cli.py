@@ -24,7 +24,7 @@ from quant_engine.configuration import Platform
 from quant_engine.paper.policy import PaperSettings
 from quant_engine.paths import app_paths
 from quant_engine.replay.models import ReplayManifest, WalkForwardSettings
-from quant_engine.replay.service import default_source, execute
+from quant_engine.replay.service import default_source, run_replay
 
 PLATFORM_CHOICES = ("capitalbear", "iqoption", "both")
 
@@ -89,7 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     paths = app_paths(args.data_dir)
     manifest = manifest_from(args)
-    report = execute(
+    report = run_replay(
         manifest,
         market_data=paths.market_data,
         factory=default_source(paths.market_data),

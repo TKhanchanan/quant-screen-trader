@@ -152,6 +152,12 @@ export const ReplaySummarySchema = z.looseObject({
   coverage: ReplayCoverageSchema,
   latency: z.array(ReplayLatencySchema).max(16),
   walkForward: ReplayWalkForwardSchema.nullable(),
+  /**
+   * Whether the job was cancelled before every study beside the baseline had run. A cancelled
+   * job is never a complete one: the baseline it managed is kept, and labelled, so partial
+   * evidence can never be read as acceptance evidence.
+   */
+  partial: z.boolean().default(false),
   warnings: z.array(z.string().max(64)).max(32),
   researchOnly: z.literal(true),
   appliedToLiveExecution: z.literal(false)
@@ -206,7 +212,9 @@ const REPLAY_WARNINGS: Record<string, string> = {
   STRATEGY_EVIDENCE_TRUNCATED: 'คะแนนโหวตรายกลยุทธ์ถูกตัดตามขีดจำกัดหน่วยความจำ',
   SYNTHETIC_BEHAVIOR_TEST: 'ข้อมูลสังเคราะห์ — ใช้ทดสอบพฤติกรรมซอฟต์แวร์เท่านั้น ไม่ใช่ผลการเทรด',
   MALFORMED_INPUT_ROWS: 'มีแถวข้อมูลที่อ่านไม่ได้ — ถูกข้ามและนับไว้ ไม่ได้ซ่อมค่าให้',
-  DUPLICATE_INPUT_ROWS: 'มีแถวซ้ำหรือชนกันในบันทึก — ถูกนับไว้แล้ว'
+  DUPLICATE_INPUT_ROWS: 'มีแถวซ้ำหรือชนกันในบันทึก — ถูกนับไว้แล้ว',
+  UNREADABLE_INPUT_FILES: 'มีไฟล์บันทึกที่เปิดไม่ได้ — ถูกกันออกและนับไว้ ไม่ได้ซ่อมและไม่ได้แทนด้วยศูนย์',
+  CANCELLED_PARTIAL_RESULT: 'ถูกยกเลิกกลางคัน — ผลนี้ไม่ครบ ใช้เป็นหลักฐานสรุปไม่ได้'
 }
 
 export function replayWarningLabel(code: string): string {

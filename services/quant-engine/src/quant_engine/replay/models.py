@@ -99,6 +99,8 @@ WARNING_CODES = (
     "SYNTHETIC_BEHAVIOR_TEST",
     "MALFORMED_INPUT_ROWS",
     "DUPLICATE_INPUT_ROWS",
+    "CANCELLED_PARTIAL_RESULT",
+    "UNREADABLE_INPUT_FILES",
 )
 """Every caveat a replay can raise about itself. ``SYNTHETIC_BEHAVIOR_TEST`` is raised for every
 synthetic run and never removed: a synthetic fixture proves software behaviour and is not
@@ -266,6 +268,11 @@ class ReplayDiagnostics(Model):
     price that cannot be read is not a price of zero."""
     filtered: int = Field(ge=0)
     outsideWindow: int = Field(ge=0)
+    unreadableFiles: int = Field(default=0, ge=0)
+    """Stored files that would not open at all — a damaged footer, a truncated write, bytes that
+    are not Parquet. They are left out of the query rather than given a branch of their own, so
+    one bad file cannot take the readable history down with it. Reported and never repaired: a
+    file that cannot be read is not a file full of zeroes."""
 
 
 class ReplayDatasetSummary(Model):
@@ -732,6 +739,13 @@ class ReplaySummary(Model):
     payout: list[PayoutScenario] = Field(default_factory=list, max_length=MAX_SCENARIOS)
     walkForward: WalkForwardSummary | None = None
     sessionGuard: SessionGuardScenarioReport | None = None
+
+    partial: bool = False
+    """Whether the job was cancelled before every study beside the baseline had run.
+
+    A cancelled job is never a complete one. The baseline it managed to finish is kept — throwing
+    away work an operator paid for helps nobody — but it is labelled here and carries
+    ``CANCELLED_PARTIAL_RESULT``, so partial evidence can never be read as acceptance evidence."""
 
     warnings: list[Code] = Field(default_factory=list, max_length=MAX_WARNINGS)
     researchOnly: Literal[True] = True

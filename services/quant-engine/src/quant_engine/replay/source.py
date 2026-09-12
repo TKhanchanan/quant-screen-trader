@@ -147,15 +147,28 @@ def event_digest(observation: MarketObservation) -> str:
 
 
 def replay_provenance(observation: MarketObservation, mode: ReplaySourceMode) -> MarketObservation:
-    """The same reading, honestly relabelled as a replay of itself.
+    """The same reading, honestly relabelled as a replay of itself — identity intact.
 
-    Only ``sourceType`` changes. The quality block, the parser confidence, the latencies and the
-    timestamps are exactly what was recorded, because the whole point of replaying real history
-    is to put the real degraded states back through the same gates.
+    Two labels, deliberately. ``sourceType`` becomes REPLAY (or SYNTHETIC) so a recorded reading
+    can never masquerade as something a broker surface produced just now.
+    ``identitySourceType`` keeps the source that was actually recorded, because Phase 5 keys a
+    series partly on it: the capture layer falls back from DOM to OCR mid-series on purpose, and
+    that fallback ends one series and starts another.
+
+    Collapsing both DOM and VISUAL to one label would erase that transition, and a replayed
+    series would run straight through a reset the live run really performed — carrying candle
+    continuity, warm-up, regime context and ranking history it never had. The replay would then
+    be reporting what the pipeline *would* have done on a record the pipeline never saw.
+
+    Everything else is untouched: the quality block, the parser confidence, the latencies and
+    the timestamps are exactly what was recorded, because the whole point of replaying real
+    history is to put the real degraded states back through the same gates.
     """
-    if observation.sourceType == mode:
+    if observation.sourceType == mode and observation.identitySourceType is None:
         return observation
-    return observation.model_copy(update={"sourceType": mode})
+    return observation.model_copy(
+        update={"sourceType": mode, "identitySourceType": observation.identitySource}
+    )
 
 
 class ReplaySource(Protocol):
@@ -262,6 +275,7 @@ class _Accumulator:
         rows_read: int,
         out_of_order: int,
         filtered: int,
+        unreadable: int = 0,
     ) -> ReplayDatasetSummary:
         total = self.covered + self.gaps
         return ReplayDatasetSummary(
@@ -295,6 +309,7 @@ class _Accumulator:
                 malformed=self.malformed,
                 filtered=filtered,
                 outsideWindow=0,
+                unreadableFiles=unreadable,
             ),
         )
 
@@ -406,28 +421,54 @@ class ParquetObservationSource:
 
     # --- reading -----------------------------------------------------------------------
 
-    def _groups(self, connection: duckdb.DuckDBPyConnection) -> list[list[str]]:
-        """Stored files, grouped by the exact column layout each one has.
+    def _probe(
+        self, connection: duckdb.DuckDBPyConnection, path: str
+    ) -> tuple[tuple[tuple[str, str], ...], bool]:
+        """One file's column layout, and whether it can actually be read at all.
+
+        A layout alone is not enough. Describing a file reads its footer, so a file whose footer
+        survives but whose data pages are damaged would describe cleanly and then fail halfway
+        through the replay — with the whole union behind it. Pulling one real row proves a data
+        page decodes, which is the difference between isolating a bad file and discovering it
+        after an hour of work.
+        """
+        try:
+            relation = connection.sql(f"SELECT * FROM read_parquet({path!r}) LIMIT 1")
+            layout = tuple(
+                (str(name), str(kind))
+                for name, kind in zip(relation.columns, relation.types, strict=True)
+            )
+            relation.fetchall()
+        except duckdb.Error:
+            return ((), False)
+        return (layout, True)
+
+    def _groups(self, connection: duckdb.DuckDBPyConnection) -> tuple[list[list[str]], list[str]]:
+        """Readable files grouped by their exact column layout, and the ones that would not open.
+
+        Two separate protections, both learned from the same failure mode.
 
         Files are only read together when their schemas are identical. Reading a whole record
         with ``union_by_name`` unifies mismatched column types instead — one file whose price
-        column came back as text would retype *every* file's price as text, and a single corrupt
-        file would make the entire record unreadable. Grouping keeps a bad file's damage inside
-        that file, which is the difference between a diagnostic and an outage.
+        column came back as text would retype *every* file's price as text, and a single damaged
+        file would make the entire record unreadable.
+
+        And a file that cannot be opened at all is **left out of the query entirely** rather than
+        given a group of its own. A group that cannot be read is still a branch of the union, so
+        keeping it would take the readable history down with it — which is exactly the outage
+        the grouping exists to prevent. It is counted and reported instead, never repaired and
+        never replaced with zeroes.
         """
         grouped: dict[tuple[tuple[str, str], ...], list[str]] = {}
+        unreadable: list[str] = []
         for path in self.files:
-            try:
-                layout = tuple(
-                    (str(row[0]), str(row[1]))
-                    for row in connection.sql(
-                        f"DESCRIBE SELECT * FROM read_parquet({path!r}) LIMIT 0"
-                    ).fetchall()
-                )
-            except duckdb.Error:
-                layout = (("__unreadable__", path),)
+            layout, readable = self._probe(connection, path)
+            if not readable:
+                unreadable.append(path)
+                continue
             grouped.setdefault(layout, []).append(path)
-        return [files for _, files in sorted(grouped.items(), key=lambda item: item[1][0])]
+        ordered = [files for _, files in sorted(grouped.items(), key=lambda item: item[1][0])]
+        return (ordered, sorted(unreadable))
 
     def _ordered(self, connection: duckdb.DuckDBPyConnection) -> duckdb.DuckDBPyRelation:
         """Every stored row as JSON text, in canonical order, sorted by DuckDB rather than here.
@@ -437,10 +478,13 @@ class ParquetObservationSource:
         it has to, so a record larger than memory still replays in order — this reader never
         holds more than one fetch batch of rows at a time.
         """
+        groups, _ = self._groups(connection)
         selects = [
             f"SELECT to_json(r) AS row FROM read_parquet({files!r}, hive_partitioning := false) r"
-            for files in self._groups(connection)
+            for files in groups
         ]
+        if not selects:
+            return connection.sql("SELECT NULL AS row WHERE false")
         union = " UNION ALL ".join(selects)
         return connection.sql(
             "SELECT row FROM ("
@@ -476,13 +520,16 @@ class ParquetObservationSource:
         unordered durable set; canonical sorting is the contract rather than a repair, and this
         count is the evidence that it was needed.
         """
+        groups, _ = self._groups(connection)
         selects = [
             "SELECT r.filename AS file, r.file_row_number AS position, "
             "json_extract_string(to_json(r), '$.observedAt') AS stamp "
             f"FROM read_parquet({files!r}, hive_partitioning := false, "
             "filename := true, file_row_number := true) r"
-            for files in self._groups(connection)
+            for files in groups
         ]
+        if not selects:
+            return 0
         try:
             result = connection.sql(
                 "SELECT count(*) FROM (SELECT stamp, lag(stamp) OVER "
@@ -501,8 +548,10 @@ class ParquetObservationSource:
         rows_read = 0
         filtered = 0
         out_of_order = 0
+        unreadable = 0
         if self.files:
             with duckdb.connect() as connection:
+                unreadable = len(self._groups(connection)[1])
                 out_of_order = self._out_of_order(connection)
                 allowed = set(self.platforms)
                 for observation in self._rows(connection):
@@ -523,6 +572,7 @@ class ParquetObservationSource:
             rows_read=rows_read,
             out_of_order=out_of_order,
             filtered=filtered,
+            unreadable=unreadable,
         )
 
     def stream(

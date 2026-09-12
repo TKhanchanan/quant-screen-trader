@@ -12,8 +12,10 @@ Four rules make the answer mean something.
 * **Discovery on TRAIN only.** The candidate search is ``qst-analytics-v1``'s own, run over the
   fold's training rows; VALIDATION and TEST are only ever *evaluated*. A future fold cannot
   reach a past one, and appending more history cannot change a fold that has already been cut.
-* **Purge.** An outcome whose selection was made before a window opened carries information from
-  before the cutoff, so it is removed from that window rather than counted in it.
+* **Purge.** An outcome whose decision was already actionable before a window opened carries
+  information from before the cutoff, so it is removed from that window rather than counted in
+  it. The boundary is ``decisionAvailableAt`` — the instant the completed decision first existed
+  — and never ``boardAsOf``, which is only the close of the bar the cohort describes.
 * **Embargo.** A gap the width of the longest possible trade lifetime is inserted at every
   boundary, so no single trade can have its decision on one side of a split and its outcome on
   the other.
@@ -98,17 +100,28 @@ def _expiries(rows: Sequence[AnalyticsRow]) -> list[int]:
 
 
 def select(rows: Sequence[AnalyticsRow], expiries: list[int], start: int, end: int) -> Selection:
-    """Outcomes that both resolved and were decided inside one window.
+    """Outcomes that both resolved and became *actionable* inside one window.
 
-    Membership is by expiry, because that is when the outcome became knowable. The purge is the
-    second half of the rule: a trade that resolved inside this window but was *selected* before
-    it opened was already running across the boundary, and counting it here would carry
-    information from the other side of the cutoff.
+    Two different instants do two different jobs here, and using the wrong one for either is a
+    real error rather than a stylistic choice.
+
+    Membership is by **expiry**, because that is when the outcome became knowable.
+
+    The purge is by **``decisionAvailableAt``**, because that is when the completed decision
+    first existed — not ``boardAsOf``, which is the close of the bar the cohort describes. The
+    two are never the same: a board is assembled after the bar it is about has closed, so a
+    selection can describe a bar from before the window and still have become actionable inside
+    it. Purging on ``boardAsOf`` would throw that selection away as though it had leaked, when
+    nothing about it was knowable before the window opened. Phase 9 introduced
+    ``decisionAvailableAt`` for exactly this distinction and prices every entry from it.
+
+    A decision available at the very first instant of a window is **inside** it: the bound is
+    inclusive, matching the way Phase 9 admits an entry at ``decisionAvailableAt`` itself.
     """
     lo = bisect_left(expiries, start)
     hi = bisect_right(expiries, end)
     window = rows[lo:hi]
-    kept = tuple(row for row in window if row.boardAsOf >= start)
+    kept = tuple(row for row in window if row.decisionAvailableAt >= start)
     return Selection(rows=kept, purged=len(window) - len(kept))
 
 

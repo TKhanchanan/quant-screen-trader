@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass
+from typing import Final
 
 from quant_engine.market_models import (
     TIMEFRAMES,
@@ -11,6 +12,18 @@ from quant_engine.market_models import (
     Timeframe,
     price_sample,
 )
+
+AVAILABILITY_LAG_MS: Final = 3_000
+"""How far behind the present the availability watermark is held.
+
+A bar may not be declared closed the instant its close time passes: the batches covering its
+final seconds are still in flight. This is the margin that waits for them, and it belongs to the
+builder because the builder is what applies the watermark.
+
+It is one constant rather than two on purpose. The live engine advances from its own clock and a
+replay advances from the recorded one, and if those two numbers ever drifted apart a replay
+would close bars at different points in the series than the run it claims to be reproducing —
+silently, and with no test able to see it. Both import this."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +85,15 @@ class TimeSeriesBuilder:
                 del self._degraded[tf]
 
     def ingest(self, observation: MarketObservation) -> PriceSample | None:
+        """Accept one reading into the canonical series, or refuse it.
+
+        Identity turns on ``identitySource`` rather than on the transport label. For a live
+        reading the two are the same value, so this is exactly the behaviour it has always had:
+        a DOM-to-OCR fallback still ends one series and starts another. For a replayed reading
+        the label is ``REPLAY`` while the identity is the source that was recorded, so a replay
+        reproduces the resets the live run actually performed instead of running straight
+        through them.
+        """
         sample = price_sample(observation)
         if (
             sample is None
@@ -86,7 +108,7 @@ class TimeSeriesBuilder:
             sample.assetName,
             sample.contextId,
             sample.calibrationProfileId,
-            sample.sourceType,
+            sample.identitySource,
         )
         if self._identity is not None and identity != self._identity:
             # End the old context without manufacturing closed partial candles.

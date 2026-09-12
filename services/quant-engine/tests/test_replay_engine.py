@@ -419,3 +419,49 @@ def test_the_clock_never_runs_backwards_and_has_no_other_source() -> None:
     assert clock.now == 2_000
     assert clock.elapsed == 1_000
     assert clock.watermark == 2_000 - AVAILABILITY_LAG_MS
+
+
+# --- T-DG2 determinism across a record whose capture path changes hands ----------------
+
+
+def test_a_record_with_mixed_capture_sources_replays_identically_every_time(
+    tmp_path: Path,
+) -> None:
+    rows = fixtures.mixed_source_session()
+    first = replay(rows, tmp_path / "a", sourceMode="REPLAY").run()
+    second = replay(rows, tmp_path / "b", sourceMode="REPLAY").run()
+    assert signature(first) == signature(second)
+    assert first.run.ensemblesProduced > 0
+
+
+def test_shuffling_a_mixed_source_record_changes_nothing(tmp_path: Path) -> None:
+    # The durable record is an unordered set and the source sorts it, so the order somebody
+    # happened to hand the rows over in must not reach a single number — including when the
+    # capture path changes hands part-way through.
+    rows = fixtures.mixed_source_session()
+    shuffled = [*rows[700:], *rows[:300], *rows[300:700]]
+    ordered = replay(rows, tmp_path / "a", sourceMode="REPLAY").run()
+    scrambled = replay(shuffled, tmp_path / "b", sourceMode="REPLAY").run()
+    assert signature(ordered) == signature(scrambled)
+
+
+def test_batch_size_cannot_change_a_mixed_source_replay_either(tmp_path: Path) -> None:
+    rows = fixtures.mixed_source_session()
+    one = replay(rows, tmp_path / "a", batch_size=1, sourceMode="REPLAY").run()
+    many = replay(rows, tmp_path / "b", batch_size=997, sourceMode="REPLAY").run()
+    assert signature(one) == signature(many)
+
+
+def test_the_recorded_source_reaches_the_fingerprint_so_a_changed_path_is_a_changed_record(
+    tmp_path: Path,
+) -> None:
+    # Two records identical in every price and timestamp, differing only in which capture path
+    # produced them. They are different histories and must not share an identity.
+    mixed = replay(fixtures.mixed_source_session(), tmp_path / "a", sourceMode="REPLAY").run()
+    uniform = replay(
+        fixtures.mixed_source_session(uniform="VISUAL", tag="mixed"),
+        tmp_path / "b",
+        sourceMode="REPLAY",
+    ).run()
+    assert mixed.run.inputFingerprint != uniform.run.inputFingerprint
+    assert mixed.run.replayRunId != uniform.run.replayRunId

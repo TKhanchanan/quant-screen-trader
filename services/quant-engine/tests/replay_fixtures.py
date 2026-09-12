@@ -347,3 +347,57 @@ def session(
 def small_history() -> list[MarketObservation]:
     """One CapitalBear cohort long enough to mature, decide and resolve. Seconds to replay."""
     return session(seconds=420, tag="small")
+
+
+SOURCE_BLOCKS: tuple[tuple[int, str], ...] = (
+    (0, "VISUAL"),
+    (150, "DOM"),
+    (290, "VISUAL"),
+)
+"""Where the capture path changes hands, as a real run does it.
+
+The capture layer falls back from DOM to OCR mid-series on purpose and recovers afterwards, and
+Phase 5 keys a series partly on which of the two produced it — so each of these boundaries ends
+one series and starts another, on the same platform, slot, asset, context and calibration
+profile. Blocks rather than an alternation per sample: a path that changed every second would
+reset continuously and never close a bar, which would prove nothing about either path."""
+
+
+def source_at(index: int) -> str:
+    chosen = SOURCE_BLOCKS[0][1]
+    for start, name in SOURCE_BLOCKS:
+        if index >= start:
+            chosen = name
+    return chosen
+
+
+def mixed_source_session(
+    *, seconds: int = 420, tag: str = "mixed", uniform: str | None = None
+) -> list[MarketObservation]:
+    """One CapitalBear cohort whose capture path changes hands twice mid-series.
+
+    ``uniform`` pins every reading to one source instead, which is the control the identity test
+    measures against: same prices, same timestamps, no hand-over, and therefore no reset.
+    """
+    rows: list[MarketObservation] = []
+    shapes: tuple[Shape, ...] = ("TREND_UP", "RANGE", "TREND_DOWN")
+    for index, shape in enumerate(shapes):
+        slot = index + 1
+        asset = CAPITALBEAR_ASSETS[index]
+        context = identity(f"{tag}/{slot}")
+        base = BASES[index]
+        prices = path(shape, seconds, base, base * 0.0004)
+        for step in range(seconds):
+            rows.append(
+                observation(
+                    label=f"{tag}/{slot}/{step}",
+                    platform="capitalbear",
+                    slot=slot,
+                    asset=asset,
+                    context=context,
+                    timestamp=BASE_MS + step * 1_000 + index * 40,
+                    price=round(prices[step], 6),
+                    source=uniform if uniform is not None else source_at(step),
+                )
+            )
+    return rows

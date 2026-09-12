@@ -25,10 +25,10 @@ from quant_engine.replay import (
     daily,
     drawdown,
     equity,
-    execute,
     latency_report,
     payout_scenarios,
     rolling,
+    run_replay,
     streaks,
 )
 from quant_engine.session_guard.settings import SessionGuardSettings
@@ -332,7 +332,7 @@ def test_a_sandbox_guard_scenario_stops_new_replay_entries_when_its_limit_is_cro
 def test_the_guard_report_evaluates_a_configuration_and_never_searches_for_one(
     tmp_path: Path,
 ) -> None:
-    report = execute(
+    report = run_replay(
         spec(
             sessionGuardScenario=SessionGuardSettings(
                 enabled=True,
@@ -364,7 +364,7 @@ def test_the_guard_report_evaluates_a_configuration_and_never_searches_for_one(
 
 
 def test_no_guard_scenario_means_no_guard_report(tmp_path: Path) -> None:
-    report = execute(
+    report = run_replay(
         spec(),
         market_data=tmp_path,
         factory=lambda manifest: InMemoryObservationSource(

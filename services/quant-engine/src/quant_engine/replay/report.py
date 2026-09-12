@@ -157,6 +157,7 @@ def build_summary(
     latency: Sequence[LatencyScenario] = (),
     walk_forward: WalkForwardSummary | None = None,
     guard: SessionGuardScenarioReport | None = None,
+    partial: bool = False,
 ) -> ReplaySummary:
     """The whole baseline backtest, platform by platform, with its caveats attached."""
     manifest = result.manifest
@@ -211,6 +212,8 @@ def build_summary(
     )
     if walk_forward is not None:
         warnings.extend(walk_forward.warnings)
+    if partial:
+        warnings.append("CANCELLED_PARTIAL_RESULT")
     return ReplaySummary(
         replayRunId=result.run.replayRunId,
         dataset=result.dataset,
@@ -228,6 +231,7 @@ def build_summary(
         payout=robustness.payout_scenarios(rows, manifest.payoutScenarios),
         walkForward=walk_forward,
         sessionGuard=guard,
+        partial=partial,
         warnings=sorted(set(warnings))[:32],
     )
 

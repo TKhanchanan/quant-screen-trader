@@ -38,6 +38,9 @@ export function ReplayResult({ state }: { state: ReplayState }): JSX.Element {
   const dataset = summary.dataset
   const walk = summary.walkForward
   return <>
+    {summary.partial && <p role="alert" className="error-banner">
+      ผลนี้ไม่ครบ — งานถูกยกเลิกก่อนที่การศึกษาข้างเคียงจะรันจบ
+      {' '}ใช้เป็นหลักฐานสรุปผลไม่ได้</p>}
     {summary.warnings.map(code => <p key={code} role="status" className="analytics-warning">
       {replayWarningLabel(code)}</p>)}
 

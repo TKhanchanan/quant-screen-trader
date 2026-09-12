@@ -159,7 +159,7 @@ def test_a_trade_decided_before_a_window_opened_is_purged_from_it() -> None:
     start = rows[10].expiryTime
     selection = select(rows, expiries, start, rows[30].expiryTime)
     assert selection.purged == 1
-    assert all(row.boardAsOf >= start for row in selection.rows)
+    assert all(row.decisionAvailableAt >= start for row in selection.rows)
     assert rows[10] not in selection.rows
 
 
@@ -171,7 +171,7 @@ def test_training_evidence_only_contains_outcomes_that_resolved_inside_the_windo
     assert selection.rows
     for row in selection.rows:
         assert start <= row.expiryTime <= end
-        assert row.boardAsOf >= start
+        assert row.decisionAvailableAt >= start
 
 
 def test_every_fold_reports_what_the_purge_and_the_embargo_removed() -> None:
@@ -197,8 +197,8 @@ def test_no_outcome_can_appear_on_both_sides_of_a_fold_boundary() -> None:
         assert ids[1].isdisjoint(ids[2])
         assert ids[0].isdisjoint(ids[2])
         # And no trade in a later period was still running when the earlier one was cut.
-        assert all(row.boardAsOf > window.trainEnd for row in validation.rows)
-        assert all(row.boardAsOf > window.validationEnd for row in test.rows)
+        assert all(row.decisionAvailableAt > window.trainEnd for row in validation.rows)
+        assert all(row.decisionAvailableAt > window.validationEnd for row in test.rows)
 
 
 def test_rows_inside_the_embargo_interval_belong_to_no_period_at_all() -> None:
@@ -338,3 +338,103 @@ def test_a_threshold_that_moves_between_folds_is_reported_as_unstable() -> None:
     if summary.thresholdSpread is not None and summary.thresholdSpread > 0.10:
         assert "PARAMETER_INSTABILITY" in summary.warnings
         assert summary.candidateStability == "UNSTABLE"
+
+
+# --- T-FB the causal boundary is decisionAvailableAt, not boardAsOf --------------------
+
+
+def at(*, decision: int, expiry: int, board: int | None = None, label: str = "edge") -> PaperTrade:
+    """One outcome placed at exact instants around a fold boundary.
+
+    ``boardAsOf`` defaults well before the decision, which is the normal shape rather than a
+    contrived one: a cohort is assembled after the bar it describes has closed, so the bar's
+    close is always earlier than the moment the finished decision first existed.
+    """
+    return base.trade(
+        label,
+        expiry=expiry,
+        decisionAvailableAt=decision,
+        boardAsOf=decision - 4_000 if board is None else board,
+        entryTime=decision + 100,
+        expiryTargetTime=expiry,
+    )
+
+
+FOLD_START = base.BASE_MS + 100_000
+FOLD_END = FOLD_START + 100_000
+
+
+def keeps(trade: PaperTrade) -> bool:
+    rows = rows_of([trade])
+    assert rows, "the fixture must produce an analysable row"
+    return bool(select(rows, _expiries(rows), FOLD_START, FOLD_END).rows)
+
+
+def test_a_decision_that_became_actionable_inside_the_window_is_kept() -> None:
+    # The case the old boundary threw away: the bar the cohort describes closed before the
+    # window, but the completed decision did not exist — and could not have been acted on —
+    # until after it opened. Nothing about it was knowable across the cutoff.
+    trade = at(board=FOLD_START - 1_000, decision=FOLD_START + 500, expiry=FOLD_START + 5_500)
+    assert trade.boardAsOf < FOLD_START
+    assert trade.decisionAvailableAt >= FOLD_START
+    assert keeps(trade)
+
+
+def test_a_decision_already_actionable_before_the_window_is_purged() -> None:
+    trade = at(board=FOLD_START - 9_000, decision=FOLD_START - 1_000, expiry=FOLD_START + 4_000)
+    assert trade.decisionAvailableAt < FOLD_START
+    assert not keeps(trade)
+
+
+def test_a_decision_available_exactly_at_the_boundary_is_inside_it() -> None:
+    # Documented and deliberate: the bound is inclusive, matching the way Phase 9 admits an
+    # entry at decisionAvailableAt itself rather than strictly after it.
+    assert keeps(at(decision=FOLD_START, expiry=FOLD_START + 5_000))
+
+
+def test_a_decision_one_millisecond_early_is_outside_it() -> None:
+    assert not keeps(at(decision=FOLD_START - 1, expiry=FOLD_START + 5_000))
+
+
+def test_the_outcome_boundary_is_still_the_expiry() -> None:
+    # The decision may be inside the window and the outcome still land outside it; that outcome
+    # belongs to the period it resolved in, not to the one it was decided in.
+    assert not keeps(at(decision=FOLD_END - 1_000, expiry=FOLD_END + 5_000))
+    assert keeps(at(decision=FOLD_END - 6_000, expiry=FOLD_END - 1_000))
+
+
+def test_a_trade_still_running_at_the_cutoff_belongs_to_neither_side_of_it() -> None:
+    """The straddling trade: decided before the cutoff, resolved after it.
+
+    This is the whole reason the embargo exists. Its decision was actionable while the training
+    period was still open, so counting it in the later period would carry information across the
+    boundary; its outcome was not knowable until after the cutoff, so counting it in the earlier
+    one would credit training with a result it could not have seen. It belongs to neither, and
+    both selections must leave it out.
+    """
+    embargo = CAPITALBEAR_EMBARGO
+    cutoff = base.BASE_MS + 100_000
+    straddler = at(decision=cutoff - 2_000, expiry=cutoff + 3_000, label="straddle")
+    before = at(decision=cutoff - 40_000, expiry=cutoff - 30_000, label="before")
+    after = at(decision=cutoff + embargo + 1_000, expiry=cutoff + embargo + 6_000, label="after")
+    rows = rows_of([before, straddler, after])
+    assert len(rows) == 3
+    expiries = _expiries(rows)
+
+    train = select(rows, expiries, base.BASE_MS, cutoff)
+    validation = select(rows, expiries, cutoff + embargo, cutoff + embargo + 100_000)
+    kept = {row.paperTradeId for row in (*train.rows, *validation.rows)}
+    assert straddler.paperTradeId not in kept
+    assert before.paperTradeId in kept
+    assert after.paperTradeId in kept
+
+
+def test_the_candidate_still_comes_from_training_alone_after_the_boundary_change() -> None:
+    settings = counted()
+    baseline = study(corpus(), settings)
+    rewritten = study(corpus(flip_from=480), settings)
+    assert baseline.rows[0].candidateThreshold is not None
+    assert (baseline.rows[0].candidateMetric, baseline.rows[0].candidateThreshold) == (
+        rewritten.rows[0].candidateMetric,
+        rewritten.rows[0].candidateThreshold,
+    )

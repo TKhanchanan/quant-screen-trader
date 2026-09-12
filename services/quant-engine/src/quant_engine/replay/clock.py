@@ -17,18 +17,19 @@ from typing import Final
 
 from quant_engine.configuration import Platform
 from quant_engine.features.engine import PRIMARY_TIMEFRAME, READY_BARS
+from quant_engine.market_builder import AVAILABILITY_LAG_MS as MARKET_AVAILABILITY_LAG_MS
 from quant_engine.market_models import TIMEFRAMES, Timeframe
 from quant_engine.paper.policy import PaperSettings
 from quant_engine.strategy.policy import policy_for
 
-AVAILABILITY_LAG_MS: Final = 3_000
-"""The market-time lag the live engine's background maintenance applies to the availability
-watermark, restated here because ``market_api.advance_live`` holds it as a literal.
+AVAILABILITY_LAG_MS: Final = MARKET_AVAILABILITY_LAG_MS
+"""The market-time lag applied to the availability watermark.
 
-It is what keeps a bar from being declared closed before the batches covering its final seconds
-could have arrived. Replay applies the same lag from replayed market time so that a quiet stretch
-closes a bar at the same point in the series it would have closed at live, rather than whenever
-the next sample happens to turn up. A test asserts the live value still agrees with this one."""
+Imported from the builder that applies it rather than restated, so live and replay cannot drift
+apart: a replay that held its own copy would keep closing bars three seconds from wherever the
+live engine had moved to, and nothing would fail. Replay applies it to replayed market time, so a
+quiet stretch closes a bar at the same point in the series it would have closed at live rather
+than whenever the next sample happens to turn up."""
 
 WARMUP_BARS: Final = READY_BARS
 """Fifty closed bars: the count below which ``qfe-v2`` reports WARMING and nothing in the

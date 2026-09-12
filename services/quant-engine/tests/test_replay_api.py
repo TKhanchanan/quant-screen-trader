@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 import replay_fixtures as fixtures
 from fastapi.testclient import TestClient
@@ -147,7 +148,7 @@ def test_a_second_heavy_replay_is_refused_rather_than_queued(tmp_path: Path) -> 
         second = client.post("/api/replay/runs", json=MANIFEST)
         assert second.status_code == 409
         cast(ReplayService, client.app.state.replay).cancel(  # type: ignore[attr-defined]
-            __import__("uuid").UUID(first.json()["jobId"])
+            UUID(first.json()["jobId"])
         )
         wait(client, first.json()["jobId"])
 
@@ -183,9 +184,32 @@ def test_a_cancelled_run_keeps_its_progress_and_is_never_presented_as_complete(
         assert finished["status"] == "CANCELLED"
         assert finished["processedEvents"] >= 0
         service = cast(ReplayService, client.app.state.replay)  # type: ignore[attr-defined]
-        job = service.job(__import__("uuid").UUID(started["jobId"]))
+        job = service.job(UUID(started["jobId"]))
         assert job is not None
-        assert job.summary is None or job.run is None or job.run.status == "CANCELLED"
+        assert job.run is None or job.run.status == "CANCELLED"
+        # Whatever it managed is labelled on its own record, so the read surface cannot serve it
+        # as a finished backtest.
+        if job.summary is not None:
+            assert job.summary.partial is True
+            assert "CANCELLED_PARTIAL_RESULT" in job.summary.warnings
+
+
+def test_a_cancelled_run_served_over_http_says_it_is_partial(tmp_path: Path) -> None:
+    with client_with(tmp_path, fixtures.small_history()) as client:
+        started = client.post(
+            "/api/replay/runs", json={**MANIFEST, "latencyScenarios": [250, 500]}
+        ).json()
+        client.post(f"/api/replay/runs/{started['jobId']}/cancel")
+        finished = wait(client, started["jobId"])
+        assert finished["status"] == "CANCELLED"
+        if finished["replayRunId"] is None:
+            return  # cancelled before the run had an identity; nothing is served either way
+        summary = client.get(f"/api/replay/runs/{finished['replayRunId']}/summary")
+        if summary.status_code == 404:
+            return
+        body = summary.json()["summary"]
+        assert body["partial"] is True
+        assert "CANCELLED_PARTIAL_RESULT" in body["warnings"]
 
 
 # --- T-EY a failure never becomes a result ---------------------------------------------
