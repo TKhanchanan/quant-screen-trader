@@ -626,21 +626,69 @@ def test_the_evidence_model_says_on_its_face_that_it_is_not_applied() -> None:
     assert fields["appliedToLiveExecution"].default is False
 
 
-# --- T-FC the serialized contract did not change ---------------------------------------
+# --- T-FC the version contract moved, and why ------------------------------------------
 
 
-def test_a_result_written_before_this_hardening_still_loads_unchanged(tmp_path: Path) -> None:
-    """Why ``qst-replay-v1`` is still ``qst-replay-v1``.
+def test_the_replay_contract_moved_because_two_of_its_own_rules_did() -> None:
+    """Why ``qst-replay-v1`` became ``qst-replay-v2``.
 
-    The hardening added two reported fields — whether a job was cancelled part-way, and how many
-    stored files would not open — and one in-flight distinction that is never serialized at all.
-    Every one of them is additive with a default, so a result written by the previous build reads
-    back under the current model and means exactly what it meant when it was written. That is the
-    test for whether a version bump is warranted, and it says no: bumping would orphan every
-    stored comparison to buy nothing.
+    ``REPLAY_VERSION`` is defined over the source contract, the event ordering, the clock, the
+    warm-up, the evaluation window, the settlement tail and the **walk-forward construction and
+    purge/embargo rules**, and its own docstring says any change to how a replay reaches a number
+    needs a new string. The hardening changed two of those rules, so the string had to move.
 
-    Built by taking a real summary and deleting the new fields, rather than by hand: a
-    hand-written payload would only prove that *this* payload parses.
+    Schema compatibility is the wrong test here, and applying it is how this nearly shipped as
+    v1: every field the hardening added is additive with a default, so a v1 result parses
+    perfectly under the v2 model. It parses *and it means something different*.
+    """
+    from quant_engine.replay.models import REPLAY_VERSION
+
+    assert REPLAY_VERSION == "qst-replay-v2"
+
+
+def test_the_version_is_what_keeps_two_different_results_from_sharing_one_identity() -> None:
+    """The decisive reason, asserted rather than argued.
+
+    A run id is a UUID5 whose key **begins** with the version string, and a result is stored under
+    ``replay/<replayRunId>/``. Had the string stayed at v1, a v1 result and a v2 result over the
+    same history would have shared an id and a path — so the newer would have overwritten the
+    older, silently, with nothing on either record saying they were produced differently. That is
+    worse than an unreadable file: both numbers look equally authoritative.
+    """
+    from uuid import uuid5
+
+    from quant_engine.replay.engine import REPLAY_NAMESPACE, replay_run_id
+
+    def identity(version: str) -> str:
+        key = "|".join((version, "fingerprint", "settings", "1", "2", "capitalbear"))
+        return str(uuid5(REPLAY_NAMESPACE, key))
+
+    assert identity("qst-replay-v1") != identity("qst-replay-v2")
+    # And the live derivation really is keyed on the constant rather than on a copy of it, so
+    # the next change to the contract moves the ids too.
+    assert str(
+        replay_run_id(
+            input_fingerprint="fingerprint",
+            settings_hash="settings",
+            evaluation_start=1,
+            evaluation_end=2,
+            platforms=("capitalbear",),
+        )
+    ) == identity("qst-replay-v2")
+
+
+def test_a_result_written_under_the_previous_contract_still_loads_and_still_says_so(
+    tmp_path: Path,
+) -> None:
+    """An old result stays readable, and stays labelled.
+
+    Reading a v1 artefact is worth keeping — it is a record of something that really ran — and the
+    two reported fields the hardening added default cleanly, so it parses. What it must never do
+    is come back wearing the current version: the string on its own record is the only thing
+    standing between "here are two backtests" and "here are two backtests of different things".
+
+    Built by taking a real summary and stripping it back, rather than by hand: a hand-written
+    payload would only prove that *this* payload parses.
     """
     from quant_engine.replay.models import ReplaySummary
 
@@ -655,18 +703,20 @@ def test_a_result_written_before_this_hardening_still_loads_unchanged(tmp_path: 
     payload = report.summary.model_dump(mode="json")
     assert payload.pop("partial") is False
     assert payload["dataset"]["diagnostics"].pop("unreadableFiles") == 0
+    payload["replayVersion"] = "qst-replay-v1"
 
     restored = ReplaySummary.model_validate(payload)
     assert restored.partial is False
     assert restored.dataset.diagnostics.unreadableFiles == 0
+    # It parses, and it does not pretend to be current.
     assert restored.replayVersion == "qst-replay-v1"
-    # And everything that was already on the record still says the same thing.
-    assert restored.model_dump(mode="json") == report.summary.model_dump(mode="json")
+    assert restored.replayVersion != report.summary.replayVersion
 
 
 def test_the_identity_source_never_reaches_the_stored_record() -> None:
-    # The Parquet record is byte-for-byte what it always was, which is the other half of why no
-    # version moved: a replay cannot change the shape of the record it reads.
+    # The version moved because the *meaning* of a result changed. The durable market record did
+    # not: the identity distinction is in-flight only, so a replay cannot change the shape of the
+    # record it reads, and a v1 and a v2 run still read exactly the same bytes.
     from quant_engine.market_models import MarketObservation, PriceSample
 
     assert MarketObservation.model_fields["identitySourceType"].exclude is True

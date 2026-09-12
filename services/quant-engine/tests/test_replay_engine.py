@@ -98,7 +98,7 @@ def test_a_replay_drives_the_real_pipeline_end_to_end(tmp_path: Path) -> None:
     assert result.run.paperResolved > 0
     assert result.run.featureVersion == "qfe-v2"
     assert result.run.paperVersion == "qst-paper-v1"
-    assert result.run.replayVersion == "qst-replay-v1"
+    assert result.run.replayVersion == "qst-replay-v2"
 
 
 def test_events_reach_the_engine_in_market_time_order(tmp_path: Path) -> None:

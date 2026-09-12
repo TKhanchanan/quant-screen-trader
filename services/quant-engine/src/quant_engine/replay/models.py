@@ -31,11 +31,35 @@ from quant_engine.paper.policy import PaperSettings
 from quant_engine.session_guard.settings import SessionGuardSettings
 from quant_engine.strategy.models import Regime
 
-REPLAY_VERSION = "qst-replay-v1"
+REPLAY_VERSION = "qst-replay-v2"
 """Source contract, event ordering, clock semantics, warm-up derivation, evaluation window,
 settlement tail, walk-forward construction and purge/embargo rules. Any change to how a replay
 reaches a number requires a new string, so two replay results can never be compared as if they
-had been produced the same way."""
+had been produced the same way.
+
+**v1 → v2.** Two of those rules changed, and both change the numbers a replay reports from
+unchanged history:
+
+* *Series identity.* v1 relabelled every replayed reading ``REPLAY``, which collapsed the
+  recorded DOM and VISUAL paths into one value and erased the identity transition Phase 5 keys a
+  series on. A replayed series ran straight through resets the live run really performed. v2
+  keeps the recorded source as the identity while the label stays ``REPLAY``.
+* *Walk-forward purge.* v1 purged on ``boardAsOf``, the close of the bar a cohort describes. v2
+  purges on ``decisionAvailableAt``, the instant the completed decision first existed — the two
+  are never the same, so folds admit and exclude different outcomes.
+
+Schema compatibility is the wrong test for this string and nearly kept it at v1: every field the
+hardening added is additive with a default, so a v1 result parses perfectly under the v2 model.
+It parses *and it means something different*, which is the case a version exists for.
+
+The decisive part is the run id. It is a UUID5 whose key **begins** with this constant, and a
+result is stored under ``replay/<replayRunId>/``. Holding the string still gave a v1 result and a
+v2 result over one history the same id and the same path, so the newer overwrote the older with
+nothing on either record saying they were produced differently — worse than an unreadable file,
+because both numbers look equally authoritative.
+
+A stored v1 result still loads. It carries ``qst-replay-v1`` on its own record and must never be
+compared with a v2 result as though they measured the same thing."""
 
 SUPPORTED_FEATURE_VERSION = "qfe-v2"
 SUPPORTED_REGIME_VERSION = "qst-regime-v1"

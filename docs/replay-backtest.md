@@ -1,4 +1,4 @@
-# Replay and backtest (`qst-replay-v1`)
+# Replay and backtest (`qst-replay-v2`)
 
 Phase 11 answers one question:
 
@@ -556,8 +556,38 @@ expectancy Y over N resolved outcomes, with interval Z and warnings W" is.
 | Ranking | `qst-ranking-v1` |
 | Paper | `qst-paper-v1` |
 | Analytics | `qst-analytics-v1` |
-| Replay | `qst-replay-v1` |
+| Replay | `qst-replay-v2` |
 
 Every replay result records all seven. The supported upstream versions are literals in
 `replay/models.py` rather than imports, so a later contract arrives as an explicit mismatch
 instead of silently pooling new decisions with old outcomes.
+
+### Why `qst-replay-v1` became `qst-replay-v2`
+
+The correctness hardening changed two of the rules this constant is defined over, and both change
+the numbers a replay reports from unchanged history: series identity no longer collapses the
+recorded DOM and VISUAL paths into one value, and the walk-forward purge moved from `boardAsOf` to
+`decisionAvailableAt`.
+
+Schema compatibility is the wrong test for a `qst-*` version and nearly kept this at v1. Every
+field the hardening added is additive with a default, so a v1 result parses perfectly under the v2
+model — it parses *and it means something different*, which is the case a version exists for. The
+question to ask is "do the same inputs still produce the same numbers", not "does the old file
+still load".
+
+The decisive part is the run id. It is a UUID5 whose key **begins** with the version string, and
+results are stored under `replay/<replayRunId>/`. Holding the version still would have given a v1
+result and a v2 result over the same history the **same id and the same path** — so the newer would
+overwrite the older, silently, with nothing on either record saying they were produced
+differently. Measured on a fixture whose capture path changes hands mid-bar, the two builds
+produced run id `00361d2a-…` on both sides with dataset fingerprints `8f555b7a…` and `f3d7821a…`:
+two different sets of outcomes wearing one identity.
+
+On this installation's real record — which is VISUAL throughout, so the identity fix is a no-op
+there — the same history produced the same findings under both contracts and two different run
+ids, `59bc0415-…` under v1 and `b6270bc5-…` under v2. That is the property the bump buys: identical
+evidence, still distinguishable as the product of different rules, stored side by side rather than
+one on top of the other.
+
+A stored v1 result still loads and still says `qst-replay-v1` on its own record. It must never be
+compared with a v2 result as though the two measured the same thing.

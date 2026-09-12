@@ -56,7 +56,7 @@ const summary = (changes: Record<string, unknown> = {}): Record<string, unknown>
   partial: false, researchOnly: true, appliedToLiveExecution: false, ...changes
 })
 const state = (changes: Record<string, unknown> = {}): ReplayState => ReplayStateSchema.parse({
-  replayVersion: 'qst-replay-v1', available: true, busy: false,
+  replayVersion: 'qst-replay-v2', available: true, busy: false,
   jobId: '6b0f0a7c-6a1e-4e2a-9a1a-4c4f9d1a2b3c',
   replayRunId: 'affd79d2-494d-5474-9de0-528c00b0b49d', status: 'COMPLETED', phase: 'DONE',
   totalEvents: 21_239, processedEvents: 21_239, percent: 1, currentMarketTime: 1_789_139_284_475,
