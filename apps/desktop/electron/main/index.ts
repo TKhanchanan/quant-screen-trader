@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs'
 import { join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { app, BrowserWindow, ipcMain, WebContentsView, type IpcMainInvokeEvent } from 'electron'
 import {
@@ -31,6 +31,7 @@ import { requestConfiguration } from './configuration-client'
 import { SessionWatcher } from './session-watcher'
 import { requireScope, type RendererScope } from './ipc-scope'
 import { prepareCalibration } from './calibration'
+import { runPackageSmoke } from './package-smoke'
 
 const trustedRenderers = new Map<number, RendererScope>()
 function authorize(event: IpcMainInvokeEvent, platform?: Platform): RendererScope {
@@ -167,6 +168,16 @@ function openDashboard(): BrowserWindow {
 }
 
 function configureEnvironment(): void {
+  if (app.isPackaged) {
+    // Stable OS data root survives installer upgrades. Smoke runs isolate appData first.
+    if (app.commandLine.hasSwitch('qst-package-smoke') && process.env.QST_PACKAGE_SMOKE_ROOT) {
+      app.setPath('appData', realpathSync(process.env.QST_PACKAGE_SMOKE_ROOT))
+    }
+    const directory = join(app.getPath('appData'), 'QuantScreenTrader')
+    mkdirSync(directory, { recursive: true })
+    app.setPath('userData', directory)
+    app.setPath('sessionData', directory)
+  }
   try {
     if (!app.isPackaged && typeof process.loadEnvFile === 'function') {
       const envFile = resolve(app.getAppPath(), '..', '..', '.env')
@@ -189,7 +200,27 @@ function configureEnvironment(): void {
 }
 configureEnvironment()
 
-void app.whenReady().then(() => {
+const ownsInstance = !app.isPackaged || app.requestSingleInstanceLock()
+if (!ownsInstance) app.quit()
+app.on('second-instance', () => {
+  if (!app.isReady()) return
+  const window = openDashboard()
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+})
+
+function startupLog(message: string): void {
+  if (!app.isPackaged) return
+  try {
+    const directory = join(app.getPath('userData'), 'logs')
+    mkdirSync(directory, { recursive: true })
+    appendFileSync(join(directory, 'startup.log'), `${new Date().toISOString()} ${message}\n`)
+  } catch { console.warn('Startup log could not be written.') }
+}
+
+if (ownsInstance) void app.whenReady().then(() => {
+  startupLog(`appVersion=${app.getVersion()} platform=${process.platform} arch=${process.arch}`)
 
   const connection = getEngineConnectionConfig()
   engineProcess = new EngineProcessManager({
@@ -197,7 +228,8 @@ void app.whenReady().then(() => {
     connection,
     dataDirectory: app.getPath('userData'),
     isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath
+    resourcesPath: process.resourcesPath,
+    log: startupLog
   })
   engineProcess.start()
   market = new MarketManager(browsers, connection)
@@ -425,7 +457,13 @@ void app.whenReady().then(() => {
       return offline
     }
   })
-  ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })
+  ipcMain.handle(IPC_CHANNELS.getEngineHealth, async (event) => {
+    authorize(event)
+    const health = await fetchEngineHealth(connection)
+    if (app.isPackaged && engineProcess?.diagnostic)
+      return { state: 'offline', checkedAt: health.checkedAt, message: engineProcess.diagnostic }
+    return health
+  })
   ipcMain.handle(IPC_CHANNELS.policy, async (event) => {
     authorize(event)
     try {
@@ -552,14 +590,26 @@ void app.whenReady().then(() => {
   // the application to close itself the same way a person closing the window would.
   sessionWatcher = new SessionWatcher(connection, () => app.quit())
 
-  openDashboard()
+  const dashboard = openDashboard()
+  if (app.isPackaged && app.commandLine.hasSwitch('qst-package-smoke'))
+    void runPackageSmoke(dashboard, connection, engineProcess).catch((error: unknown) => {
+      console.warn('[package-smoke]', error instanceof Error ? error.message : 'failed')
+      startupLog('Package smoke failed')
+      process.exitCode = 1
+      app.quit()
+    })
   app.on('activate', () => {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) openDashboard()
   })
 })
 
-app.on('before-quit', () => {
-  sessionWatcher?.stop(); execution?.stop(); assetSync?.stop(); market?.stop(); engineProcess?.stop()
+let engineStopped = false
+app.on('before-quit', (event) => {
+  sessionWatcher?.stop(); execution?.stop(); assetSync?.stop(); market?.stop()
+  if (app.isPackaged && !engineStopped && engineProcess) {
+    event.preventDefault()
+    void engineProcess.stop().then(() => { engineStopped = true; app.quit() })
+  } else void engineProcess?.stop()
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

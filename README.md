@@ -110,7 +110,7 @@ Phase 11 ✅ Deterministic historical replay, backtest and walk-forward validati
 
 Phase 12 ✅ Evidence-gated adaptive analytical policy (`qst-policy-v1`) and watchdog (`qst-watchdog-v1`). Local validation and all required CI checks passed. Default mode **SHADOW** preserves baseline behavior. Optional PAPER_GATED filters paper intents only. No broker execution automation is implemented by Phase 12. See [Adaptive policy](docs/adaptive-policy.md).
 
-Phase 13 ❌ NOT STARTED — Packaging.
+Phase 13 🚧 Packaging implementation; native artifact acceptance pending. See [Desktop packaging](docs/packaging.md).
 
 Phase 14 ❌ NOT STARTED — Shadow-live operational validation.
 

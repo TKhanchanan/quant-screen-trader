@@ -11,6 +11,7 @@ interface EngineProcessOptions {
   isPackaged: boolean
   platform?: NodeJS.Platform
   resourcesPath: string
+  log?: (message: string) => void
 }
 
 interface EngineLaunch {
@@ -80,13 +81,34 @@ export function resolveEngineLaunch(options: EngineProcessOptions): EngineLaunch
 
 export class EngineProcessManager {
   private child: ChildProcess | null = null
+  private stopping = false
+  private stopPromise: Promise<void> | null = null
+  diagnostic: string | null = null
+
+  get pid(): number | undefined { return this.child?.pid }
+
+  private log(message: string): void {
+    console.info(`[quant-engine] ${message}`)
+    this.options.log?.(message)
+  }
+
+  private unavailable(reason: string): void {
+    this.diagnostic = `Quant engine unavailable: ${resolveEngineLaunch(this.options).command} (${reason})`
+    this.log(this.diagnostic)
+  }
 
   constructor(private readonly options: EngineProcessOptions) {}
 
   start(): void {
-    if (this.child && !this.child.killed) return
+    if (this.child || this.stopping) return
+    this.diagnostic = null
 
     const launch = resolveEngineLaunch(this.options)
+    this.log(`Starting ${launch.command}`)
+    if (this.options.isPackaged && !existsSync(launch.command)) {
+      this.unavailable('bundled binary missing')
+      return
+    }
     let child: ChildProcess
     try {
       child = spawn(launch.command, launch.args, {
@@ -102,33 +124,46 @@ export class EngineProcessManager {
         windowsHide: true
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.warn(`[quant-engine] Failed to start: ${message}`)
+      this.unavailable(`spawn failed: ${(error as NodeJS.ErrnoException).code ?? 'unknown'}`)
       return
     }
     this.child = child
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      console.info(`[quant-engine] ${chunk.toString().trimEnd()}`)
+      if (!this.options.isPackaged) console.info(`[quant-engine] ${chunk.toString().trimEnd()}`)
     })
     child.stderr?.on('data', (chunk: Buffer) => {
-      console.warn(`[quant-engine] ${chunk.toString().trimEnd()}`)
+      if (!this.options.isPackaged) console.warn(`[quant-engine] ${chunk.toString().trimEnd()}`)
     })
-    child.once('error', (error) => {
-      console.warn(`[quant-engine] Failed to start: ${error.message}`)
+    child.once('spawn', () => this.log(`Started pid=${child.pid}`))
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      this.unavailable(`spawn failed: ${error.code ?? 'unknown'}`)
       if (this.child === child) this.child = null
     })
     child.once('exit', (code, signal) => {
-      if (code && code !== 0) {
-        console.warn(`[quant-engine] Exited with code ${code}${signal ? ` (${signal})` : ''}.`)
-      }
+      this.log(`Exited code=${code} signal=${signal}`)
+      if (!this.stopping) this.unavailable(`exit code=${code} signal=${signal}`)
       if (this.child === child) this.child = null
     })
   }
 
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
+    this.stopping = true
     const child = this.child
-    this.child = null
-    if (child && !child.killed) child.kill()
+    if (!child) return Promise.resolve()
+    this.stopPromise = new Promise<void>((done) => {
+      // onedir engine runs one process, without a reload supervisor or onefile bootloader.
+      const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      const finish = (): void => {
+        clearTimeout(killTimer)
+        if (this.child === child) this.child = null
+        done()
+      }
+      child.once('close', finish)
+      if (child.exitCode !== null || child.signalCode !== null) finish()
+      else child.kill()
+    })
+    return this.stopPromise
   }
 }

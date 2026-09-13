@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
-import { nativeImage } from 'electron'
+import { app, nativeImage } from 'electron'
 import { createWorker, OEM, PSM, type Worker } from 'tesseract.js'
 import { normalizeAsset } from './asset-detector'
 import { parsePrice, parsePayout, parseTimer, type NormalizedImage, type OCRProvider, type ParsedFields } from './market-providers'
@@ -45,9 +45,10 @@ export class TesseractOCRProvider implements OCRProvider {
     if (this.busy) throw new Error('OCR busy')
     this.busy = true
     try {
-      const localRequire = createRequire(join(process.cwd(), 'package.json'))
+      const localRequire = createRequire(join(app?.isPackaged ? join(process.resourcesPath, 'app.asar.unpacked') : process.cwd(), 'package.json'))
       this.worker ??= createWorker('eng', OEM.LSTM_ONLY, {
         langPath: join(dirname(localRequire.resolve('@tesseract.js-data/eng')), '4.0.0'),
+        ...(app?.isPackaged ? { workerPath: localRequire.resolve('tesseract.js/src/worker-script/node/index.js') } : {}),
         cacheMethod: 'none', gzip: true, logger: () => {}, errorHandler: () => {}
       }).catch(() => { this.worker = null; throw new Error('OCR unavailable') })
       const worker = await this.worker

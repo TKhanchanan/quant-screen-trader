@@ -1,0 +1,31 @@
+# Native release environment: Python 3.14, install with pip -r; no floating dependencies.
+altgraph==0.17.5
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+click==8.5.0
+colorama==0.4.6; sys_platform == 'win32'
+duckdb==1.5.5
+fastapi==0.141.1
+h11==0.16.0
+httptools==0.8.0
+idna==3.19
+macholib==1.16.4; sys_platform == 'darwin'
+packaging==26.3
+pefile==2024.8.26; sys_platform == 'win32'
+psutil==7.2.2
+pydantic==2.13.5
+pydantic_core==2.46.5
+pyinstaller==6.22.2
+pyinstaller-hooks-contrib==2026.7
+python-dotenv==1.2.3
+pywin32-ctypes==0.2.3; sys_platform == 'win32'
+PyYAML==6.0.3
+setuptools==84.0.0
+starlette==1.6.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.52.4
+uvloop==0.22.1; sys_platform != 'win32'
+watchfiles==1.2.0
+websockets==17.1

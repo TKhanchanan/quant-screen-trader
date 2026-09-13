@@ -57,6 +57,7 @@ build/
 dist/
 out/
 release/
+services/quant-engine/.venv-package/
 coverage/
 test-results/
 playwright-report/
