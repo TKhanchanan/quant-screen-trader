@@ -262,3 +262,11 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+
+Acceptance closed after 242 JavaScript tests, 838 Python tests, lint, typecheck
+and build passed locally, followed by all four required jobs in
+[GitHub Actions run 34738052684](https://github.com/TKhanchanan/quant-screen-trader/actions/runs/34738052684)
+for implementation commit `a3c22349f03a0ead02d7c8e8ea3ed576d2b30c48`.
+The local toolchain reports existing Starlette/AnyIO deprecation notices and
+Rollup removes dependency PURE annotations; all commands exit successfully.

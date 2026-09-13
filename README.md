@@ -108,7 +108,7 @@ Phase 10 ✅ Outcome analytics and score calibration. Measurement only: it reads
 
 Phase 11 ✅ Deterministic historical replay, backtest and walk-forward validation. Research only: it drives the *existing* Phase 5-10 pipeline over the recorded observation history in chronological order and reports what the frozen contracts would have decided and what those decisions would have produced. It changes no formula, no threshold, no session limit and no execution setting, writes only under its own namespace, and provides no execution-application mechanism. Phase 12 reads its evidence through a separate, past-only analytical admission boundary.
 
-Phase 12 ⏳ Evidence-gated adaptive analytical policy (`qst-policy-v1`) and watchdog (`qst-watchdog-v1`) implemented; final CI acceptance pending. Default mode **SHADOW** preserves baseline behavior. Optional PAPER_GATED filters paper intents only. No broker execution automation is implemented by Phase 12. See [Adaptive policy](docs/adaptive-policy.md).
+Phase 12 ✅ Evidence-gated adaptive analytical policy (`qst-policy-v1`) and watchdog (`qst-watchdog-v1`). Local validation and all required CI checks passed. Default mode **SHADOW** preserves baseline behavior. Optional PAPER_GATED filters paper intents only. No broker execution automation is implemented by Phase 12. See [Adaptive policy](docs/adaptive-policy.md).
 
 Phase 13 ❌ NOT STARTED — Packaging.
 
