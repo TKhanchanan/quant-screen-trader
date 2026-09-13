@@ -19,6 +19,7 @@ from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity import OpportunityBoard, OpportunityEngine
 from quant_engine.paper import PaperEngine, PaperSettings, PaperTrade, settings_from_environment
 from quant_engine.paper.engine import PaperUpdate
+from quant_engine.policy.service import PolicyService
 from quant_engine.session_guard import (
     DailySession,
     SessionGuard,
@@ -78,12 +79,14 @@ class MarketEngine:
         storage: ParquetStorage,
         paper: PaperSettings | None = None,
         guard: SessionGuardSettings | None = None,
+        policy: PolicyService | None = None,
     ) -> None:
         self.storage = storage
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
         self.features = FeatureEngine(hydrator=self._history)
         self.strategy = StrategyEngine()
         self.opportunities = OpportunityEngine()
+        self.policy = policy or PolicyService(default_mode="OFF")
         self.availability: dict[tuple[str, int], int] = {}
         settings, error = (paper, None) if paper is not None else _paper_settings()
         self.paper = PaperEngine(settings)
@@ -203,6 +206,11 @@ class MarketEngine:
             self.persist_session(
                 self.guard.apply_settlement(settlement, unresolved=self.paper.unresolved())
             )
+        resolved_trades = [t for t in update.trades if t.status == "RESOLVED"]
+        if resolved_trades:
+            self.policy.resolved(
+                resolved_trades, max(t.resolvedAtMarketTime or 0 for t in resolved_trades)
+            )
         if update.trades:
             at = self.paper.market_time()
             if at is not None:
@@ -321,19 +329,38 @@ class MarketEngine:
         # watermark because that watermark is the moment each of them first existed: a
         # superseded board becomes final exactly when the next epoch opens.
         if result.finalized is not None:
-            self.persist_paper(
-                self.paper.on_board(
-                    result.finalized, self.board_available_at(result.finalized, available_at)
-                )
-            )
-        self.persist_paper(
-            self.paper.on_board(result.board, self.board_available_at(result.board, available_at))
-        )
+            self.offer_paper_board(result.finalized, available_at)
+        self.offer_paper_board(result.board, available_at)
         if result.finalized is None:
             return
         for candidate in result.finalized.candidates:
             self.storage.append("opportunity_candidates", candidate)
         self.storage.append("opportunity_boards", result.finalized)
+
+    def offer_paper_board(self, board: OpportunityBoard, watermark: int) -> None:
+        at = self.board_available_at(board, watermark)
+        session = self.guard.current
+        ensemble = (
+            self.strategy.latest(board.platform, board.selectedSlotId)
+            if board.selectedSlotId is not None
+            else None
+        )
+        strategies = (
+            tuple(
+                v.strategyId
+                for v in ensemble.strategies
+                if v.eligible and v.direction == board.selectedDirection
+            )
+            if (ensemble is not None and ensemble.asOf == board.asOf)
+            else ()
+        )
+        if self.policy.observe(
+            board,
+            at,
+            guard_permits=session is None or session.canOpenNewEntry,
+            strategies=strategies,
+        ):
+            self.persist_paper(self.paper.on_board(board, at))
 
     def board_available_at(self, board: OpportunityBoard, watermark: int) -> int:
         """The canonical market time at which this whole board first existed.

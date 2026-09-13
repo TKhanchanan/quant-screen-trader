@@ -4,7 +4,7 @@ import {
   PlatformSchema,
   PlatformCommandSchema, BrowserSnapshotSchema, ConfigurationRequestSchema, ConfigurationResultSchema,
   FeatureStateSchema, StrategyStateSchema, OpportunityStateSchema, PaperStateSchema,
-  AnalyticsStateSchema, ReplayCommandSchema, ReplayStateSchema,
+  AnalyticsStateSchema, ReplayCommandSchema, ReplayStateSchema, PolicyStateSchema,
   SessionGuardCommandSchema, SessionGuardStateSchema,
   ExecutionCommandSchema, ExecutionStateSchema,
   type DesktopBridge,
@@ -31,6 +31,7 @@ const bridge: DesktopBridge = {
     IPC_CHANNELS.sessionGuard, SessionGuardCommandSchema.parse(request))),
   analytics: async (platform) => AnalyticsStateSchema.parse(
     await ipcRenderer.invoke(IPC_CHANNELS.analytics, PlatformSchema.parse(platform))),
+  policy: async () => PolicyStateSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.policy)),
   replay: async (request) => ReplayStateSchema.parse(await ipcRenderer.invoke(
     IPC_CHANNELS.replay, ReplayCommandSchema.parse(request))),
   execution: async (request) => ExecutionStateSchema.parse(await ipcRenderer.invoke(

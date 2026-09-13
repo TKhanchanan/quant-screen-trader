@@ -1,0 +1,57 @@
+{
+  "label": "RECORDED_HISTORY_ACCEPTANCE",
+  "policyVersion": "qst-policy-v1",
+  "replayVersion": "qst-replay-v2",
+  "sourceFingerprint": "ddcddb241c3b9e77d011fa33f8e3dc5b5d89d47f49268f74e9a7d96850d27e14",
+  "events": 21239,
+  "startTime": 1788963259209,
+  "endTime": 1789139284475,
+  "warmupDurationMs": 30000000,
+  "baselineUnchanged": true,
+  "baselineSelections": 0,
+  "baselineResolved": 0,
+  "shadowDecisions": 3970,
+  "shadowActions": {
+    "SKIP": 3970
+  },
+  "evidenceStatus": "INSUFFICIENT_SAMPLE",
+  "candidatesConsidered": 1,
+  "rejectedByStatus": {
+    "INSUFFICIENT_SAMPLE": 1
+  },
+  "rejectedByReason": {
+    "TRAIN_SAMPLE_FLOOR": 1
+  },
+  "validatedRules": 0,
+  "oosFolds": 0,
+  "comparison": {
+    "baselineTrades": 0,
+    "adaptiveEligible": 0,
+    "watched": 0,
+    "skipped": 0,
+    "baselineSelections": 0,
+    "policyAllowed": 0,
+    "coverage": null,
+    "baselineWins": 0,
+    "baselineLosses": 0,
+    "baselineDraws": 0,
+    "adaptiveWins": 0,
+    "adaptiveLosses": 0,
+    "adaptiveDraws": 0,
+    "baselineWinRate": null,
+    "adaptiveWinRate": null,
+    "baselineExpectancy": null,
+    "adaptiveExpectancy": null,
+    "baselineProfitFactor": null,
+    "adaptiveProfitFactor": null,
+    "baselineMaxDrawdown": null,
+    "adaptiveMaxDrawdown": null,
+    "currency": null,
+    "warnings": [
+      "COVERAGE_FLOOR",
+      "MONETARY_UNVERIFIED"
+    ]
+  },
+  "causalityViolations": 0,
+  "warnings": []
+}

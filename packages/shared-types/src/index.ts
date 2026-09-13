@@ -1,3 +1,4 @@
+import type { PolicyState } from './policy'
 import { z } from 'zod'
 import type { AssetSyncCommand, AssetSyncState } from './assets'
 import type { FeatureState } from './features'
@@ -64,6 +65,7 @@ export const IPC_CHANNELS = {
   features: 'features:state', strategy: 'strategy:state', opportunities: 'opportunities:state',
   paper: 'paper:state', sessionGuard: 'session-guard:command', analytics: 'analytics:state',
   replay: 'replay:command',
+  policy: 'policy:state',
   openWorkspace: 'workspace:open', openTrading: 'trading:open', execution: 'execution:command',
   platformCommand: 'platform:command', configuration: 'configuration:request'
 } as const
@@ -91,6 +93,7 @@ export interface DesktopBridge {
    * file; it cannot reach an order, a control, an arm state or the trading day.
    */
   replay: (request: ReplayCommand) => Promise<ReplayState>
+  policy: () => Promise<PolicyState>
   /** The only bridge method that can lead to a press. Workspace main frames only. */
   execution: (request: ExecutionCommand) => Promise<ExecutionState>
 }
@@ -277,3 +280,5 @@ export * from './paper'
 export * from './session-guard'
 export * from './analytics'
 export * from './replay'
+
+export * from './policy'

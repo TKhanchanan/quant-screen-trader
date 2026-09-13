@@ -577,12 +577,12 @@ def test_a_replay_states_on_its_own_record_that_it_changes_nothing(tmp_path: Pat
     assert report.evidence.appliedToLiveExecution is False
 
 
-# --- T-ET the evidence has no consumer -------------------------------------------------
+# --- T-ET Phase 12 is the only authorized evidence consumer -------------------------------------------------
 
 
-def test_nothing_in_this_application_reads_replay_evidence() -> None:
-    # Persisting it without a consumer is the point: Phase 12 is the first phase allowed to
-    # consider it, and it inherits evidence instead of starting from an empty table.
+def test_only_phase12_admission_reads_replay_evidence() -> None:
+    # Phase 12 is now the sole authorized reader. All other analytical and desktop code
+    # remains unable to interpret an evidence artifact as a change to execution.
     searched = [
         path
         for folder in ("services/quant-engine/src", "apps/desktop", "packages")
@@ -610,8 +610,9 @@ def test_nothing_in_this_application_reads_replay_evidence() -> None:
                 mentions.add(str(path.relative_to(REPOSITORY)))
         elif "ReplayEvidence" in text or "evidence.json" in text:
             mentions.add(str(path.relative_to(REPOSITORY)))
-    # Only the module that declares it, the ones that build and persist it, and the export list.
+    # Only the producer/export modules and the Phase 12 admission boundary.
     assert mentions <= {
+        "services/quant-engine/src/quant_engine/policy/evidence.py",
         "services/quant-engine/src/quant_engine/replay/models.py",
         "services/quant-engine/src/quant_engine/replay/report.py",
         "services/quant-engine/src/quant_engine/replay/repository.py",

@@ -14,6 +14,7 @@ import {
   SegmentMetricsSchema, MatrixSchema, ThresholdCandidateSchema, TemporalSplitSchema,
   SampleLabelSchema,
   ReplayCommandSchema, ReplayStatusSchema, ReplaySummarySchema, emptyReplayState,
+  PolicyStateSchema, emptyPolicyState,
   type Platform, type PaperState, type SessionGuardState, type AnalyticsState,
   type SegmentMetrics, type ReplayState
 } from '@quant-screen-trader/shared-types'
@@ -425,6 +426,17 @@ void app.whenReady().then(() => {
     }
   })
   ipcMain.handle(IPC_CHANNELS.getEngineHealth, (event) => { authorize(event); return fetchEngineHealth(connection) })
+  ipcMain.handle(IPC_CHANNELS.policy, async (event) => {
+    authorize(event)
+    try {
+      const connection = getEngineConnectionConfig()
+      const response = await fetch(new URL('/api/policy/state', connection.healthUrl),
+        { signal: AbortSignal.timeout(2000) })
+      if (!response.ok) return emptyPolicyState(`Policy diagnostics unavailable (${response.status})`)
+      return PolicyStateSchema.parse(await response.json())
+    } catch { return emptyPolicyState('ต่อเอ็นจิ้นไม่ได้') }
+  })
+
   ipcMain.handle(IPC_CHANNELS.replay, async (event, input: unknown) => {
     // Read-only Phase 11 research. The two commands here start and cancel *offline compute*
     // over the engine's own recorded file; there is no path from this handler to an order, a

@@ -25,6 +25,9 @@ from quant_engine.market_storage import ParquetStorage
 from quant_engine.opportunity_api import router as opportunity_router
 from quant_engine.paper_api import router as paper_router
 from quant_engine.paths import AppPaths, ensure_app_paths
+from quant_engine.policy.repository import PolicyRepository
+from quant_engine.policy.service import PolicyService
+from quant_engine.policy_api import router as policy_router
 from quant_engine.replay.service import ReplayService
 from quant_engine.replay_api import router as replay_router
 from quant_engine.session_guard_api import router as session_guard_router
@@ -86,7 +89,10 @@ def create_app(
         await asyncio.to_thread(initialize_database, paths.database_file)
         application.state.paths = paths
         guard_settings, guard_error = await asyncio.to_thread(load_settings, paths.database_file)
-        market = MarketEngine(ParquetStorage(paths.market_data), guard=guard_settings)
+        policy = PolicyService(PolicyRepository(paths.market_data / "policy" / "journal.sqlite3"))
+        market = MarketEngine(
+            ParquetStorage(paths.market_data), guard=guard_settings, policy=policy
+        )
         market.guard.settingsError = guard_error
         # Phase 9 never silently forgets a pending or open paper trade across a restart, and
         # Phase 9.5 never comes back as a fresh trading day with a spent limit restored.
@@ -133,6 +139,7 @@ def create_app(
             stopping.set()
             await task
             await asyncio.to_thread(market.storage.flush)
+            policy.repository.close()
 
     application = FastAPI(
         title="QuantScreen Trader Quant Engine",
@@ -148,6 +155,7 @@ def create_app(
     application.include_router(session_guard_router)
     application.include_router(analytics_router)
     application.include_router(replay_router)
+    application.include_router(policy_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:

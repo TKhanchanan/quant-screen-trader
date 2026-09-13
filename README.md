@@ -106,7 +106,13 @@ Phase 9.5 ✅ Daily session guard. A stop system only: it keeps one trading day'
 
 Phase 10 ✅ Outcome analytics and score calibration. Measurement only: it reads the resolved Phase 9 outcomes and reports whether the Phase 7 and Phase 8 scores actually corresponded to better results. It changes no formula, no threshold, no session limit and no execution setting, and there is no way in it to apply anything it finds.
 
-Phase 11 ✅ Deterministic historical replay, backtest and walk-forward validation. Research only: it drives the *existing* Phase 5-10 pipeline over the recorded observation history in chronological order and reports what the frozen contracts would have decided and what those decisions would have produced. It changes no formula, no threshold, no session limit and no execution setting, writes only under its own namespace, and there is no way in it — and no consumer anywhere in the application — to apply anything it finds.
+Phase 11 ✅ Deterministic historical replay, backtest and walk-forward validation. Research only: it drives the *existing* Phase 5-10 pipeline over the recorded observation history in chronological order and reports what the frozen contracts would have decided and what those decisions would have produced. It changes no formula, no threshold, no session limit and no execution setting, writes only under its own namespace, and provides no execution-application mechanism. Phase 12 reads its evidence through a separate, past-only analytical admission boundary.
+
+Phase 12 ⏳ Evidence-gated adaptive analytical policy (`qst-policy-v1`) and watchdog (`qst-watchdog-v1`) implemented; final CI acceptance pending. Default mode **SHADOW** preserves baseline behavior. Optional PAPER_GATED filters paper intents only. No broker execution automation is implemented by Phase 12. See [Adaptive policy](docs/adaptive-policy.md).
+
+Phase 13 ❌ NOT STARTED — Packaging.
+
+Phase 14 ❌ NOT STARTED — Shadow-live operational validation.
 
 Execution layer ⚠️ Implemented, not yet accepted against a live broker. It locates the broker's own direction controls in each of the nine cells, and in AUTO mode presses the one a finished board named. It sets no stake, no expiry and no account, reads no balance, and records no outcome. Verified by unit tests only — the control locator has never been run against a real broker panel, so measure the controls and watch a PAPER run before arming AUTO. Position sizing, outcome tracking and installer packaging remain unimplemented.
 
