@@ -249,9 +249,9 @@ labelled **SYNTHETIC_BEHAVIOR_TEST** and never published as market evidence.
 Separate tests assert synthetic provenance can never activate an adaptive rule.
 
 100,000 mixed eligible/veto/rejected-board evaluations on macOS arm64, Python
-3.14.6: 31,882/sec, p50 33.0 µs, p95 34.541 µs. A separate 100k memory pass peaks
+3.14.6: 32,100/sec, p50 32.625 µs, p95 34.125 µs. A separate 100k memory pass peaks
 at 5,608 traced Python bytes; process peak RSS including imports and latency
-samples is 66,895,872 bytes. This measures the pure evaluator, excluding journal
+samples is 66,813,952 bytes. This measures the pure evaluator, excluding journal
 I/O and evidence rebuild. See [benchmark](evidence/phase12/benchmark.json).
 
 ```sh

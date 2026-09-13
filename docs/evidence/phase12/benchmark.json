@@ -1,11 +1,11 @@
 {
   "label": "SYNTHETIC_BEHAVIOR_TEST",
   "evaluations": 100000,
-  "evaluationsPerSecond": 31881.68028982077,
-  "p50Microseconds": 33.0,
-  "p95Microseconds": 34.541,
+  "evaluationsPerSecond": 32099.761353746417,
+  "p50Microseconds": 32.625,
+  "p95Microseconds": 34.125,
   "peakPythonBytes": 5608,
-  "peakProcessBytes": 66895872,
+  "peakProcessBytes": 66813952,
   "python": "3.14.6",
   "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
 }
