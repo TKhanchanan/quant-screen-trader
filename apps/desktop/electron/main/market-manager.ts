@@ -17,7 +17,7 @@ export class MarketManager {
   private readonly workspaces = new Map<Platform, WorkspaceData>()
   private readonly queue = new Map<string, MarketObservation>()
   private sending = false
-  private readonly operational = new Map<string, { observations: number; dataUncertain: number }>()
+  private readonly operational = new Map<string, { observations: number; dataUncertain: number; lastCaptureAttemptAt: number | null }>()
   private readonly transport = { droppedBatches: 0, http429s: 0 }
   operationalState() {
     return [...this.workspaces].map(([platform, w]) => ({
@@ -28,14 +28,14 @@ export class MarketManager {
       slots: w.config.configuration.slots.map(s => ({ slotId: s.id, enabled: s.enabled,
         assetName: s.assetName, contextId: w.contextIds.get(s.id)!,
         state: w.snapshot.slots.find(slot => slot.slotId === s.id)!.state,
-        ...(this.operational.get(`${platform}:${s.id}`) ?? { observations: 0, dataUncertain: 0 }),
+        ...(this.operational.get(`${platform}:${s.id}`) ?? { observations: 0, dataUncertain: 0, lastCaptureAttemptAt: null }),
         dropped: w.snapshot.slots.find(slot => slot.slotId === s.id)!.dropped }))
     }))
   }
   private captureMetric(platform: Platform, slotId: number, uncertain: boolean, observation: boolean): void {
     const key = `${platform}:${slotId}`
-    const counts = this.operational.get(key) ?? { observations: 0, dataUncertain: 0 }
-    counts.observations += Number(observation); counts.dataUncertain += Number(uncertain)
+    const counts = this.operational.get(key) ?? { observations: 0, dataUncertain: 0, lastCaptureAttemptAt: null }
+    counts.observations += Number(observation); counts.dataUncertain += Number(uncertain); counts.lastCaptureAttemptAt = Date.now()
     this.operational.set(key, counts)
   }
   private readonly timer: ReturnType<typeof setInterval>
@@ -119,7 +119,7 @@ export class MarketManager {
       const slot = w.snapshot.slots.find(s => s.slotId === configured.id)!
       let canvasSlotId: number
       try { canvasSlotId = this.browsers.chartSlot(platform, configured.id, configured.assetName) }
-      catch (error) { slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { stage: 'TAB', message: error instanceof Error ? error.message : 'Sync Assets required' }; continue }
+      catch (error) { this.captureMetric(platform, configured.id, true, false); slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { stage: 'TAB', message: error instanceof Error ? error.message : 'Sync Assets required' }; continue }
       const cell = calibrationToChartGrid(platform, profile.slots, 'LEGACY').slots.find(candidate => candidate.slotId === canvasSlotId)!
       const geometry = canvasPriceGeometry(platform, cell.chartBounds, surface.bounds.width, surface.zoomFactor)
       const bounds = geometry.chartBounds

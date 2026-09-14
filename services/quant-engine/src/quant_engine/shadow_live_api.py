@@ -21,6 +21,7 @@ class CaptureSlot(Model):
     contextId: UUID
     state: str = Field(max_length=24)
     observations: int = Field(ge=0)
+    lastCaptureAttemptAt: int | None = Field(default=None, ge=0)
     dataUncertain: int = Field(ge=0)
     dropped: int = Field(ge=0)
 

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import paper_fixtures as fixtures
@@ -285,7 +286,7 @@ def test_capture_duration_requires_recent_data_and_excludes_stalls(tmp_path: Pat
     r = recorder(tmp_path)
     at = fixtures.EPOCH
     o = observation(at)
-    value = dict(
+    value: dict[str, Any] = dict(
         platform="capitalbear",
         instanceId=str(uuid4()),
         healthRevision=1,
@@ -303,6 +304,7 @@ def test_capture_duration_requires_recent_data_and_excludes_stalls(tmp_path: Pat
     r.telemetry(value, at + 1000)
     assert r.data["platforms"]["capitalbear"]["captureDurationMs"] == 0
     r.observation(o, True, at)
+    value["slots"][0]["lastCaptureAttemptAt"] = at
     r.telemetry(value, at + 1000)
     r.telemetry(value, at + 2000)
     assert r.data["platforms"]["capitalbear"]["captureDurationMs"] == 1000
@@ -348,3 +350,27 @@ def test_zero_selection_completed_acceptance_does_not_require_trades(tmp_path: P
     assert r.report(fixtures.EPOCH)["result"] == "PASS"
     r.data["storageCorruption"] = None
     assert r.report(fixtures.EPOCH)["acceptance"] == "PENDING"
+
+
+def test_failed_ocr_attempts_count_as_capture_without_fabricating_samples(tmp_path: Path) -> None:
+    r = recorder(tmp_path)
+    value = dict(
+        platform="iqoption",
+        instanceId=str(uuid4()),
+        healthRevision=1,
+        captureRunning=True,
+        surfaceAvailable=True,
+        engineAvailable=False,
+        intervalMs=1000,
+        armed=False,
+        brokerPresses=0,
+        queueDepth=0,
+        mainLoopDelayMs=0,
+        slots=[dict(slotId=1, enabled=True, dataUncertain=1, lastCaptureAttemptAt=fixtures.EPOCH)],
+    )
+    r.telemetry(value, fixtures.EPOCH)
+    r.telemetry(value, fixtures.EPOCH + 1000)
+    assert r.data["platforms"]["iqoption"]["captureDurationMs"] == 1000
+    assert r.data["platforms"]["iqoption"]["observations"] == 0
+    assert r.report(fixtures.EPOCH + 1000)["health"] == "DEGRADED"
+    assert r.report(fixtures.EPOCH + 1000)["acceptance"] == "PENDING"

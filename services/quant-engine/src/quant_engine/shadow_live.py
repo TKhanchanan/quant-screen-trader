@@ -469,18 +469,13 @@ class ShadowLiveRecorder:
         self.data["desktop"][name] = value
         enabled = [s for s in value["slots"] if s["enabled"]]
         recent = all(
-            (slot := self.data["slots"].get(f"{name}:{s['slotId']}")) is not None
-            and slot["lastObservedAt"] is not None
-            and 0 <= at - slot["lastObservedAt"] <= max(10000, value["intervalMs"] * 18)
+            s.get("lastCaptureAttemptAt") is not None
+            and 0 <= at - s["lastCaptureAttemptAt"] <= max(10000, value["intervalMs"] * 18)
             for s in enabled
         )
-        live = (
-            bool(enabled)
-            and recent
-            and value["captureRunning"]
-            and value["surfaceAvailable"]
-            and value["engineAvailable"]
-        )
+        # This POST reaching the engine establishes engine availability even when every
+        # recent OCR attempt abstained before it could produce an observation batch.
+        live = bool(enabled) and recent and value["captureRunning"] and value["surfaceAvailable"]
         previous = self.last_telemetry.get(name)
         p = self.data["platforms"][name]
         if previous and previous[1] == value["instanceId"] and previous[2] and live:
