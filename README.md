@@ -110,9 +110,9 @@ Phase 11 ✅ Deterministic historical replay, backtest and walk-forward validati
 
 Phase 12 ✅ Evidence-gated adaptive analytical policy (`qst-policy-v1`) and watchdog (`qst-watchdog-v1`). Local validation and all required CI checks passed. Default mode **SHADOW** preserves baseline behavior. Optional PAPER_GATED filters paper intents only. No broker execution automation is implemented by Phase 12. See [Adaptive policy](docs/adaptive-policy.md).
 
-Phase 13 🚧 Local macOS arm64 DMG acceptance passed; Windows x64 and packaging CI acceptance pending. See [Desktop packaging](docs/packaging.md).
+Phase 13 🟡 macOS accepted / Windows deferred. See [Desktop packaging](docs/packaging.md).
 
-Phase 14 ❌ NOT STARTED — Shadow-live operational validation.
+Phase 14 🚧 Shadow-live validation in progress. The bounded operational recorder is opt-in; sustained macOS live acceptance is pending. See [Shadow-live validation](docs/shadow-live.md).
 
 Execution layer ⚠️ Implemented, not yet accepted against a live broker. It locates the broker's own direction controls in each of the nine cells, and in AUTO mode presses the one a finished board named. It sets no stake, no expiry and no account, reads no balance, and records no outcome. Verified by unit tests only — the control locator has never been run against a real broker panel, so measure the controls and watch a PAPER run before arming AUTO. Position sizing, outcome tracking and installer packaging remain unimplemented.
 

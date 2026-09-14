@@ -27,6 +27,7 @@ from quant_engine.session_guard import (
     SessionGuardSettings,
 )
 from quant_engine.session_guard.engine import GuardUpdate
+from quant_engine.shadow_live import ShadowLiveRecorder
 from quant_engine.strategy import StrategyEngine
 from quant_engine.strategy.models import EnsembleSnapshot, StrategyEvaluation
 
@@ -81,6 +82,7 @@ class MarketEngine:
         guard: SessionGuardSettings | None = None,
         policy: PolicyService | None = None,
     ) -> None:
+        self.shadow: ShadowLiveRecorder | None = None
         self.storage = storage
         self.builders: dict[tuple[str, int], TimeSeriesBuilder] = {}
         self.features = FeatureEngine(hydrator=self._history)
@@ -135,6 +137,8 @@ class MarketEngine:
             stamp = int(observation.observedAt.timestamp() * 1000)
             if observation.sourceType in ("DOM", "VISUAL") and not 0 <= now - stamp <= 3000:
                 self.rejected += 1
+                if self.shadow:
+                    self.shadow.observation(observation, False, now)
                 continue
             builder = self.builders.setdefault(
                 (observation.platform, observation.slotId), TimeSeriesBuilder()
@@ -146,6 +150,8 @@ class MarketEngine:
                 accepted += 1
             else:
                 self.rejected += 1
+            if self.shadow:
+                self.shadow.observation(observation, sample is not None, now)
             self.persist_events(builder)
             if sample:
                 self.offer_paper_price(sample)
@@ -163,11 +169,16 @@ class MarketEngine:
             emission = builder.emitted[0]
             record, available_at = emission.record, emission.availableAt
             if isinstance(record, Candle):
+                primary_observed = time.perf_counter()
                 self.storage.append("candles", record)
                 snapshot = self.features.ingest_candle(record)
                 if snapshot is not None:
+                    if self.shadow:
+                        self.shadow.feature(snapshot, available_at)
                     self.storage.append("features", snapshot)
-                    self.evaluate_primary_close(snapshot, available_at)
+                    self.evaluate_primary_close(
+                        snapshot, available_at, observed_start=primary_observed
+                    )
             else:
                 self.storage.append("seconds", record)
                 self.features.ingest_second(record)
@@ -185,9 +196,15 @@ class MarketEngine:
         Only accepted samples are offered: the per-second record carries the same timestamp and
         price, and replaying it would re-offer a price the paper layer has already seen.
         """
-        self.persist_paper(self.paper.on_market_sample(sample))
+        before = self.paper.live.get((sample.platform, sample.slotId)) if self.shadow else None
+        update = self.paper.on_market_sample(sample)
+        if self.shadow:
+            self.shadow.first_price(before, sample, update, self.paper.settings)
+        self.persist_paper(update, sample)
 
-    def persist_paper(self, update: PaperUpdate) -> None:
+    def persist_paper(self, update: PaperUpdate, sample: PriceSample | None = None) -> None:
+        if self.shadow:
+            self.shadow.paper(update, sample)
         # Phase 10 caches an analysis of the durable record, so a newly resolved outcome makes
         # that cache a statement about a record that no longer exists. Flagging it here — one
         # assignment, no work — is what keeps the panel from reporting a win rate that stopped
@@ -276,7 +293,9 @@ class MarketEngine:
         self.analytics.mark_stale(len(latest))
         return len(latest)
 
-    def evaluate_primary_close(self, snapshot: FeatureSnapshot, available_at: int) -> None:
+    def evaluate_primary_close(
+        self, snapshot: FeatureSnapshot, available_at: int, *, observed_start: float | None = None
+    ) -> None:
         """Run and store the whole Phase 7 chain for one closed PRIMARY snapshot.
 
         Phase 7 is triggered by a closed primary bar and never by a UI poll.
@@ -295,6 +314,14 @@ class MarketEngine:
         ensemble = self.strategy.evaluate(bundle)
         if self.strategy.evaluated == before:
             return  # already evaluated at this as-of time; one primary close, one ensemble
+        ensemble_finished = time.perf_counter()
+        if self.shadow:
+            self.shadow.ensemble(bundle, available_at)
+            self.shadow.latency(
+                snapshot.platform,
+                "primaryAvailableToEnsemble",
+                (time.perf_counter() - observed_start) * 1000 if observed_start is not None else 0,
+            )
         self.storage.append("regimes", ensemble.regime)
         for evaluation in ensemble.strategies:
             self.storage.append("strategy_evaluations", evaluation)
@@ -302,7 +329,7 @@ class MarketEngine:
         # When this slot's opinion for this close first existed. A cohort is only as available
         # as its latest member, so the board's own availability is derived from these.
         self.availability[(ensemble.platform, ensemble.slotId)] = available_at
-        self.rank_opportunity(ensemble, available_at)
+        self.rank_opportunity(ensemble, available_at, observed_start=ensemble_finished)
 
     def expected_slots(self, platform: Platform) -> set[int]:
         """Which slots this platform's live observation pipeline is actually carrying.
@@ -314,14 +341,21 @@ class MarketEngine:
         """
         return {slot_id for name, slot_id in self.builders if name == platform}
 
-    def rank_opportunity(self, ensemble: EnsembleSnapshot, available_at: int) -> None:
+    def rank_opportunity(
+        self, ensemble: EnsembleSnapshot, available_at: int, *, observed_start: float | None = None
+    ) -> None:
         """Rank one NEW Phase 7 ensemble against its platform's current cohort.
 
         Only new ones reach here — a repeated primary close returned above — so one close
         contributes to its ranking epoch exactly once. A board is written when the next epoch
         supersedes it, which is the moment it stops being able to change.
         """
+        observed_start = observed_start if observed_start is not None else time.perf_counter()
         result = self.opportunities.ingest(ensemble, self.expected_slots(ensemble.platform))
+        if self.shadow and result is not None:
+            self.shadow.latency(
+                ensemble.platform, "ensembleToBoard", (time.perf_counter() - observed_start) * 1000
+            )
         if result is None:
             return
         # Phase 9 sees the board that just became immutable before the live one, which is the
@@ -354,13 +388,34 @@ class MarketEngine:
             if (ensemble is not None and ensemble.asOf == board.asOf)
             else ()
         )
-        if self.policy.observe(
+        observed_start = time.perf_counter()
+        permits = self.policy.observe(
             board,
             at,
             guard_permits=session is None or session.canOpenNewEntry,
             strategies=strategies,
-        ):
-            self.persist_paper(self.paper.on_board(board, at))
+        )
+        policy_finished = time.perf_counter()
+        if self.shadow:
+            self.shadow.latency(
+                board.platform, "boardToPolicy", (time.perf_counter() - observed_start) * 1000
+            )
+            decision = self.policy.recent[-1] if self.policy.recent else None
+            if decision is not None and (
+                decision.platform != board.platform or decision.asOf != board.asOf
+            ):
+                decision = None
+            self.shadow.board(board, at, decision, permits)
+        if permits:
+            observed_start = policy_finished
+            update = self.paper.on_board(board, at)
+            if self.shadow and update.trades:
+                self.shadow.latency(
+                    board.platform,
+                    "policyToPaperIntent",
+                    (time.perf_counter() - observed_start) * 1000,
+                )
+            self.persist_paper(update)
 
     def board_available_at(self, board: OpportunityBoard, watermark: int) -> int:
         """The canonical market time at which this whole board first existed.
@@ -381,6 +436,8 @@ class MarketEngine:
 
     def reset_slots(self, platform: Platform, slot_ids: list[int]) -> int:
         """Drop live series and every derived feature when a configured identity changes."""
+        if self.shadow:
+            self.shadow.reset(platform, slot_ids)
         self.features.reset_slot(platform, slot_ids)
         self.strategy.reset_slot(platform, slot_ids)
         self.opportunities.reset_slot(platform, slot_ids)
@@ -466,6 +523,8 @@ async def observations(batch: ObservationBatch, request: Request) -> BatchResult
     local_only(request)
     engine = cast(MarketEngine, request.app.state.market)
     if engine.busy:
+        if engine.shadow:
+            engine.shadow.error("HTTP_429")
         raise HTTPException(429, "Engine busy; keep latest observations")
     engine.busy = True
     try:
@@ -475,6 +534,8 @@ async def observations(batch: ObservationBatch, request: Request) -> BatchResult
         )
     except Exception as error:
         engine.storage_error = True
+        if engine.shadow:
+            engine.shadow.error("STORAGE_ERROR")
         raise HTTPException(503, "Market storage unavailable") from error
     finally:
         engine.busy = False
@@ -485,6 +546,8 @@ async def reset_slots(command: ResetSlotsRequest, request: Request) -> ResetSlot
     local_only(request)
     engine = cast(MarketEngine, request.app.state.market)
     if engine.busy:
+        if engine.shadow:
+            engine.shadow.error("HTTP_429")
         raise HTTPException(429, "Engine busy")
     engine.busy = True
     try:
@@ -498,6 +561,8 @@ async def state(request: Request) -> dict[str, object]:
     local_only(request)
     engine = cast(MarketEngine, request.app.state.market)
     if engine.busy:
+        if engine.shadow:
+            engine.shadow.error("HTTP_429")
         raise HTTPException(429, "Engine busy")
     return {
         "storageError": engine.storage_error,

@@ -25,6 +25,7 @@ import { PlatformWindowRegistry } from './window-registry'
 import { PlatformBrowserManager } from './platform-browser'
 import { AssetSyncManager } from './asset-sync'
 import { MarketManager } from './market-manager'
+import { ShadowLiveTelemetry } from './shadow-live'
 import { OrderExecutor } from './order-executor'
 import { ExecutionManager } from './execution-manager'
 import { requestConfiguration } from './configuration-client'
@@ -64,6 +65,7 @@ const browsers = new PlatformBrowserManager((platform) => {
 let dashboardWindow: BrowserWindow | null = null
 let engineProcess: EngineProcessManager | null = null
 let market: MarketManager | null = null
+let shadowLive: ShadowLiveTelemetry | null = null
 let assetSync: AssetSyncManager | null = null
 let execution: ExecutionManager | null = null
 let sessionWatcher: SessionWatcher | null = null
@@ -229,11 +231,14 @@ if (ownsInstance) void app.whenReady().then(() => {
     dataDirectory: app.getPath('userData'),
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
+    environment: { QST_APPLICATION_VERSION: app.getVersion() },
     log: startupLog
   })
   engineProcess.start()
   market = new MarketManager(browsers, connection)
   execution = new ExecutionManager(browsers, new OrderExecutor(browsers), connection)
+  if (process.env.QST_SHADOW_LIVE === '1')
+    shadowLive = new ShadowLiveTelemetry(market, execution, connection)
   const prepare = async (platform: Platform): Promise<void> => {
     const result = await prepareCalibration(platform, browsers, request => requestConfiguration(connection, request))
     market!.configure(result)
@@ -605,7 +610,7 @@ if (ownsInstance) void app.whenReady().then(() => {
 
 let engineStopped = false
 app.on('before-quit', (event) => {
-  sessionWatcher?.stop(); execution?.stop(); assetSync?.stop(); market?.stop()
+  shadowLive?.stop(); sessionWatcher?.stop(); execution?.stop(); assetSync?.stop(); market?.stop()
   if (app.isPackaged && !engineStopped && engineProcess) {
     event.preventDefault()
     void engineProcess.stop().then(() => { engineStopped = true; app.quit() })

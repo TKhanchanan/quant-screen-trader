@@ -17,6 +17,27 @@ export class MarketManager {
   private readonly workspaces = new Map<Platform, WorkspaceData>()
   private readonly queue = new Map<string, MarketObservation>()
   private sending = false
+  private readonly operational = new Map<string, { observations: number; dataUncertain: number }>()
+  private readonly transport = { droppedBatches: 0, http429s: 0 }
+  operationalState() {
+    return [...this.workspaces].map(([platform, w]) => ({
+      platform, captureRunning: w.snapshot.running,
+      surfaceAvailable: this.browsers.observationSurface(platform).available && !this.browsers.observationSurface(platform).paused,
+      engineAvailable: w.snapshot.engineAvailable, intervalMs: w.snapshot.intervalMs,
+      queueDepth: this.queue.size, ...this.transport,
+      slots: w.config.configuration.slots.map(s => ({ slotId: s.id, enabled: s.enabled,
+        assetName: s.assetName, contextId: w.contextIds.get(s.id)!,
+        state: w.snapshot.slots.find(slot => slot.slotId === s.id)!.state,
+        ...(this.operational.get(`${platform}:${s.id}`) ?? { observations: 0, dataUncertain: 0 }),
+        dropped: w.snapshot.slots.find(slot => slot.slotId === s.id)!.dropped }))
+    }))
+  }
+  private captureMetric(platform: Platform, slotId: number, uncertain: boolean, observation: boolean): void {
+    const key = `${platform}:${slotId}`
+    const counts = this.operational.get(key) ?? { observations: 0, dataUncertain: 0 }
+    counts.observations += Number(observation); counts.dataUncertain += Number(uncertain)
+    this.operational.set(key, counts)
+  }
   private readonly timer: ReturnType<typeof setInterval>
   private readonly flushTimer: ReturnType<typeof setInterval>
   constructor(private readonly browsers: PlatformBrowserManager, private readonly connection: EngineConnectionConfig) {
@@ -122,9 +143,10 @@ export class MarketManager {
         slot.observation = value
         slot.state = value.dataQuality.state === 'GOOD' ? 'READY' : value.dataQuality.state === 'STALE' ? 'STALE' : 'DATA_UNCERTAIN'
         w.count++
+        this.captureMetric(platform, configured.id, slot.state === 'DATA_UNCERTAIN', true)
         if (this.queue.has(key)) { w.snapshot.dropped++; slot.dropped++ }
         this.queue.set(key, value)
-      }, error => { slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { ...slot.diagnostics!,
+      }, error => { this.captureMetric(platform, configured.id, true, false); slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { ...slot.diagnostics!,
         stage: error instanceof Error && error.message.startsWith('TAB') ? 'TAB' : 'PRICE ROI',
         message: error instanceof Error ? error.message : 'Capture or OCR unavailable' } })
         .catch(() => { /* Shutdown races tear the OCR worker down mid-capture. */ })
@@ -139,7 +161,7 @@ export class MarketManager {
         const response = await fetch(new URL('/api/market/slots/reset', this.connection.healthUrl), {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ platform, slotIds }),
           signal: AbortSignal.timeout(2000), redirect: 'error' })
-        if (response.status === 429) throw new Error('Engine busy')
+        if (response.status === 429) { this.transport.http429s++; throw new Error('Engine busy') }
         if (!response.ok) throw new Error('Engine reset unavailable')
         const value: unknown = await response.json()
         if (!value || typeof value !== 'object' || typeof (value as { reset?: unknown }).reset !== 'number') throw new Error('Invalid reset response')
@@ -166,6 +188,7 @@ export class MarketManager {
       const response = await fetch(new URL('/api/market/observations', this.connection.healthUrl), {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ observations: batch }),
         signal: AbortSignal.timeout(2000), redirect: 'error' })
+      if (response.status === 429) this.transport.http429s++
       if (!response.ok) throw new Error('Engine unavailable')
       const result = MarketBatchResultSchema.parse(await response.json())
       for (const status of result.slots) {
@@ -177,6 +200,7 @@ export class MarketManager {
       }
       for (const w of this.workspaces.values()) { w.snapshot.engineAvailable = true; w.snapshot.queueLagMs = lag }
     } catch {
+      this.transport.droppedBatches++
       for (const o of batch) {
         const w = this.workspaces.get(o.platform)
         if (w) { w.snapshot.engineAvailable = false; w.snapshot.dropped++; w.snapshot.queueLagMs = lag }

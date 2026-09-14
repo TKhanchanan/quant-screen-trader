@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -31,6 +32,8 @@ from quant_engine.policy_api import router as policy_router
 from quant_engine.replay.service import ReplayService
 from quant_engine.replay_api import router as replay_router
 from quant_engine.session_guard_api import router as session_guard_router
+from quant_engine.shadow_live import ShadowLiveRecorder
+from quant_engine.shadow_live_api import router as shadow_live_router
 from quant_engine.storage.analytics_repository import save_snapshot
 from quant_engine.storage.database import database_is_healthy, initialize_database
 from quant_engine.storage.session_guard_repository import load_settings
@@ -107,6 +110,15 @@ def create_app(
 
         market.analytics.sink = persist_analytics
         application.state.market = market
+        if os.environ.get("QST_SHADOW_LIVE") == "1":
+            market.shadow = ShadowLiveRecorder(
+                paths.root / "phase14",
+                commit_sha=os.environ.get("QST_COMMIT_SHA", "").strip() or "unknown",
+                application_version=os.environ.get("QST_APPLICATION_VERSION", __version__),
+                run_id=os.environ.get("QST_SHADOW_LIVE_RUN_ID", "").strip() or None,
+            )
+            if market.shadow.data["commitSha"] == "unknown":
+                market.shadow.warn("BUILD_IDENTITY_UNKNOWN")
 
         # Phase 11 sits beside the engine rather than inside it. It reads the durable record as
         # input, owns its own analytical engine per run, writes only under its own namespace, and
@@ -129,7 +141,16 @@ def create_app(
                         await asyncio.to_thread(market.advance_live, int(time.time() * 1000))
                     except Exception:
                         market.storage_error = True
+                        if market.shadow:
+                            market.shadow.error("STORAGE_ERROR")
                     finally:
+                        if market.shadow:
+                            market.shadow.health(
+                                lambda: market.policy.state(int(time.time() * 1000)),
+                                market.guard.current,
+                                market.paper.settings.enabled,
+                            )
+                            await asyncio.to_thread(market.shadow.flush)
                         market.busy = False
 
         task = asyncio.create_task(maintain_market())
@@ -140,6 +161,8 @@ def create_app(
             await task
             await asyncio.to_thread(market.storage.flush)
             policy.repository.close()
+            if market.shadow:
+                await asyncio.to_thread(market.shadow.flush, finish=True)
 
     application = FastAPI(
         title="QuantScreen Trader Quant Engine",
@@ -156,6 +179,7 @@ def create_app(
     application.include_router(analytics_router)
     application.include_router(replay_router)
     application.include_router(policy_router)
+    application.include_router(shadow_live_router)
 
     @application.get("/health", response_model=HealthMessage)
     async def health(request: Request) -> HealthMessage:
