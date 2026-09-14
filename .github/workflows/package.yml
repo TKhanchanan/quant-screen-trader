@@ -11,6 +11,9 @@ jobs:
     name: Package ${{ matrix.os }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    env:
+      # Use setup-python's interpreter, not the development helper's py -3.12 fallback.
+      QST_PYTHON_EXECUTABLE: python
     strategy:
       fail-fast: false
       matrix:

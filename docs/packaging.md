@@ -140,8 +140,29 @@ owner's real credentials and separate distribution acceptance.
 
 ## Acceptance record and limitations
 
-Acceptance is pending until actual local macOS and CI Windows artifacts and smoke
-results are recorded. Configuration alone does not close Phase 13. The automated
+Local macOS acceptance passed for implementation commit
+`1903fdb3768b3eb61a2512ffe0f2cfd16ec085b3`:
+
+- DMG: `QuantScreenTrader-0.1.0-macos-arm64.dmg`, 196,397,071 bytes.
+- SHA-256: `e1a28eeb9bff803e46598184dc28c839760f353e7fedfca731a5019dbb101418`.
+- Both Electron and the bundled engine were inspected as native arm64 binaries.
+- Engine health, writable/preserved data, offline OCR, rendered dashboard,
+  single-instance protection, normal quit and relaunch passed. No engine remained.
+- The application also passed two launches from the actual read-only mounted DMG.
+- Package inventory/private-data checks and all three checksum entries passed.
+- Local lint, typecheck, build, 248 JavaScript tests, 838 Python tests and two
+  packaging checks passed. No protected engine or execution source changed.
+- [Normal CI for that commit](https://github.com/TKhanchanan/quant-screen-trader/actions/runs/34749128011)
+  passed all required jobs.
+
+Windows artifacts and packaging CI acceptance are still pending. The connected
+GitHub account cannot dispatch the workflow (HTTP 403); an account with repository
+write access must push any pending packaging fixes and dispatch `Desktop packages`
+on `main`. The packaging workflow explicitly selects setup-python's interpreter
+through the existing `QST_PYTHON_EXECUTABLE` override so Windows checks do not fall
+back to a different `py -3.12` installation.
+
+Configuration alone does not close Phase 13. The automated
 Windows app smoke is a process/renderer/OCR check, not a manual interactive
 Windows installation test. No broker or live-market acceptance is performed.
 The application currently uses Electron's default icon because the repository
