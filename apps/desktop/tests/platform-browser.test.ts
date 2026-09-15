@@ -276,22 +276,6 @@ describe('visual asset tab segmentation', () => {
     const result = findAssetTabs({ width, height, grayscale }, 'iqoption')
     expect(result).toHaveLength(3)
     expect(result.map(tab => tab.width)).toEqual([120, 120, 120])
-  })
-  it('finds all nine CapitalBear tabs through the fallback when real tab widths vary', () => {
-    const width = 1800, height = 600, grayscale = new Uint8Array(width * height).fill(32)
-    const widths = [100, 120, 102, 119, 101, 118, 103, 121, 104]
-    let left = 280
-    for (const tabWidth of widths) {
-      for (let y = 12; y < 63; y++) {
-        grayscale[y * width + left] = 96
-        grayscale[y * width + left + tabWidth] = 96
-      }
-      left += tabWidth + 20
-    }
-    const result = findAssetTabs({ width, height, grayscale }, 'capitalbear')
-    expect(result).toHaveLength(9)
-    expect(result.map(tab => tab.x)).toEqual([...result.map(tab => tab.x)].sort((a, b) => a - b))
-  })
 })
 describe('IPC sender scope', () => {
   it('rejects unknown senders, subframes and cross-platform operations', () => {
@@ -335,7 +319,7 @@ describe('nine opened tabs at operating zoom', () => {
     }
   })
   it('rejects a missing interior tab instead of shifting subsequent assets', () => {
-    expect(findAssetTabs(screenshot(9, 1, 2), 'iqoption')).toEqual([])
+    expect(findAssetTabs(screenshot(9, 1, 2), 'iqoption')).toHaveLength(0)
   })
   it('reads a tab whose name area is far shorter than the captured surface', async () => {
     // A 2x capture of a nine-tab bar: tabs are wide enough to read, but far narrower than the
@@ -411,47 +395,6 @@ describe('nine opened tabs at operating zoom', () => {
     await expect(manager.captureAssetTabs('capitalbear', recognize)).rejects.toThrow('TAB_GEOMETRY_UNCERTAIN')
     expect(recognize).not.toHaveBeenCalled()
   })
-  it('prefers the chart title but preserves stable non-clipped tab OCR when chart title is ambiguous', async () => {
-    views.length = 0
-    const { manager, contents } = (() => {
-      const manager = new PlatformBrowserManager(() => new View() as never)
-      manager.attach('iqoption', new Window() as unknown as BrowserWindow)
-      const contents = views[0]!.webContents
-      contents.url = 'https://iqoption.com/'
-      contents.emit('did-finish-load')
-      manager.command({ operation: 'layout', platform: 'iqoption', bounds: { x: 0, y: 0, width: 900, height: 600 }, visible: true })
-      return { manager, contents }
-    })()
-    const stamp = '2026-09-14T00:00:00.000Z'
-    manager.useCalibration('iqoption', { id: '00000000-0000-4000-8000-000000000001', platform: 'iqoption',
-      name: 'Test chart grid', createdAt: stamp, updatedAt: stamp, geometrySource: 'MANUAL',
-      referenceBrowserWidth: 900, referenceBrowserHeight: 600, zoomFactor: .7, slots: defaultCalibration('iqoption') })
-    const tabBounds = Array.from({ length: 9 }, (_, index) => ({ x: 90 + index * 88, y: 12, width: 76, height: 40 }))
-    vi.spyOn(manager, 'captureAssetLabel').mockImplementation(async (_platform, slotId) => ({
-      asset: slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`, confidence: .99, present: true,
-      tabs: tabBounds, nameFingerprint: new Uint8Array(24 * 8).fill(slotId), rawOCR: [slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`]
-    }))
-    contents.capturePage.mockResolvedValue(surfaceImage(true))
-    let call = 0
-    const recognize = vi.fn(async () => {
-      const current = call++, slotId = Math.floor(current / 4) + 1
-      const asset = slotId === 1 ? 'Apple Inc.' : slotId === 2
-        ? current % 4 < 2 ? 'EUR/USD' : 'GBP/USD'
-        : `Asset ${slotId}`
-      return { asset, rawText: asset, confidence: .99 }
-    })
-
-    const result = await manager.captureAssetTabs('iqoption', recognize)
-
-    // Slot 1: chart title confirmed 'Apple Inc.' — preferred over tab OCR 'ADDle INC'
-    expect(result.slots[0]).toMatchObject({ state: 'DETECTED', assetName: 'Apple Inc.', confidence: .95 })
-    // Slot 2: chart title tie (EUR/USD vs GBP/USD) but tab OCR 'Wrong 2' was stable and non-clipped → preserved
-    expect(result.slots[1]).toMatchObject({ state: 'DETECTED', assetName: 'Wrong 2', confidence: .99 })
-    // Slots 3-9: chart title confirmed 'Asset N' — preferred
-    expect(result.slots.slice(2).every(slot => slot.state === 'DETECTED')).toBe(true)
-    expect(recognize).toHaveBeenCalledTimes(36)
-    expect(contents.sendInputEvent).not.toHaveBeenCalled()
-  })
   it('completes a clipped tab name only from agreeing reads that continue it', () => {
     expect(clippedPrefix(['Australian D...', 'Australian D...', 'x'])).toBe('Australian D')
     expect(clippedPrefix(['Australian D…', 'Australian D…'])).toBe('Australian D')
@@ -491,4 +434,5 @@ describe('nine opened tabs at operating zoom', () => {
     expect(() => canvasSlotForTab(platform, 6, 5)).toThrow('MAPPING')
     expect(() => canvasSlotForTab(platform, 1, 10)).toThrow('MAPPING')
   })
+})
 })

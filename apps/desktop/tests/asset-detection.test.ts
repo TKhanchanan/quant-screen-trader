@@ -39,6 +39,16 @@ for (const platform of ['capitalbear', 'iqoption'] as const) describe(`${platfor
     await expect(new Adapter(async () => [{ ...chart(1, 'EUR/USD'), cookies: 'forbidden' }]).detectAssets()).rejects.toThrow()
   })
 })
+it('rejects OCR garbage and validates plausible asset names', () => {
+  expect(normalizeAsset('D D')).toBeNull()
+  expect(normalizeAsset('i.i.i')).toBeNull()
+  expect(normalizeAsset('. . .')).toBeNull()
+  expect(normalizeAsset('x')).toBeNull()
+  expect(normalizeAsset('Wrong 2')).toBeNull()
+  expect(normalizeAsset('EUR/USD')).toBe('EUR/USD')
+  expect(normalizeAsset('Gold/Silver')).toBe('Gold/Silver')
+  expect(normalizeAsset('S&P500/Gold')).toBe('S&P500/Gold')
+})
 it('accepts a safe single-name OCR asset and rejects account or numeric text', () => {
   expect(parseOCRFields('Apple\n1.23456\n82%\n00:59', .98).asset).toBe('Apple')
   expect(parseOCRFields('Account balance\n1.23456', .98).asset).toBeUndefined()

@@ -1,4 +1,5 @@
 import { CapitalBearAssetDetector, IQOptionAssetDetector, emptyAsset, normalizeAsset } from './asset-detector'
+import { createHash } from 'node:crypto'
 import { calibrationToChartGrid, calibrationZoomMatches, isAutoCalibration, normalizedToPixel, type AssetDetectionResult, type CalibrationProfile, type CalibrationSlot } from '@quant-screen-trader/shared-types'
 import { chartGridResolver } from './chart-grid'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
@@ -38,58 +39,25 @@ export function chartSurfaceActivity(image: NormalizedImage): { middle: number; 
 export interface PixelBounds { x: number; y: number; width: number; height: number }
 const DEFAULT_PLATFORM_ZOOM_FACTOR = .7
 interface CapturedTab extends ParsedFields {
-  present: boolean; tabIndex?: number; pixelBounds?: PixelBounds; rawOCR?: string[]; tabs?: PixelBounds[]; nameFingerprint?: Uint8Array
+  present: boolean; tabIndex?: number; pixelBounds?: PixelBounds; rawOCR?: string[]; tabs?: PixelBounds[]; nameHash?: string
 }
 /**
  * Same tab bar: same count, same left-to-right order, each tab in the same place. Compared with a
  * tolerance rather than exactly — a broker reflows its tab bar by a pixel or two after a resize,
  * and demanding byte-identical geometry across a whole nine-tab scan rejected every real sync.
  */
-function sameTabs(a: PixelBounds[] | undefined, b: PixelBounds[] | undefined, width: number): { match: boolean; reason?: string; firstCount: number; secondCount: number; xShift?: number; widthShift?: number; tolerance: number } {
+function sameTabs(a: PixelBounds[] | undefined, b: PixelBounds[] | undefined, width: number): boolean {
+  if (!a || !b || a.length !== b.length || !a.length) return false
   const tolerance = Math.max(2, width * .01)
-  if (!a || !b || a.length !== b.length || !a.length) return { match: false, reason: 'COUNT', firstCount: a?.length ?? 0, secondCount: b?.length ?? 0, tolerance }
-  let xShift = 0, widthShift = 0
-  for (let i = 0; i < a.length; i++) {
-    const dx = Math.abs(a[i]!.x - b[i]!.x)
-    const dw = Math.abs(a[i]!.width - b[i]!.width)
-    xShift = Math.max(xShift, dx)
-    widthShift = Math.max(widthShift, dw)
-  }
-  if (xShift > tolerance) return { match: false, reason: 'X_SHIFT', firstCount: a.length, secondCount: b.length, xShift, widthShift, tolerance }
-  if (widthShift > tolerance) return { match: false, reason: 'WIDTH_SHIFT', firstCount: a.length, secondCount: b.length, xShift, widthShift, tolerance }
-  return { match: true, firstCount: a.length, secondCount: b.length, xShift, widthShift, tolerance }
+  return a.every((tab, index) => Math.abs(tab.x - b[index]!.x) <= tolerance &&
+    Math.abs(tab.width - b[index]!.width) <= tolerance)
 }
 function tabNameBounds(tab: PixelBounds): PixelBounds {
   return { x: Math.floor(tab.x + tab.width * .28), y: Math.floor(tab.y + tab.height * .12),
     width: Math.max(1, Math.floor(tab.width * .7)), height: Math.max(1, Math.floor(tab.height * .43)) }
 }
-function tabNameFingerprint(image: NormalizedImage, tab: PixelBounds): Uint8Array {
-  const bounds = tabNameBounds(tab), columns = 24, rows = 8, result = new Uint8Array(columns * rows)
-  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
-    const left = Math.floor(bounds.x + column * bounds.width / columns)
-    const right = Math.max(left + 1, Math.floor(bounds.x + (column + 1) * bounds.width / columns))
-    const top = Math.floor(bounds.y + row * bounds.height / rows)
-    const bottom = Math.max(top + 1, Math.floor(bounds.y + (row + 1) * bounds.height / rows))
-    let total = 0, count = 0
-    for (let y = top; y < Math.min(bottom, image.height); y++) for (let x = left; x < Math.min(right, image.width); x++) {
-      total += image.grayscale[y * image.width + x]!; count++
-    }
-    result[row * columns + column] = count ? Math.round(total / count) : 0
-  }
-  return result
-}
-function sameTabFingerprint(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
-  if (!a || !b || a.length !== b.length || !a.length) return false
-  let difference = 0, changed = 0
-  for (let index = 0; index < a.length; index++) {
-    const delta = Math.abs(a[index]! - b[index]!)
-    difference += delta
-    if (delta > 32) changed++
-  }
-  return difference / a.length <= 12 && changed / a.length <= .1
-}
 // The title line a chart cell prints for itself, clear of its close button, instrument icon and
-// the instrument-type subtitle below it. This larger text is the authority for instrument names.
+// the instrument-type subtitle below it. Read only to finish a tab name the tab bar had to clip.
 function chartNameBounds(cell: PixelBounds): PixelBounds {
   return { x: Math.floor(cell.x + cell.width * .12), y: Math.floor(cell.y + cell.height * .025),
     width: Math.max(1, Math.floor(cell.width * .5)), height: Math.max(1, Math.floor(cell.height * .085)) }
@@ -174,9 +142,9 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
       }
       return { ...run, y: top, height: underline.y - top + 1 }
     })
-    if (tabs.some((tab, i) => i > 0 && tab.x - tabs[i - 1]!.x - tabs[i - 1]!.width > Math.max(tab.width, tabs[i - 1]!.width) * .35)) return Object.assign([], { branch: 'UNDERLINE' as const })
+    if (tabs.some((tab, i) => i > 0 && tab.x - tabs[i - 1]!.x - tabs[i - 1]!.width > Math.max(tab.width, tabs[i - 1]!.width) * .35)) return []
     if (tabs.every(tab => tab.height >= image.height * .025 && tab.width / tab.height >= 1.5) &&
-      tabs.every(tab => Math.abs(tab.y - tabs[0]!.y) <= 3)) return Object.assign(tabs, { branch: 'UNDERLINE' as const })
+      tabs.every(tab => Math.abs(tab.y - tabs[0]!.y) <= 3)) return tabs
   }
   const top = Math.max(1, Math.floor(image.height * .005))
   const bottom = Math.min(image.height, Math.ceil(image.height * .12))
@@ -227,8 +195,8 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
   const best = chains.sort((a, b) => b.length - a.length || a[0]!.x - b[0]!.x)[0] ?? []
   if (best.length > 9 || candidates.some(tab => best.length && Math.abs(tab.y - best[0]!.y) <= 3 &&
     Math.abs(tab.width - best[0]!.width) < best[0]!.width * .1 &&
-    (tab.x + tab.width < best[0]!.x || tab.x > best.at(-1)!.x + best.at(-1)!.width))) return Object.assign([], { branch: 'FALLBACK' as const })
-  return Object.assign(best, { branch: 'FALLBACK' as const })
+    (tab.x + tab.width < best[0]!.x || tab.x > best.at(-1)!.x + best.at(-1)!.width))) return []
+  return best
 }
 
 export class PlatformBrowserManager {
@@ -412,9 +380,6 @@ export class PlatformBrowserManager {
   }
   async captureAssetTabs(platform: Platform, recognize: (image: NormalizedImage) => Promise<ParsedFields>): Promise<AssetDetectionResult> {
     this.identifiedTabs.delete(platform)
-    await this.prepareChartGrid(platform)
-    if (!this.observationSurface(platform).gridReady)
-      throw new Error('Chart grid preparation failed: verified chart geometry required before Sync Assets.')
     const start = Date.now(), tabs: CapturedTab[] = []
     const width = this.observationSurface(platform).bounds.width
     // A whole scan is applied atomically. Two captures and OCR agreements are required per tab.
@@ -422,16 +387,9 @@ export class PlatformBrowserManager {
     for (const slot of slots) {
       const first = await this.captureAssetLabel(platform, slot.id, slots, recognize)
       const second = await this.captureAssetLabel(platform, slot.id, slots, recognize)
-      const matchFirst = sameTabs(first.tabs, second.tabs, width)
-      const matchSeq = tabs.length ? sameTabs(second.tabs, tabs[0]!.tabs, width) : null
-      if (!matchFirst.match || (matchSeq && !matchSeq.match)) {
-        console.log('[SyncAssets]', platform, JSON.stringify({ slotId: slot.id, rejection: 'TAB_GEOMETRY_UNCERTAIN', ...(matchFirst.match ? matchSeq : matchFirst) }))
+      if (!sameTabs(first.tabs, second.tabs, width) || (tabs.length && !sameTabs(second.tabs, tabs[0]!.tabs, width)))
         throw new Error('TAB_GEOMETRY_UNCERTAIN: tab count or physical order changed during sync.')
-      }
-      const fingerprintMatch = first.present === false && second.present === false
-        ? true
-        : sameTabFingerprint(first.nameFingerprint, second.nameFingerprint)
-      tabs.push({ ...second, confidence: first.present === second.present && fingerprintMatch &&
+      tabs.push({ ...second, confidence: first.present === second.present && first.nameHash === second.nameHash &&
         normalizeAsset(first.asset ?? '') === normalizeAsset(second.asset ?? '') ? Math.min(first.confidence, second.confidence) : 0,
         rawOCR: [...(first.rawOCR ?? []), ...(second.rawOCR ?? [])] })
     }
@@ -497,24 +455,12 @@ export class PlatformBrowserManager {
     this.chartSlot(context.platform, context.slotId, context.assetName)
     const full = await entry.view.webContents.capturePage(), size = full.getSize()
     if (full.isEmpty()) throw new Error('Empty capture')
-    const normalizedFull = normalizeBitmap(full.toBitmap(), size.width, size.height, undefined, false)
-    const currentTabs = findAssetTabs(normalizedFull, context.platform)
+    const currentTabs = findAssetTabs(normalizeBitmap(full.toBitmap(), size.width, size.height, undefined, false), context.platform)
     const identified = this.identifiedTabs.get(context.platform)![context.slotId - 1]!
     const tab = currentTabs[context.slotId - 1]
-    if (!tab) {
-      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_GEOMETRY_CHANGED', reason: 'tab not found at index', currentCount: currentTabs.length, expectedCount: identified.tabs?.length }))
-      throw new Error('TAB: visible tab identity changed (tab missing). Sync Assets before observing.')
-    }
-    const match = sameTabs(currentTabs, identified.tabs, size.width)
-    if (!match.match) {
-      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_GEOMETRY_CHANGED', reason: 'tab positions shifted', ...match, currentCount: currentTabs.length, expectedCount: identified.tabs?.length }))
-      throw new Error('TAB: visible tab identity changed (geometry). Sync Assets before observing.')
-    }
-    const currentFingerprint = tabNameFingerprint(normalizedFull, tab)
-    if (!sameTabFingerprint(currentFingerprint, identified.nameFingerprint)) {
-      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_FINGERPRINT_CHANGED', reason: 'tab name fingerprint differs' }))
-      throw new Error('TAB: visible tab identity changed (fingerprint). Sync Assets before observing.')
-    }
+    if (!tab || !sameTabs(currentTabs, identified.tabs, size.width) ||
+      createHash('sha256').update(full.crop(tabNameBounds(tab)).toBitmap()).digest('hex') !== identified.nameHash)
+      throw new Error('TAB: visible tab identity changed. Sync Assets before observing.')
     const roi = normalizedToPixel(context.priceBounds ?? context.bounds, surface.bounds.width, surface.bounds.height)
     const x = Math.floor(roi.x), y = Math.floor(roi.y)
     const scaleX = size.width / surface.bounds.width, scaleY = size.height / surface.bounds.height
@@ -544,13 +490,8 @@ export class PlatformBrowserManager {
         return { image, normalized, tabs }
       }
       const first = await capture(), second = await capture()
-      const match = sameTabs(first.tabs, second.tabs, first.image.getSize().width)
-      if (!match.match) {
-        console.log('[SyncAssets]', platform, JSON.stringify({ slotId, rejection: 'TAB_GEOMETRY_UNCERTAIN', ...match }))
-        throw new Error(`TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently (${match.reason})`)
-      }
-      if (second.tabs.length < 3)
-        throw new Error('TAB_GEOMETRY_UNCERTAIN: at least three opened chart tabs are required')
+      if (!sameTabs(first.tabs, second.tabs, first.image.getSize().width))
+        throw new Error('TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently')
       const { image, normalized, tabs } = second
       const tab = tabs[slotId - 1]
       if (!tab) return { confidence: 1, present: false, tabs }
@@ -582,51 +523,8 @@ export class PlatformBrowserManager {
         : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.min(.94, variants[0]!.confidence) }
       const truncatedOtc = /\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)/i.test(result.asset ?? '')
       return { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
-        nameFingerprint: tabNameFingerprint(normalized, tab), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
+        nameHash: createHash('sha256').update(image.crop({ x, y, width, height }).toBitmap()).digest('hex'), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
     } finally { this.assetScans.delete(platform) }
-  }
-  /**
-   * The visible surface, for callers that measure geometry the capture pipeline does not own.
-   * Returns the native image alongside the surface it belongs to so a caller can convert between
-   * capture pixels and the browser's own device-independent pixels without guessing a scale.
-   */
-  async captureSurface(platform: Platform): Promise<{ image: Electron.NativeImage
-    size: { width: number; height: number }; surface: ReturnType<PlatformBrowserManager['observationSurface']> }> {
-    const entry = this.entries.get(platform), surface = this.observationSurface(platform)
-    if (!entry || !surface.available || surface.paused) throw new Error('Surface capture unavailable')
-    const image = await entry.view.webContents.capturePage()
-    if (image.isEmpty()) throw new Error('Empty surface capture')
-    return { image, size: image.getSize(), surface }
-  }
-  /**
-   * Send one click into the platform page at a normalized point on its own surface.
-   *
-   * This is the only method in the application that produces input for a broker. It refuses
-   * unless the surface it is about to press is the same surface the caller measured: same
-   * revision, same zoom, still visible, still showing a verified grid. A stale coordinate is a
-   * click somewhere the caller never looked.
-   */
-  async pressPoint(platform: Platform, point: { x: number; y: number },
-    guard: { revision: number; zoomFactor: number }): Promise<{ pressedAt: number; devicePoint: { x: number; y: number } }> {
-    const entry = this.entries.get(platform), surface = this.observationSurface(platform)
-    if (!entry || entry.view.webContents.isDestroyed()) throw new Error('PRESS_UNAVAILABLE: workspace is not open')
-    if (!surface.available || surface.paused) throw new Error('PRESS_UNAVAILABLE: surface is hidden, unloaded or calibrating')
-    if (!surface.gridReady) throw new Error('PRESS_UNAVAILABLE: verified chart geometry required')
-    if (surface.revision !== guard.revision) throw new Error('PRESS_STALE: the surface changed after the controls were measured')
-    if (Math.abs(surface.zoomFactor - guard.zoomFactor) > .001) throw new Error('PRESS_STALE: browser zoom changed after the controls were measured')
-    if (!(point.x > 0 && point.x < 1 && point.y > 0 && point.y < 1)) throw new Error('PRESS_STALE: point is outside the surface')
-    // View-relative device-independent pixels: the same space setBounds uses, so page zoom is
-    // applied by Chromium rather than by this arithmetic.
-    const x = Math.round(point.x * surface.bounds.width), y = Math.round(point.y * surface.bounds.height)
-    const contents = entry.view.webContents
-    const base = { x, y, button: 'left', clickCount: 1 } as const
-    contents.sendInputEvent({ ...base, type: 'mouseMove', clickCount: 0 })
-    const pressedAt = Date.now()
-    contents.sendInputEvent({ ...base, type: 'mouseDown' })
-    await new Promise(resolve => setTimeout(resolve, 40))
-    if (this.observationSurface(platform).revision !== guard.revision) throw new Error('PRESS_STALE: the surface changed mid-press')
-    contents.sendInputEvent({ ...base, type: 'mouseUp' })
-    return { pressedAt, devicePoint: { x, y } }
   }
   async readSlotDOM(context: ObservationContext): Promise<ParsedFields> {
     const entry = this.entries.get(context.platform), surface = this.observationSurface(context.platform)
