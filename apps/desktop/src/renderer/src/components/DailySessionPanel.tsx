@@ -50,7 +50,7 @@ export function DailySessionPanel({ onError }: { onError: (message: string) => v
       {state?.available === false ? ' · ต่อเอ็นจิ้นไม่ได้' : ''} · v{state?.sessionGuardVersion ?? '—'}</p>
 
     <dl className="session-grid">
-      <div><dt>กำไร/ขาดทุนวันนี้ (รู้ผลแล้ว)</dt><dd>{state ? dailyPnlLabel(state) : '—'}</dd></div>
+      <div><dt>กำไร/ขาดทุนจำลองวันนี้ (รู้ผลแล้ว)</dt><dd>{state ? dailyPnlLabel(state) : '—'}</dd></div>
       <div><dt>เป้ากำไร</dt><dd>{session?.profitTarget === null || !session
         ? 'ไม่ได้ตั้ง' : sessionMoney(session.profitTarget, session.currency)}</dd></div>
       <div><dt>เหลืออีก</dt><dd>{state?.remainingToTarget === null || !state || !session
@@ -87,8 +87,8 @@ export function DailySessionPanel({ onError }: { onError: (message: string) => v
       </>}
     </div>
 
-    <details>
-      <summary>ตั้งค่ารอบวัน</summary>
+    <details open>
+      <summary>ตั้งเป้ากำไร / ขีดขาดทุน (รอบวัน)</summary>
       <div className="toolbar">
         <label><input type="checkbox" checked={settings.enabled} disabled={busy}
           onChange={e => patch({ enabled: e.target.checked })} /> เปิดการคุมรอบวัน</label>
@@ -127,7 +127,7 @@ export function DailySessionPanel({ onError }: { onError: (message: string) => v
         window.quantScreenTrader.sessionGuard({ operation: 'settings', settings }),
         'บันทึกค่ารอบวันไม่สำเร็จ')}>บันทึก</button>
       <small>เป้ากำไรกับขีดขาดทุนเป็นเงื่อนไข “หยุด” เท่านั้น ไม่ได้ไปเปลี่ยนคะแนน ไม่ได้ลดเกณฑ์คัดเลือก
-        และไม่มีการเพิ่มเงินลงทุนหลังแพ้ · ตัวเลขทั้งหมดคิดจากไม้ที่รู้ผลแล้วเท่านั้น</small>
+        และไม่มีการเพิ่มเงินลงทุนหลังแพ้ · ตัวเลขคิดจาก PAPER ที่รู้ผลแล้ว ไม่ได้อ่านกำไรหรือยอดเงินจริงจากโบรกเกอร์</small>
     </details>
   </section>
 }

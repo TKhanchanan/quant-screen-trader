@@ -75,6 +75,31 @@ it('keeps capture rate platform-scoped and clears series progress when stopped',
   expect(stopped.slots[0]?.secondSamples).toBe(0)
   expect(stopped.captureRate).toBe(0)
 })
+it('does not count an unresolved asset tab as a live capture attempt', async () => {
+  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true,
+    bounds: { x: 0, y: 0, width: 900, height: 600 } }
+  let identified = false
+  const grayscale = new Uint8Array(100 * 100)
+  for (let y = 40; y < 50; y++) for (let x = 30; x < 70; x++) grayscale[y * 100 + x] = 255
+  manager = new MarketManager({ observationSurface: () => surface,
+    chartSlot: () => { if (!identified) throw new Error('Sync Assets required'); return 1 },
+    command: () => ({ grid: { confidence: 1 } }),
+    readSlotDOM: async (c: { assetName: string }) => ({ asset: c.assetName, confidence: 1 }),
+    captureSlot: async () => ({ width: 100, height: 100, grayscale }) } as unknown as PlatformBrowserManager,
+  { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
+  manager.configure(config('capitalbear', 1)); manager.command({ platform: 'capitalbear', operation: 'start' })
+  await vi.advanceTimersByTimeAsync(100)
+  const slot = manager.operationalState()[0]!.slots[0]!
+  expect(slot.dataUncertain).toBe(0)
+  expect(slot.observations).toBe(0)
+  expect(slot.lastCaptureAttemptAt).toBeNull()
+  identified = true
+  await vi.advanceTimersByTimeAsync(100)
+  const attempted = manager.operationalState()[0]!.slots[0]!
+  expect(attempted.dataUncertain).toBeGreaterThan(0)
+  expect(attempted.observations).toBeGreaterThan(0)
+  expect(attempted.lastCaptureAttemptAt).not.toBeNull()
+})
 it('recovers from ingestion failure with fresh observations and isolates parser errors', async () => {
   let offline = true
   const delivered: number[] = []

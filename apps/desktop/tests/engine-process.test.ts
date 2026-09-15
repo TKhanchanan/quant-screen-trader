@@ -10,7 +10,7 @@ const options = {
   dataDirectory: resolve('fake-data'), isPackaged: true,
   connection: { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' }
 }
-afterEach(() => { vi.clearAllMocks(); vi.useRealTimers() })
+afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs() })
 describe('engine package contract', () => {
   it.each([['darwin', 'quant-engine'], ['win32', 'quant-engine.exe']] as const)('resolves %s without a Python fallback', (platform, name) => {
     expect(resolveEngineLaunch({ ...options, platform, environment: { QST_PYTHON_EXECUTABLE: '/ignored/python' } })).toEqual({
@@ -25,6 +25,11 @@ describe('engine package contract', () => {
     expect(result.args).toEqual(['-m', 'uvicorn', 'quant_engine.main:app', '--app-dir',
       resolve('services/quant-engine/src'), '--host', '127.0.0.1', '--port', '8765'])
     expect(resolveEngineLaunch({ ...options, isPackaged: false, environment: {} }).command).toMatch(/python/)
+  })
+  it('keeps the process Python override when startup adds only the application version', () => {
+    vi.stubEnv('QST_PYTHON_EXECUTABLE', '/process/python')
+    expect(resolveEngineLaunch({ ...options, isPackaged: false,
+      environment: { QST_APPLICATION_VERSION: '0.1.0' } }).command).toBe('/process/python')
   })
   it('reports a missing packaged binary visibly and never invokes Python', () => {
     const manager = new EngineProcessManager(options)

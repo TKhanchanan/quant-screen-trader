@@ -253,16 +253,16 @@ if (ownsInstance) void app.whenReady().then(() => {
   ipcMain.handle(IPC_CHANNELS.assetSync, async (event, input: unknown) => {
     const command = AssetSyncCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot sync assets')
-    // Geometry first: a tab whose name the broker had to clip is completed from the chart cell it
-    // addresses, which only exists once the canvas grid for this browser state has been verified.
-    let geometry: string | null = null
+    // Geometry first: the narrow tab strip maps each tab to a chart cell, while the larger chart
+    // title confirms its identity. Neither is safe to persist until this browser grid is verified.
     if (command.operation === 'sync') {
       try { await prepare(command.platform) }
-      catch (error) { geometry = error instanceof Error ? error.message : 'Use Calibrate Chart Area.' }
+      catch (error) {
+        const state = await assetSync!.command({ platform: command.platform, operation: 'state' })
+        return { ...state, error: error instanceof Error ? error.message : 'Use Calibrate Chart Area.' }
+      }
     }
-    const state = await assetSync!.command(command)
-    if (geometry) state.error = geometry
-    return state
+    return assetSync!.command(command)
   })
   ipcMain.handle(IPC_CHANNELS.market, async (event, input: unknown) => {
     const command = MarketCommandSchema.parse(input)
@@ -563,9 +563,9 @@ if (ownsInstance) void app.whenReady().then(() => {
     if (scope.overlay && command.operation !== 'state' && command.operation !== 'draft')
       throw new Error('Overlay operation not authorized')
     if (command.operation === 'resolveGrid') return browsers.resolveGrid(command.platform)
-    const previous = browsers.observationSurface(command.platform)
     const result = browsers.command(command)
-    if (command.operation === 'layout' && previous.gridReady && !browsers.observationSurface(command.platform).gridReady) {
+    const current = browsers.observationSurface(command.platform)
+    if (command.operation === 'layout' && command.visible && !current.paused && !current.gridReady) {
       try { await prepare(command.platform) }
       catch { /* Geometry remains blocked; Sync/Start reports the calibration fallback. */ }
     }

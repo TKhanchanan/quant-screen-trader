@@ -68,7 +68,8 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
     const layout = (): void => {
       const rect = element.getBoundingClientRect()
       const x = Math.ceil(rect.x), y = Math.ceil(rect.y)
-      const width = Math.floor(rect.right) - x, height = Math.floor(rect.bottom) - y
+      const width = Math.min(Math.floor(rect.right), window.innerWidth) - x
+      const height = Math.min(Math.floor(rect.bottom), window.innerHeight) - y
       if (width < 1 || height < 1) return
       void window.quantScreenTrader.platformCommand({ operation: 'layout', platform,
         bounds: { x, y, width, height }, visible: mode !== 'assets' }).catch(() => setActionError('Browser layout unavailable; resize the window to retry.'))
@@ -142,7 +143,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       <p className="board-summary">บอร์ด: {boardLabel(board)}
         {board?.selectedSlotId ? ` · ตัวนำช่อง ${board.selectedSlotId} ${board.selectedDirection}` : ' · ไม่มีตัวนำ'}
         {' · '}<button onClick={() => void window.quantScreenTrader.openTrading(platform)
-          .catch(() => setActionError('เปิดแผงเทรดไม่สำเร็จ'))}>เปิดแผงเทรด</button></p>
+          .catch(() => setActionError('เปิดแผงเทรดไม่สำเร็จ'))}>เปิดแผง AUTO / ตั้งเป้ากำไร-ขาดทุน</button></p>
       <div className="slot-summary" aria-label="Nine configured slots">{Array.from({ length: 9 }, (_, i) => {
         const slot = data?.configuration.slots.find((s) => s.id === i + 1)
         const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)

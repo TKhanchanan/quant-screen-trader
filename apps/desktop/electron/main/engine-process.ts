@@ -44,7 +44,7 @@ export function resolvePythonExecutable(
 }
 
 export function resolveEngineLaunch(options: EngineProcessOptions): EngineLaunch {
-  const environment = options.environment ?? process.env
+  const environment = { ...process.env, ...options.environment }
   const platform = options.platform ?? process.platform
 
   if (options.isPackaged) {

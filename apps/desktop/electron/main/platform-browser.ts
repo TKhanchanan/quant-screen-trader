@@ -1,5 +1,4 @@
 import { CapitalBearAssetDetector, IQOptionAssetDetector, emptyAsset, normalizeAsset } from './asset-detector'
-import { createHash } from 'node:crypto'
 import { calibrationToChartGrid, calibrationZoomMatches, isAutoCalibration, normalizedToPixel, type AssetDetectionResult, type CalibrationProfile, type CalibrationSlot } from '@quant-screen-trader/shared-types'
 import { chartGridResolver } from './chart-grid'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
@@ -39,7 +38,7 @@ export function chartSurfaceActivity(image: NormalizedImage): { middle: number; 
 export interface PixelBounds { x: number; y: number; width: number; height: number }
 const DEFAULT_PLATFORM_ZOOM_FACTOR = .7
 interface CapturedTab extends ParsedFields {
-  present: boolean; tabIndex?: number; pixelBounds?: PixelBounds; rawOCR?: string[]; tabs?: PixelBounds[]; nameHash?: string
+  present: boolean; tabIndex?: number; pixelBounds?: PixelBounds; rawOCR?: string[]; tabs?: PixelBounds[]; nameFingerprint?: Uint8Array
 }
 /**
  * Same tab bar: same count, same left-to-right order, each tab in the same place. Compared with a
@@ -56,8 +55,33 @@ function tabNameBounds(tab: PixelBounds): PixelBounds {
   return { x: Math.floor(tab.x + tab.width * .28), y: Math.floor(tab.y + tab.height * .12),
     width: Math.max(1, Math.floor(tab.width * .7)), height: Math.max(1, Math.floor(tab.height * .43)) }
 }
+function tabNameFingerprint(image: NormalizedImage, tab: PixelBounds): Uint8Array {
+  const bounds = tabNameBounds(tab), columns = 24, rows = 8, result = new Uint8Array(columns * rows)
+  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
+    const left = Math.floor(bounds.x + column * bounds.width / columns)
+    const right = Math.max(left + 1, Math.floor(bounds.x + (column + 1) * bounds.width / columns))
+    const top = Math.floor(bounds.y + row * bounds.height / rows)
+    const bottom = Math.max(top + 1, Math.floor(bounds.y + (row + 1) * bounds.height / rows))
+    let total = 0, count = 0
+    for (let y = top; y < Math.min(bottom, image.height); y++) for (let x = left; x < Math.min(right, image.width); x++) {
+      total += image.grayscale[y * image.width + x]!; count++
+    }
+    result[row * columns + column] = count ? Math.round(total / count) : 0
+  }
+  return result
+}
+function sameTabFingerprint(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+  if (!a || !b || a.length !== b.length || !a.length) return false
+  let difference = 0, changed = 0
+  for (let index = 0; index < a.length; index++) {
+    const delta = Math.abs(a[index]! - b[index]!)
+    difference += delta
+    if (delta > 32) changed++
+  }
+  return difference / a.length <= 12 && changed / a.length <= .1
+}
 // The title line a chart cell prints for itself, clear of its close button, instrument icon and
-// the instrument-type subtitle below it. Read only to finish a tab name the tab bar had to clip.
+// the instrument-type subtitle below it. This larger text is the authority for instrument names.
 function chartNameBounds(cell: PixelBounds): PixelBounds {
   return { x: Math.floor(cell.x + cell.width * .12), y: Math.floor(cell.y + cell.height * .025),
     width: Math.max(1, Math.floor(cell.width * .5)), height: Math.max(1, Math.floor(cell.height * .085)) }
@@ -188,7 +212,10 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
         const gap = tab.x - candidate.x - candidate.width
         return gap >= 2 && gap <= Math.max(tab.width, candidate.width) * .35 && Math.abs(tab.y - candidate.y) <= 3 &&
           Math.abs(tab.height - candidate.height) <= 3 &&
-          Math.abs(tab.width - candidate.width) <= Math.max(tab.width, candidate.width) * .08
+          // CapitalBear mixes currency, stock and crypto tabs in one bar; their real widths vary
+          // by almost 20% even though their height, baseline and gaps still form one stable chain.
+          Math.abs(tab.width - candidate.width) <= Math.max(tab.width, candidate.width) *
+            (platform === 'capitalbear' ? .2 : .08)
       }).sort((a, b) => b.chain.length - a.chain.length)[0]
     chains[index] = [...(previous?.chain ?? []), tab]
   }
@@ -380,6 +407,9 @@ export class PlatformBrowserManager {
   }
   async captureAssetTabs(platform: Platform, recognize: (image: NormalizedImage) => Promise<ParsedFields>): Promise<AssetDetectionResult> {
     this.identifiedTabs.delete(platform)
+    await this.prepareChartGrid(platform)
+    if (!this.observationSurface(platform).gridReady)
+      throw new Error('Chart grid preparation failed: verified chart geometry required before Sync Assets.')
     const start = Date.now(), tabs: CapturedTab[] = []
     const width = this.observationSurface(platform).bounds.width
     // A whole scan is applied atomically. Two captures and OCR agreements are required per tab.
@@ -395,10 +425,16 @@ export class PlatformBrowserManager {
     }
     const present = tabs.filter(tab => tab.present).length
     for (const [index, tab] of tabs.entries()) {
-      if (!tab.present || normalizeAsset(tab.asset ?? '')) continue
-      const prefix = clippedPrefix(tab.rawOCR)
-      const completed = prefix && await this.completeClippedTab(platform, index + 1, present, prefix, recognize)
-      if (completed) { tab.asset = completed.asset; tab.confidence = .95; tab.rawOCR = [...(tab.rawOCR ?? []), ...completed.rawOCR] }
+      if (!tab.present) continue
+      // The narrow tab strip is stable mapping evidence, but not reliable name evidence: the same
+      // crop can repeatedly OCR "ADDle INC". The larger title in the mapped chart cell must agree
+      // across preprocessing variants before any identity is allowed into configuration.
+      const confirmed = await this.readChartAsset(platform, index + 1, present,
+        clippedPrefix(tab.rawOCR) ?? '', recognize)
+      if (confirmed) {
+        tab.asset = confirmed.asset; tab.confidence = .95
+        tab.rawOCR = [...(tab.rawOCR ?? []), ...confirmed.rawOCR]
+      } else tab.confidence = 0
     }
     this.identifiedTabs.set(platform, tabs)
     const detected = tabs.map((tab, index) => {
@@ -414,11 +450,11 @@ export class PlatformBrowserManager {
       overallConfidence: detected.reduce((sum, slot) => sum + slot.confidence, 0) / 9 }
   }
   /**
-   * A broker tab bar clips long instrument names to a fixed width, which leaves the tab OCR with
-   * a prefix that must never be guessed at. The chart cell the tab addresses prints the same name
-   * in full, so read that and accept it only when it continues exactly what the tab still shows.
+   * The compact broker tab is mapping evidence only. Read the larger title in its mapped chart
+   * cell and require two preprocessing variants to agree before accepting the instrument name.
+   * When the tab exposes a clipped prefix, the chart title must also continue that exact prefix.
    */
-  private async completeClippedTab(platform: Platform, tabIndex: number, count: number, prefix: string,
+  private async readChartAsset(platform: Platform, tabIndex: number, count: number, prefix: string,
     recognize: (image: NormalizedImage) => Promise<ParsedFields>
   ): Promise<{ asset: string; rawOCR: string[] } | null> {
     const entry = this.entries.get(platform), surface = this.observationSurface(platform)
@@ -492,6 +528,8 @@ export class PlatformBrowserManager {
       const first = await capture(), second = await capture()
       if (!sameTabs(first.tabs, second.tabs, first.image.getSize().width))
         throw new Error('TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently')
+      if (second.tabs.length < 3)
+        throw new Error('TAB_GEOMETRY_UNCERTAIN: at least three opened chart tabs are required')
       const { image, normalized, tabs } = second
       const tab = tabs[slotId - 1]
       if (!tab) return { confidence: 1, present: false, tabs }

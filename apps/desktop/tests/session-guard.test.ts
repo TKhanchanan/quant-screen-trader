@@ -123,6 +123,9 @@ describe('daily session bridge', () => {
     expect(markup).toContain('หยุดรอบวันนี้')
     expect(markup).toContain('เป้ากำไร')
     expect(markup).toContain('ขีดขาดทุน')
+    expect(markup).toContain('<details open="">')
+    expect(markup).toContain('ตัวเลขคิดจาก PAPER ที่รู้ผลแล้ว')
+    expect(markup).toContain('ไม่ได้อ่านกำไรหรือยอดเงินจริงจากโบรกเกอร์')
     // Stopping the day and disarming the executor are different controls with different words.
     expect(markup).not.toContain('Arm')
     expect(markup).not.toContain('วัดตำแหน่งปุ่ม')

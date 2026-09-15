@@ -147,10 +147,15 @@ trades do not fail health; normal uncertainty/rejections can produce DEGRADED an
 valid evidence once all hard checks and duration requirements are satisfied.
 
 Capture duration accrues only between recent desktop heartbeats while capture, engine and
-surface are available and enabled slots have recent completed capture attempts. Failed OCR
-attempts count as observation work without inventing market samples. Receipt of desktop
-telemetry establishes engine reachability even when no market batch could be produced. Gaps longer than five
-seconds break continuity. Idle process lifetime never satisfies the 60-minute targets.
+surface are available and enabled slots have recent completed capture/OCR attempts. A
+pre-capture identity failure, including `TAB: identity is uncertain` / **Sync Assets required**,
+does not increment observation or data-uncertainty counters, refresh the attempt clock, or count
+toward live duration. Grid, calibration and unavailable-surface failures likewise remain outside
+live capture time. Failed OCR after a real capture attempt counts as observation work without
+inventing market samples.
+Receipt of desktop telemetry establishes engine reachability even when no market batch could be
+produced. Gaps longer than five seconds break continuity. Idle process lifetime never satisfies
+the 60-minute targets.
 Broker-press and armed observations are sticky failure signals. The execution observer can
 miss activity during telemetry gaps, so independent operator verification is required.
 

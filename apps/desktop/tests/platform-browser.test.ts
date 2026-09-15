@@ -40,6 +40,7 @@ vi.mock('electron', () => ({ WebContentsView: View, BrowserWindow: Popup }))
 const { PlatformBrowserManager, chartSurfaceActivity, findAssetTabs, canvasSlotForTab, clippedPrefix,
   chartTitleText } = await import('../electron/main/platform-browser')
 const { normalizeAsset } = await import('../electron/main/asset-detector')
+const { normalizeBitmap } = await import('../electron/main/market-providers')
 class Window extends EventEmitter {
   contentView = { addChildView: vi.fn(), removeChildView: vi.fn() }
   show = vi.fn()
@@ -276,6 +277,21 @@ describe('visual asset tab segmentation', () => {
     expect(result).toHaveLength(3)
     expect(result.map(tab => tab.width)).toEqual([120, 120, 120])
   })
+  it('finds all nine CapitalBear tabs through the fallback when real tab widths vary', () => {
+    const width = 1800, height = 600, grayscale = new Uint8Array(width * height).fill(32)
+    const widths = [100, 120, 102, 119, 101, 118, 103, 121, 104]
+    let left = 280
+    for (const tabWidth of widths) {
+      for (let y = 12; y < 63; y++) {
+        grayscale[y * width + left] = 96
+        grayscale[y * width + left + tabWidth] = 96
+      }
+      left += tabWidth + 20
+    }
+    const result = findAssetTabs({ width, height, grayscale }, 'capitalbear')
+    expect(result).toHaveLength(9)
+    expect(result.map(tab => tab.x)).toEqual([...result.map(tab => tab.x)].sort((a, b) => a - b))
+  })
 })
 describe('IPC sender scope', () => {
   it('rejects unknown senders, subframes and cross-platform operations', () => {
@@ -288,6 +304,19 @@ describe('IPC sender scope', () => {
 })
 
 describe('nine opened tabs at operating zoom', () => {
+  function surfaceImage(painted: boolean, width = 900, height = 600): Electron.NativeImage {
+    const pixels = new Uint8Array(width * height * 4)
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const value = painted && y >= height * .18 && y < height * .58 && x >= width * .06 && x < width * .98
+        ? (x + y) % 2 ? 24 : 112 : 32
+      const index = (y * width + x) * 4
+      pixels[index] = value; pixels[index + 1] = value; pixels[index + 2] = value; pixels[index + 3] = 255
+    }
+    return { isEmpty: () => false, getSize: () => ({ width, height }), toBitmap: () => pixels,
+      crop: (bounds: Electron.Rectangle) => surfaceImage(painted, bounds.width, bounds.height),
+      resize: (size: Electron.ResizeOptions) => surfaceImage(painted, size.width ?? width, size.height ?? height)
+    } as unknown as Electron.NativeImage
+  }
   function screenshot(count: number, scale: number, missing = -1) {
     const width = Math.round(3000 * scale), height = Math.round(1200 * scale), grayscale = new Uint8Array(width * height).fill(32)
     for (let tab = 0; tab < count; tab++) {
@@ -329,6 +358,95 @@ describe('nine opened tabs at operating zoom', () => {
     await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
       .resolves.toMatchObject({ present: true, asset: 'EUR/USD OTC' })
     expect(recognize).toHaveBeenCalledTimes(4)
+    expect(contents.sendInputEvent).not.toHaveBeenCalled()
+  })
+  it('refuses a flat loading surface before scanning tabs or running OCR', async () => {
+    vi.useFakeTimers()
+    try {
+      views.length = 0
+      const manager = new PlatformBrowserManager(() => new View() as never)
+      manager.attach('capitalbear', new Window() as unknown as BrowserWindow)
+      const contents = views[0]!.webContents
+      contents.url = 'https://capitalbear.com/'
+      contents.emit('did-finish-load')
+      manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { x: 0, y: 0, width: 900, height: 600 }, visible: true })
+      contents.capturePage.mockResolvedValue(surfaceImage(false))
+      const capture = vi.spyOn(manager, 'captureAssetLabel'), recognize = vi.fn()
+
+      const rejected = expect(manager.captureAssetTabs('capitalbear', recognize))
+        .rejects.toThrow('Chart grid preparation failed')
+      await vi.runAllTimersAsync()
+      await rejected
+
+      expect(capture).not.toHaveBeenCalled()
+      expect(recognize).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+  it('rejects two stable loading rectangles before asset OCR', async () => {
+    views.length = 0
+    const manager = new PlatformBrowserManager(() => new View() as never)
+    manager.attach('capitalbear', new Window() as unknown as BrowserWindow)
+    const contents = views[0]!.webContents
+    contents.url = 'https://capitalbear.com/'
+    contents.emit('did-finish-load')
+    manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { x: 0, y: 0, width: 900, height: 600 }, visible: true })
+    const stamp = '2026-09-15T00:00:00.000Z'
+    manager.useCalibration('capitalbear', { id: '00000000-0000-4000-8000-000000000002', platform: 'capitalbear',
+      name: 'Test chart grid', createdAt: stamp, updatedAt: stamp, geometrySource: 'MANUAL',
+      referenceBrowserWidth: 900, referenceBrowserHeight: 600, zoomFactor: .7, slots: defaultCalibration('capitalbear') })
+    const image = surfaceImage(true), pixels = image.toBitmap()
+    for (let tab = 0; tab < 2; tab++) {
+      const left = 220 + tab * 140
+      for (let y = 12; y < 63; y++) for (let x = left; x < left + 120; x++) {
+        const value = y >= 60 ? 220 : 60, index = (y * 900 + x) * 4
+        pixels[index] = value; pixels[index + 1] = value; pixels[index + 2] = value
+      }
+    }
+    const normalized = normalizeBitmap(pixels, 900, 600, undefined, false)
+    expect(chartSurfaceActivity(normalized).ready).toBe(true)
+    expect(findAssetTabs(normalized, 'capitalbear')).toHaveLength(2)
+    contents.capturePage.mockResolvedValue(image)
+    const recognize = vi.fn(async () => ({ asset: 'False Asset', confidence: .99 }))
+
+    await expect(manager.captureAssetTabs('capitalbear', recognize)).rejects.toThrow('TAB_GEOMETRY_UNCERTAIN')
+    expect(recognize).not.toHaveBeenCalled()
+  })
+  it('uses the mapped chart title for every tab and refuses an unconfirmed title', async () => {
+    views.length = 0
+    const { manager, contents } = (() => {
+      const manager = new PlatformBrowserManager(() => new View() as never)
+      manager.attach('iqoption', new Window() as unknown as BrowserWindow)
+      const contents = views[0]!.webContents
+      contents.url = 'https://iqoption.com/'
+      contents.emit('did-finish-load')
+      manager.command({ operation: 'layout', platform: 'iqoption', bounds: { x: 0, y: 0, width: 900, height: 600 }, visible: true })
+      return { manager, contents }
+    })()
+    const stamp = '2026-09-14T00:00:00.000Z'
+    manager.useCalibration('iqoption', { id: '00000000-0000-4000-8000-000000000001', platform: 'iqoption',
+      name: 'Test chart grid', createdAt: stamp, updatedAt: stamp, geometrySource: 'MANUAL',
+      referenceBrowserWidth: 900, referenceBrowserHeight: 600, zoomFactor: .7, slots: defaultCalibration('iqoption') })
+    const tabBounds = Array.from({ length: 9 }, (_, index) => ({ x: 90 + index * 88, y: 12, width: 76, height: 40 }))
+    vi.spyOn(manager, 'captureAssetLabel').mockImplementation(async (_platform, slotId) => ({
+      asset: slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`, confidence: .99, present: true,
+      tabs: tabBounds, nameHash: `tab-${slotId}`, rawOCR: [slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`]
+    }))
+    contents.capturePage.mockResolvedValue(surfaceImage(true))
+    let call = 0
+    const recognize = vi.fn(async () => {
+      const current = call++, slotId = Math.floor(current / 4) + 1
+      const asset = slotId === 1 ? 'Apple Inc.' : slotId === 2
+        ? current % 4 < 2 ? 'EUR/USD' : 'GBP/USD'
+        : `Asset ${slotId}`
+      return { asset, rawText: asset, confidence: .99 }
+    })
+
+    const result = await manager.captureAssetTabs('iqoption', recognize)
+
+    expect(result.slots[0]).toMatchObject({ state: 'DETECTED', assetName: 'Apple Inc.', confidence: .95 })
+    expect(result.slots[1]).toMatchObject({ state: 'UNCERTAIN', assetName: null, confidence: 0 })
+    expect(result.slots.slice(2).every(slot => slot.state === 'DETECTED')).toBe(true)
+    expect(recognize).toHaveBeenCalledTimes(36)
     expect(contents.sendInputEvent).not.toHaveBeenCalled()
   })
   it('completes a clipped tab name only from agreeing reads that continue it', () => {

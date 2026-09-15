@@ -2,7 +2,8 @@
 
 QuantScreenTrader 0.1.0 packages Electron and a platform-native Python engine. The
 application version is independent of the frozen `qfe-*` / `qst-*` contracts.
-Phase 14 is not started. Packaging does not arm execution or navigate a broker.
+Phase 14 implementation is present; live acceptance is pending. Packaging does not arm
+execution or navigate a broker.
 
 ## Build and verification
 
@@ -166,4 +167,5 @@ Configuration alone does not close Phase 13. The automated
 Windows app smoke is a process/renderer/OCR check, not a manual interactive
 Windows installation test. No broker or live-market acceptance is performed.
 The application currently uses Electron's default icon because the repository
-contains no product icon asset. Phase 14 remains **❌ NOT STARTED**.
+contains no product icon asset. Phase 14 implementation is present; sustained live acceptance
+remains pending.

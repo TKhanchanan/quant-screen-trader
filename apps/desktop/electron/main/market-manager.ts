@@ -119,7 +119,7 @@ export class MarketManager {
       const slot = w.snapshot.slots.find(s => s.slotId === configured.id)!
       let canvasSlotId: number
       try { canvasSlotId = this.browsers.chartSlot(platform, configured.id, configured.assetName) }
-      catch (error) { this.captureMetric(platform, configured.id, true, false); slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { stage: 'TAB', message: error instanceof Error ? error.message : 'Sync Assets required' }; continue }
+      catch (error) { slot.state = 'DATA_UNCERTAIN'; slot.diagnostics = { stage: 'TAB', message: error instanceof Error ? error.message : 'Sync Assets required' }; continue }
       const cell = calibrationToChartGrid(platform, profile.slots, 'LEGACY').slots.find(candidate => candidate.slotId === canvasSlotId)!
       const geometry = canvasPriceGeometry(platform, cell.chartBounds, surface.bounds.width, surface.zoomFactor)
       const bounds = geometry.chartBounds
