@@ -411,7 +411,7 @@ describe('nine opened tabs at operating zoom', () => {
     await expect(manager.captureAssetTabs('capitalbear', recognize)).rejects.toThrow('TAB_GEOMETRY_UNCERTAIN')
     expect(recognize).not.toHaveBeenCalled()
   })
-  it('uses the mapped chart title for every tab and refuses an unconfirmed title', async () => {
+  it('prefers the chart title but preserves stable non-clipped tab OCR when chart title is ambiguous', async () => {
     views.length = 0
     const { manager, contents } = (() => {
       const manager = new PlatformBrowserManager(() => new View() as never)
@@ -443,8 +443,11 @@ describe('nine opened tabs at operating zoom', () => {
 
     const result = await manager.captureAssetTabs('iqoption', recognize)
 
+    // Slot 1: chart title confirmed 'Apple Inc.' — preferred over tab OCR 'ADDle INC'
     expect(result.slots[0]).toMatchObject({ state: 'DETECTED', assetName: 'Apple Inc.', confidence: .95 })
-    expect(result.slots[1]).toMatchObject({ state: 'UNCERTAIN', assetName: null, confidence: 0 })
+    // Slot 2: chart title tie (EUR/USD vs GBP/USD) but tab OCR 'Wrong 2' was stable and non-clipped → preserved
+    expect(result.slots[1]).toMatchObject({ state: 'DETECTED', assetName: 'Wrong 2', confidence: .99 })
+    // Slots 3-9: chart title confirmed 'Asset N' — preferred
     expect(result.slots.slice(2).every(slot => slot.state === 'DETECTED')).toBe(true)
     expect(recognize).toHaveBeenCalledTimes(36)
     expect(contents.sendInputEvent).not.toHaveBeenCalled()

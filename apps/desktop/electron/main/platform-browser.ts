@@ -429,15 +429,26 @@ export class PlatformBrowserManager {
     const present = tabs.filter(tab => tab.present).length
     for (const [index, tab] of tabs.entries()) {
       if (!tab.present) continue
-      // The narrow tab strip is stable mapping evidence, but not reliable name evidence: the same
-      // crop can repeatedly OCR "ADDle INC". The larger title in the mapped chart cell must agree
-      // across preprocessing variants before any identity is allowed into configuration.
+      // Tab OCR was stable when two reads agreed (confidence >= .95) and produced a normalized name.
+      // Chart-title OCR improves or confirms tab names, but is only required for clipped or unstable ones.
+      const prefix = clippedPrefix(tab.rawOCR)
+      const tabAssetStable = tab.confidence >= .95 && !!normalizeAsset(tab.asset ?? '')
       const confirmed = await this.readChartAsset(platform, index + 1, present,
-        clippedPrefix(tab.rawOCR) ?? '', recognize)
+        prefix ?? '', recognize)
       if (confirmed) {
         tab.asset = confirmed.asset; tab.confidence = .95
         tab.rawOCR = [...(tab.rawOCR ?? []), ...confirmed.rawOCR]
-      } else tab.confidence = 0
+      } else if (!tabAssetStable || prefix) {
+        // Clipped name that chart couldn't complete, or unstable/unreadable tab → uncertain
+        tab.confidence = 0
+      }
+      // else: stable non-clipped tab OCR, chart title failed → preserve tab result
+      console.log('[SyncAssets]', platform, JSON.stringify({
+        slotId: index + 1, tabPresent: true, tabOCR: normalizeAsset(tab.asset ?? ''),
+        tabOCRConfidence: +(tabs[index]!.confidence).toFixed(2), fingerprintStable: tabs[index]!.confidence >= .95,
+        clippedPrefix: prefix, chartTitleOCR: confirmed?.asset ?? null, chartTitleConfirmed: !!confirmed,
+        finalAsset: normalizeAsset(tab.asset ?? ''), finalConfidence: +(tab.confidence).toFixed(2),
+        finalState: tab.confidence >= .95 ? 'DETECTED' : 'UNCERTAIN' }))
     }
     this.identifiedTabs.set(platform, tabs)
     const detected = tabs.map((tab, index) => {
@@ -498,9 +509,19 @@ export class PlatformBrowserManager {
     const currentTabs = findAssetTabs(normalizedFull, context.platform)
     const identified = this.identifiedTabs.get(context.platform)![context.slotId - 1]!
     const tab = currentTabs[context.slotId - 1]
-    if (!tab || !sameTabs(currentTabs, identified.tabs, size.width) ||
-      !sameTabFingerprint(tabNameFingerprint(normalizedFull, tab), identified.nameFingerprint))
-      throw new Error('TAB: visible tab identity changed. Sync Assets before observing.')
+    if (!tab) {
+      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_GEOMETRY_CHANGED', reason: 'tab not found at index', currentCount: currentTabs.length, expectedCount: identified.tabs?.length }))
+      throw new Error('TAB: visible tab identity changed (tab missing). Sync Assets before observing.')
+    }
+    if (!sameTabs(currentTabs, identified.tabs, size.width)) {
+      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_GEOMETRY_CHANGED', reason: 'tab positions shifted', currentCount: currentTabs.length, expectedCount: identified.tabs?.length }))
+      throw new Error('TAB: visible tab identity changed (geometry). Sync Assets before observing.')
+    }
+    const currentFingerprint = tabNameFingerprint(normalizedFull, tab)
+    if (!sameTabFingerprint(currentFingerprint, identified.nameFingerprint)) {
+      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_FINGERPRINT_CHANGED', reason: 'tab name fingerprint differs' }))
+      throw new Error('TAB: visible tab identity changed (fingerprint). Sync Assets before observing.')
+    }
     const roi = normalizedToPixel(context.priceBounds ?? context.bounds, surface.bounds.width, surface.bounds.height)
     const x = Math.floor(roi.x), y = Math.floor(roi.y)
     const scaleX = size.width / surface.bounds.width, scaleY = size.height / surface.bounds.height
@@ -530,8 +551,12 @@ export class PlatformBrowserManager {
         return { image, normalized, tabs }
       }
       const first = await capture(), second = await capture()
-      if (!sameTabs(first.tabs, second.tabs, first.image.getSize().width))
+      if (!sameTabs(first.tabs, second.tabs, first.image.getSize().width)) {
+        console.log('[SyncAssets]', platform, JSON.stringify({ slotId, rejection: 'TAB_GEOMETRY_UNCERTAIN',
+          firstCount: first.tabs.length, secondCount: second.tabs.length,
+          firstWidths: first.tabs.map(t => t.width), secondWidths: second.tabs.map(t => t.width) }))
         throw new Error('TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently')
+      }
       if (second.tabs.length < 3)
         throw new Error('TAB_GEOMETRY_UNCERTAIN: at least three opened chart tabs are required')
       const { image, normalized, tabs } = second
