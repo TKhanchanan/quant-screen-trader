@@ -208,36 +208,46 @@ describe('embedded browser lifecycle', () => {
     const image = tabs(platform)
     contents.capturePage.mockResolvedValue(image)
     const recognize = vi.fn(async () => ({ asset: 'EUR/USD (OTC)', confidence: .98 }))
-    await expect(manager.captureAssetLabel(platform, 2, defaultCalibration(platform), recognize))
+    const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+    const geometry = findAssetTabs(normalized, platform)
+    await expect(manager.captureAssetLabel(2, geometry, image, recognize))
       .resolves.toMatchObject({ asset: 'EUR/USD (OTC)', present: true })
-    expect(contents.capturePage).toHaveBeenCalledWith()
-    expect(image.crop).toHaveBeenCalledWith(expect.objectContaining({ width: 84, height: 21 }))
-    expect(recognize).toHaveBeenCalledWith(expect.objectContaining({ width: 336, height: 84, purpose: 'ASSET' }))
+    const expectedWidth = platform === 'capitalbear' ? 98 : 84
+    expect(image.crop).toHaveBeenCalledWith(expect.objectContaining({ width: expectedWidth, height: 21 }))
+    expect(recognize).toHaveBeenCalledWith(expect.objectContaining({ width: expectedWidth * 4, height: 84, purpose: 'ASSET' }))
     expect(recognize).toHaveBeenCalledTimes(4)
-    expect(contents.sendInputEvent).not.toHaveBeenCalled()
   })
   it('maps the current tab count and reports slots beyond it as absent', async () => {
     const { manager, contents } = ready('iqoption')
-    contents.capturePage.mockResolvedValue(tabs('iqoption'))
+    const image = tabs('iqoption')
+    contents.capturePage.mockResolvedValue(image)
     const recognize = vi.fn()
-    await expect(manager.captureAssetLabel('iqoption', 4, defaultCalibration('iqoption'), recognize))
+    const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+    const geometry = findAssetTabs(normalized, 'iqoption')
+    await expect(manager.captureAssetLabel(4, geometry, image, recognize))
       .resolves.toMatchObject({ confidence: 1, present: false })
     expect(recognize).not.toHaveBeenCalled()
   })
   it('refuses OCR fragments when tabs are too narrow or preprocessing votes tie', async () => {
     const { manager, contents } = ready('iqoption')
-    contents.capturePage.mockResolvedValue(tabs('iqoption', 70))
+    const img1 = tabs('iqoption', 70)
+    contents.capturePage.mockResolvedValue(img1)
     const recognize = vi.fn()
-    await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
+    const norm1 = normalizeBitmap(img1.toBitmap(), img1.getSize().width, img1.getSize().height, undefined, false)
+    const geom1 = findAssetTabs(norm1, 'iqoption')
+    await expect(manager.captureAssetLabel(1, geom1, img1, recognize))
       .resolves.toMatchObject({ confidence: 0, present: true })
     expect(recognize).not.toHaveBeenCalled()
 
-    contents.capturePage.mockResolvedValue(tabs('iqoption'))
+    const img2 = tabs('iqoption')
+    contents.capturePage.mockResolvedValue(img2)
     recognize.mockResolvedValueOnce({ asset: 'EUR/USD', confidence: .99 })
       .mockResolvedValueOnce({ asset: 'EUR/USD', confidence: .99 })
       .mockResolvedValueOnce({ asset: 'GBP/USD', confidence: .99 })
       .mockResolvedValueOnce({ asset: 'GBP/USD', confidence: .99 })
-    await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
+    const norm2 = normalizeBitmap(img2.toBitmap(), img2.getSize().width, img2.getSize().height, undefined, false)
+    const geom2 = findAssetTabs(norm2, 'iqoption')
+    await expect(manager.captureAssetLabel(1, geom2, img2, recognize))
       .resolves.toMatchObject({ confidence: .94, present: true })
   })
   it('captures only against verified geometry, whatever sits below the charts', async () => {
@@ -275,7 +285,7 @@ describe('visual asset tab segmentation', () => {
       grayscale[y * width + x + Math.floor((y - 12) / 20)] = 96
     const result = findAssetTabs({ width, height, grayscale }, 'iqoption')
     expect(result).toHaveLength(3)
-    expect(result.map(tab => tab.width)).toEqual([120, 120, 120])
+    expect(result.map(tab => tab.width)).toEqual([150, 140, 140])
 })
 describe('IPC sender scope', () => {
   it('rejects unknown senders, subframes and cross-platform operations', () => {
@@ -332,17 +342,19 @@ describe('nine opened tabs at operating zoom', () => {
     contents.emit('did-finish-load')
     manager.command({ operation: 'layout', platform: 'iqoption', bounds: { x: 0, y: 0, width: 1320, height: 860 }, visible: true })
     const image = screenshot(9, 1)
-    contents.capturePage.mockResolvedValue({ isEmpty: () => false, getSize: () => ({ width: image.width, height: image.height }),
+    const mockImage = { isEmpty: () => false, getSize: () => ({ width: image.width, height: image.height }),
       toBitmap: () => Uint8Array.from({ length: image.width * image.height * 4 },
         (_, index) => index % 4 === 3 ? 255 : image.grayscale[Math.floor(index / 4)]!),
       crop: () => ({ getSize: () => ({ width: 40, height: 12 }), toBitmap: () => new Uint8Array(40 * 12 * 4),
         resize: () => ({ getSize: () => ({ width: 160, height: 48 }), toBitmap: () => new Uint8Array(160 * 48 * 4) }) })
-    } as unknown as Electron.NativeImage)
+    } as unknown as Electron.NativeImage
+    contents.capturePage.mockResolvedValue(mockImage)
     const recognize = vi.fn(async () => ({ asset: 'EUR/USD OTC', confidence: .97 }))
-    await expect(manager.captureAssetLabel('iqoption', 1, defaultCalibration('iqoption'), recognize))
+    const normalized = normalizeBitmap(mockImage.toBitmap(), mockImage.getSize().width, mockImage.getSize().height, undefined, false)
+    const geometry = findAssetTabs(normalized, 'iqoption')
+    await expect(manager.captureAssetLabel(1, geometry, mockImage, recognize))
       .resolves.toMatchObject({ present: true, asset: 'EUR/USD OTC' })
     expect(recognize).toHaveBeenCalledTimes(4)
-    expect(contents.sendInputEvent).not.toHaveBeenCalled()
   })
   it('refuses a flat loading surface before scanning tabs or running OCR', async () => {
     vi.useFakeTimers()

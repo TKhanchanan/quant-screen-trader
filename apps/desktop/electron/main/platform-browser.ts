@@ -138,7 +138,7 @@ export function canvasSlotForTab(platform: Platform, tabIndex: number, count: nu
   return tabIndex
 }
 
-export function findAssetTabs(image: NormalizedImage, platform: Platform): PixelBounds[] {
+export function findAssetTabs(image: NormalizedImage, platform: Platform): PixelBounds[] & { branch?: 'UNDERLINE' | 'FALLBACK' } {
   // The opened tabs have long, separated underlines. Locate their actual band first
   // so chart titles below it cannot extend an apparent vertical tab boundary.
   const underlineRows: { y: number; runs: { x: number; width: number }[] }[] = []
@@ -174,9 +174,15 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
       }
       return { ...run, y: top, height: underline.y - top + 1 }
     })
-    if (tabs.some((tab, i) => i > 0 && tab.x - tabs[i - 1]!.x - tabs[i - 1]!.width > Math.max(tab.width, tabs[i - 1]!.width) * .35)) return Object.assign([], { branch: 'UNDERLINE' as const })
+    if (tabs.some((tab, i) => i > 0 && tab.x - tabs[i - 1]!.x - tabs[i - 1]!.width > Math.max(tab.width, tabs[i - 1]!.width) * .35)) {
+      console.log(`[findAssetTabs] ${platform} branch: UNDERLINE count: 0 (rejected due to gap)`)
+      return Object.assign([], { branch: 'UNDERLINE' as const })
+    }
     if (tabs.every(tab => tab.height >= image.height * .025 && tab.width / tab.height >= 1.5) &&
-      tabs.every(tab => Math.abs(tab.y - tabs[0]!.y) <= 3)) return Object.assign(tabs, { branch: 'UNDERLINE' as const })
+      tabs.every(tab => Math.abs(tab.y - tabs[0]!.y) <= 3)) {
+      console.log(`[findAssetTabs] ${platform} branch: UNDERLINE count: ${tabs.length}\n` + tabs.map((t, i) => `  tab ${i}: x=${t.x} y=${t.y} w=${t.width} h=${t.height}`).join('\n'))
+      return Object.assign(tabs, { branch: 'UNDERLINE' as const })
+    }
   }
   const top = Math.max(1, Math.floor(image.height * .005))
   const bottom = Math.min(image.height, Math.ceil(image.height * .12))
@@ -218,16 +224,21 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
     const previous = candidates.slice(0, index).map((candidate, previousIndex) => ({ candidate, chain: chains[previousIndex]! }))
       .filter(({ candidate }) => {
         const gap = tab.x - candidate.x - candidate.width
-        return gap >= 2 && gap <= Math.max(tab.width, candidate.width) * .35 && Math.abs(tab.y - candidate.y) <= 3 &&
+        const widthTolerance = platform === 'capitalbear' ? .20 : .08
+        return gap >= -4 && gap <= Math.max(tab.width, candidate.width) * .35 && Math.abs(tab.y - candidate.y) <= 3 &&
           Math.abs(tab.height - candidate.height) <= 3 &&
-          Math.abs(tab.width - candidate.width) <= Math.max(tab.width, candidate.width) * .08
+          Math.abs(tab.width - candidate.width) <= Math.max(tab.width, candidate.width) * widthTolerance
       }).sort((a, b) => b.chain.length - a.chain.length)[0]
     chains[index] = [...(previous?.chain ?? []), tab]
   }
   const best = chains.sort((a, b) => b.length - a.length || a[0]!.x - b[0]!.x)[0] ?? []
   if (best.length > 9 || candidates.some(tab => best.length && Math.abs(tab.y - best[0]!.y) <= 3 &&
     Math.abs(tab.width - best[0]!.width) < best[0]!.width * .1 &&
-    (tab.x + tab.width < best[0]!.x || tab.x > best.at(-1)!.x + best.at(-1)!.width))) return Object.assign([], { branch: 'FALLBACK' as const })
+    (tab.x + tab.width < best[0]!.x || tab.x > best.at(-1)!.x + best.at(-1)!.width))) {
+    console.log(`[findAssetTabs] ${platform} branch: FALLBACK count: 0 (rejected due to bounds/count)`)
+    return Object.assign([], { branch: 'FALLBACK' as const })
+  }
+  console.log(`[findAssetTabs] ${platform} branch: FALLBACK count: ${best.length}\n` + best.map((t, i) => `  tab ${i}: x=${t.x} y=${t.y} w=${t.width} h=${t.height}`).join('\n'))
   return Object.assign(best, { branch: 'FALLBACK' as const })
 }
 
@@ -413,36 +424,66 @@ export class PlatformBrowserManager {
   async captureAssetTabs(platform: Platform, recognize: (image: NormalizedImage) => Promise<ParsedFields>): Promise<AssetDetectionResult> {
     this.identifiedTabs.delete(platform)
     await this.prepareChartGrid(platform)
-    if (!this.observationSurface(platform).gridReady)
+    const surface = this.observationSurface(platform)
+    const entry = this.entries.get(platform)
+    if (!entry || !surface.available || surface.paused || !surface.gridReady)
       throw new Error('Chart grid preparation failed: verified chart geometry required before Sync Assets.')
-    const start = Date.now(), tabs: CapturedTab[] = []
-    const width = this.observationSurface(platform).bounds.width
-    // A whole scan is applied atomically. Two captures and OCR agreements are required per tab.
-    const slots = Array.from({ length: 9 }, (_, i) => ({ id: i + 1, bounds: { x: 0, y: 0, width: 1, height: 1 } }))
-    for (const slot of slots) {
-      const first = await this.captureAssetLabel(platform, slot.id, slots, recognize)
-      const second = await this.captureAssetLabel(platform, slot.id, slots, recognize)
-      const matchFirst = sameTabs(first.tabs, second.tabs, width)
-      const matchSeq = tabs.length ? sameTabs(second.tabs, tabs[0]!.tabs, width) : null
-      if (!matchFirst.match || (matchSeq && !matchSeq.match)) {
-        console.log('[SyncAssets]', platform, JSON.stringify({ slotId: slot.id, rejection: 'TAB_GEOMETRY_UNCERTAIN', ...(matchFirst.match ? matchSeq : matchFirst) }))
-        throw new Error('TAB_GEOMETRY_UNCERTAIN: tab count or physical order changed during sync.')
+    const start = Date.now(), width = surface.bounds.width
+    this.assetScans.add(platform)
+
+    let finalTabs: (PixelBounds[] & { branch?: 'UNDERLINE' | 'FALLBACK' }) | null = null
+    let finalImage: Electron.NativeImage | null = null
+    try {
+      const capture = async (): Promise<{ image: Electron.NativeImage; normalized: NormalizedImage; tabs: PixelBounds[] & { branch?: 'UNDERLINE' | 'FALLBACK' } }> => {
+        const image = await entry.view.webContents.capturePage()
+        if (image.isEmpty()) throw new Error('Empty asset tab capture')
+        const size = image.getSize()
+        const normalized = normalizeBitmap(image.toBitmap(), size.width, size.height, undefined, false)
+        const tabs = findAssetTabs(normalized, platform)
+        return { image, normalized, tabs }
       }
-      const fingerprintMatch = first.present === false && second.present === false
-        ? true
-        : sameTabFingerprint(first.nameFingerprint, second.nameFingerprint)
-      tabs.push({ ...second, confidence: first.present === second.present && fingerprintMatch &&
-        normalizeAsset(first.asset ?? '') === normalizeAsset(second.asset ?? '') ? Math.min(first.confidence, second.confidence) : 0,
-        rawOCR: [...(first.rawOCR ?? []), ...(second.rawOCR ?? [])] })
+      
+      const captures = [await capture(), await capture(), await capture()]
+      
+      const m01 = sameTabs(captures[0]!.tabs, captures[1]!.tabs, width)
+      const m02 = sameTabs(captures[0]!.tabs, captures[2]!.tabs, width)
+      const m12 = sameTabs(captures[1]!.tabs, captures[2]!.tabs, width)
+
+      if (m01.match) { finalTabs = captures[1]!.tabs; finalImage = captures[1]!.image }
+      else if (m12.match) { finalTabs = captures[2]!.tabs; finalImage = captures[2]!.image }
+      else if (m02.match) { finalTabs = captures[2]!.tabs; finalImage = captures[2]!.image }
+      
+      if (!finalTabs || !finalImage) {
+        const counts = captures.map(c => c.tabs.length)
+        const details = { rejection: 'TAB_GEOMETRY_UNCERTAIN', counts, match01: m01, match12: m12, match02: m02 }
+        console.log('[SyncAssets]', platform, JSON.stringify(details))
+        throw new Error(`TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently (counts: ${counts.join(', ')})`)
+      }
+
+      if (finalTabs.length < 3)
+        throw new Error('TAB_GEOMETRY_UNCERTAIN: at least three opened chart tabs are required')
+      
+      console.log('[SyncAssets]', platform, JSON.stringify({ branch: finalTabs.branch, count: finalTabs.length, tabs: finalTabs }))
+      
+      const tabs: CapturedTab[] = []
+      for (let slotId = 1; slotId <= 9; slotId++) {
+        const result = await this.captureAssetLabel(slotId, finalTabs, finalImage, recognize)
+        tabs.push(result)
+      }
+
+      const present = tabs.filter(tab => tab.present).length
+      for (const [index, tab] of tabs.entries()) {
+        if (!tab.present || normalizeAsset(tab.asset ?? '')) continue
+        const prefix = clippedPrefix(tab.rawOCR)
+        const completed = prefix && await this.completeClippedTab(platform, index + 1, present, prefix, recognize)
+        if (completed) { tab.asset = completed.asset; tab.confidence = .95; tab.rawOCR = [...(tab.rawOCR ?? []), ...completed.rawOCR] }
+      }
+      this.identifiedTabs.set(platform, tabs)
+    } finally {
+      this.assetScans.delete(platform)
     }
-    const present = tabs.filter(tab => tab.present).length
-    for (const [index, tab] of tabs.entries()) {
-      if (!tab.present || normalizeAsset(tab.asset ?? '')) continue
-      const prefix = clippedPrefix(tab.rawOCR)
-      const completed = prefix && await this.completeClippedTab(platform, index + 1, present, prefix, recognize)
-      if (completed) { tab.asset = completed.asset; tab.confidence = .95; tab.rawOCR = [...(tab.rawOCR ?? []), ...completed.rawOCR] }
-    }
-    this.identifiedTabs.set(platform, tabs)
+    
+    const tabs = this.identifiedTabs.get(platform)!
     const detected = tabs.map((tab, index) => {
       const name = tab.asset ? normalizeAsset(tab.asset) : null
       const valid = name && tab.confidence >= .95
@@ -526,64 +567,43 @@ export class PlatformBrowserManager {
     const resizedSize = resized.getSize()
     return { ...normalizeBitmap(resized.toBitmap(), resizedSize.width, resizedSize.height, undefined, false), pixelBounds: roi }
   }
-  async captureAssetLabel(platform: Platform, slotId: number, calibration: CalibrationSlot[],
+  async captureAssetLabel(slotId: number, tabs: PixelBounds[], image: Electron.NativeImage,
     recognize: (image: NormalizedImage) => Promise<ParsedFields>
   ): Promise<CapturedTab> {
-    const surface = this.observationSurface(platform), entry = this.entries.get(platform)
-    const configuredSlot = calibration.find(slot => slot.id === slotId)
-    if (!entry || !surface.available || surface.paused || !configuredSlot || this.assetScans.has(platform))
-      throw new Error('Asset label capture unavailable')
-    this.assetScans.add(platform)
-    try {
-      const capture = async (): Promise<{ image: Electron.NativeImage; normalized: NormalizedImage; tabs: PixelBounds[] }> => {
-        const image = await entry.view.webContents.capturePage()
-        if (image.isEmpty()) throw new Error(`Empty asset tab capture for Slot ${slotId}`)
-        const size = image.getSize()
-        const normalized = normalizeBitmap(image.toBitmap(), size.width, size.height, undefined, false)
-        const tabs = findAssetTabs(normalized, platform)
-        return { image, normalized, tabs }
-      }
-      const first = await capture(), second = await capture()
-      const match = sameTabs(first.tabs, second.tabs, first.image.getSize().width)
-      if (!match.match) {
-        console.log('[SyncAssets]', platform, JSON.stringify({ slotId, rejection: 'TAB_GEOMETRY_UNCERTAIN', ...match }))
-        throw new Error(`TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently (${match.reason})`)
-      }
-      if (second.tabs.length < 3)
-        throw new Error('TAB_GEOMETRY_UNCERTAIN: at least three opened chart tabs are required')
-      const { image, normalized, tabs } = second
-      const tab = tabs[slotId - 1]
-      if (!tab) return { confidence: 1, present: false, tabs }
-      let brightEdge = 0
-      for (let row = Math.floor(tab.y + tab.height * .15); row < tab.y + tab.height * .58; row++)
-        for (let column = Math.floor(tab.x + tab.width * .96); column < tab.x + tab.width * .995; column++)
-          if (normalized.grayscale[row * normalized.width + column]! >= 150) brightEdge++
-      // A tab clipped down to its instrument icon cannot carry a legible name. Judge that by the
-      // tab's own shape: comparing its width against the whole surface height rejected every real
-      // tab as soon as the capture was taller than a tab is wide.
-      if (tab.width < tab.height * 2) return { confidence: 0, present: true, tabs }
-      const { x, y, width, height } = tabNameBounds(tab)
-      const resized = image.crop({ x, y, width, height }).resize({ width: width * 4, height: height * 4 })
-      const croppedSize = resized.getSize()
-      const bitmap = resized.toBitmap(), variants: ParsedFields[] = []
-      for (const threshold of [undefined, 125, 145, 165]) variants.push(await recognize({
-        ...normalizeBitmap(bitmap, croppedSize.width, croppedSize.height, threshold, true), purpose: 'ASSET' }))
-      const groups = new Map<string, ParsedFields[]>()
-      for (const result of variants) {
-        const asset = result.asset ? normalizeAsset(result.asset) : null
-        if (asset) groups.set(asset, [...(groups.get(asset) ?? []), result])
-      }
-      const matches = [...groups.values()].sort((a, b) => b.length - a.length ||
-        Math.max(...b.map(v => v.confidence)) - Math.max(...a.map(v => v.confidence)))
-      const agreed = matches[0]?.length && matches[0].length >= 2 && matches[0].length > (matches[1]?.length ?? 0)
-        ? matches[0] : null
-      const result = agreed
-        ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.max(.95, ...agreed.map(v => v.confidence)) }
-        : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.min(.94, variants[0]!.confidence) }
-      const truncatedOtc = /\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)/i.test(result.asset ?? '')
-      return { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
-        nameFingerprint: tabNameFingerprint(normalized, tab), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
-    } finally { this.assetScans.delete(platform) }
+    const tab = tabs[slotId - 1]
+    if (!tab) return { confidence: 1, present: false, tabs }
+    let brightEdge = 0
+    const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+    for (let row = Math.floor(tab.y + tab.height * .15); row < tab.y + tab.height * .58; row++)
+      for (let column = Math.floor(tab.x + tab.width * .96); column < tab.x + tab.width * .995; column++)
+        if (normalized.grayscale[row * normalized.width + column]! >= 150) brightEdge++
+    // A tab clipped down to its instrument icon cannot carry a legible name. Judge that by the
+    // tab's own shape: comparing its width against the whole surface height rejected every real
+    // tab as soon as the capture was taller than a tab is wide.
+    if (tab.width < tab.height * 2) return { confidence: 0, present: true, tabs }
+    const { x, y, width, height } = tabNameBounds(tab)
+    const resized = image.crop({ x, y, width, height }).resize({ width: width * 4, height: height * 4 })
+    const croppedSize = resized.getSize()
+    const bitmap = resized.toBitmap(), variants: ParsedFields[] = []
+    for (const threshold of [undefined, 125, 145, 165]) variants.push(await recognize({
+      ...normalizeBitmap(bitmap, croppedSize.width, croppedSize.height, threshold, true), purpose: 'ASSET' }))
+    const groups = new Map<string, ParsedFields[]>()
+    for (const result of variants) {
+      const asset = result.asset ? normalizeAsset(result.asset) : null
+      if (asset) groups.set(asset, [...(groups.get(asset) ?? []), result])
+    }
+    const matches = [...groups.values()].sort((a, b) => b.length - a.length ||
+      Math.max(...b.map(v => v.confidence)) - Math.max(...a.map(v => v.confidence)))
+    const agreed = matches[0]?.length && matches[0].length >= 2 && matches[0].length > (matches[1]?.length ?? 0)
+      ? matches[0] : null
+    const result = agreed
+      ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.max(.95, ...agreed.map(v => v.confidence)) }
+      : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.min(.94, variants[0]!.confidence) }
+    const truncatedOtc = /\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)/i.test(result.asset ?? '')
+    const finalResult: CapturedTab = { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
+      nameFingerprint: tabNameFingerprint(normalized, tab), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
+    if (truncatedOtc) delete finalResult.asset
+    return finalResult
   }
   /**
    * The visible surface, for callers that measure geometry the capture pipeline does not own.
