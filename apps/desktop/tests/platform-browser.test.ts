@@ -429,7 +429,7 @@ describe('nine opened tabs at operating zoom', () => {
     const tabBounds = Array.from({ length: 9 }, (_, index) => ({ x: 90 + index * 88, y: 12, width: 76, height: 40 }))
     vi.spyOn(manager, 'captureAssetLabel').mockImplementation(async (_platform, slotId) => ({
       asset: slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`, confidence: .99, present: true,
-      tabs: tabBounds, nameHash: `tab-${slotId}`, rawOCR: [slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`]
+      tabs: tabBounds, nameFingerprint: new Uint8Array(24 * 8).fill(slotId), rawOCR: [slotId === 1 ? 'ADDle INC' : `Wrong ${slotId}`]
     }))
     contents.capturePage.mockResolvedValue(surfaceImage(true))
     let call = 0

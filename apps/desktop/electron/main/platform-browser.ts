@@ -419,7 +419,10 @@ export class PlatformBrowserManager {
       const second = await this.captureAssetLabel(platform, slot.id, slots, recognize)
       if (!sameTabs(first.tabs, second.tabs, width) || (tabs.length && !sameTabs(second.tabs, tabs[0]!.tabs, width)))
         throw new Error('TAB_GEOMETRY_UNCERTAIN: tab count or physical order changed during sync.')
-      tabs.push({ ...second, confidence: first.present === second.present && first.nameHash === second.nameHash &&
+      const fingerprintMatch = first.present === false && second.present === false
+        ? true
+        : sameTabFingerprint(first.nameFingerprint, second.nameFingerprint)
+      tabs.push({ ...second, confidence: first.present === second.present && fingerprintMatch &&
         normalizeAsset(first.asset ?? '') === normalizeAsset(second.asset ?? '') ? Math.min(first.confidence, second.confidence) : 0,
         rawOCR: [...(first.rawOCR ?? []), ...(second.rawOCR ?? [])] })
     }
@@ -491,11 +494,12 @@ export class PlatformBrowserManager {
     this.chartSlot(context.platform, context.slotId, context.assetName)
     const full = await entry.view.webContents.capturePage(), size = full.getSize()
     if (full.isEmpty()) throw new Error('Empty capture')
-    const currentTabs = findAssetTabs(normalizeBitmap(full.toBitmap(), size.width, size.height, undefined, false), context.platform)
+    const normalizedFull = normalizeBitmap(full.toBitmap(), size.width, size.height, undefined, false)
+    const currentTabs = findAssetTabs(normalizedFull, context.platform)
     const identified = this.identifiedTabs.get(context.platform)![context.slotId - 1]!
     const tab = currentTabs[context.slotId - 1]
     if (!tab || !sameTabs(currentTabs, identified.tabs, size.width) ||
-      createHash('sha256').update(full.crop(tabNameBounds(tab)).toBitmap()).digest('hex') !== identified.nameHash)
+      !sameTabFingerprint(tabNameFingerprint(normalizedFull, tab), identified.nameFingerprint))
       throw new Error('TAB: visible tab identity changed. Sync Assets before observing.')
     const roi = normalizedToPixel(context.priceBounds ?? context.bounds, surface.bounds.width, surface.bounds.height)
     const x = Math.floor(roi.x), y = Math.floor(roi.y)
@@ -561,7 +565,7 @@ export class PlatformBrowserManager {
         : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.min(.94, variants[0]!.confidence) }
       const truncatedOtc = /\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)/i.test(result.asset ?? '')
       return { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
-        nameHash: createHash('sha256').update(image.crop({ x, y, width, height }).toBitmap()).digest('hex'), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
+        nameFingerprint: tabNameFingerprint(normalized, tab), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
     } finally { this.assetScans.delete(platform) }
   }
   /**
