@@ -157,6 +157,17 @@ export function isolateBrightPriceLabel(image: NormalizedImage): NormalizedImage
     x: source.x + best.x / image.width * source.width, y: source.y + (best.y + top) / image.height * source.height,
     width: best.width / image.width * source.width, height: plateHeight / image.height * source.height } }
 }
+/** Numeric agreement never repairs a decimal or chooses by predicted movement. */
+export function priceConsensus(variants: { price: number | null }[]): { price: number | null; confidence: number; reason?: string } {
+  const votes = new Map<number, number>()
+  for (const { price } of variants) if (price !== null && Number.isFinite(price) && price > 0) votes.set(price, (votes.get(price) ?? 0) + 1)
+  const ranked = [...votes].sort((a, b) => b[1] - a[1])
+  if (!ranked.length) return { price: null, confidence: 0, reason: 'No numeric price in OCR variants' }
+  const [price, count] = ranked[0]!
+  if (ranked.length > 1) return { price, confidence: .6, reason: 'Conflicting numeric candidates; no decimal or movement inference' }
+  return count >= 2 ? { price, confidence: .9 + .02 * (count - 2) }
+    : { price, confidence: .6, reason: 'Only one variant parsed; candidate is unconfirmed' }
+}
 export class PriceStability {
   private readonly previous = new Map<string, { identity: string; price: number; bounds: NormalizedBounds; at: number }>()
   reset(): void { this.previous.clear() }
@@ -179,14 +190,31 @@ export class VisualMarketDataProvider extends Provider {
   constructor(private readonly capture: (context: ObservationContext) => Promise<NormalizedImage>, private readonly ocr: OCRProvider) { super() }
   async observe(context: ObservationContext): Promise<MarketObservation> {
     if (!this.active) throw new Error('Provider stopped')
-    const start = Date.now(), image = isolateBrightPriceLabel(await this.capture(context)), latency = Date.now() - start
-    const fields = await this.ocr.parseText(image)
-    const stable = this.stability.accept(context, parsePrice(fields.price), fields.confidence, image.pixelBounds!, start)
-    if (context.diagnostics) Object.assign(context.diagnostics, { stage: stable ? 'READY' : 'OCR',
-      message: stable ? undefined : 'Waiting for consecutive same-slot, same-region prices', rawPrice: fields.price ?? '',
-      parsedPrice: parsePrice(fields.price), priceConfidence: fields.confidence, labelPixelBounds: image.pixelBounds })
-    return observation(context, this.sourceType, { ...fields, confidence: stable ? fields.confidence : Math.min(.79, fields.confidence),
-      ...(fields.price ? { asset: context.assetName } : {}) }, start, latency)
+    const start = Date.now(), captured = await this.capture(context)
+    return this.observeImage(context, captured, start)
+  }
+  async observeImage(context: ObservationContext, captured: NormalizedImage, start: number): Promise<MarketObservation> {
+    if (!this.active) throw new Error('Provider stopped')
+    const image = isolateBrightPriceLabel(captured), latency = Date.now() - start
+    const variants: NonNullable<NonNullable<ObservationContext['diagnostics']>['variants']> = []
+    for (const threshold of [undefined, 120, 145, 170]) {
+      try {
+        const fields = await this.ocr.parseText({ ...image,
+          grayscale: threshold === undefined ? image.grayscale : image.grayscale.map(v => v >= threshold ? 255 : 0) })
+        variants.push({ rawText: fields.rawText ?? fields.price ?? '', price: parsePrice(fields.price), rawOcrConfidence: fields.confidence })
+      } catch (error) {
+        variants.push({ rawText: '', price: null, rawOcrConfidence: 0, error: error instanceof Error ? error.message : 'OCR failed' })
+      }
+    }
+    const evidence = priceConsensus(variants)
+    const stable = this.stability.accept(context, evidence.price, evidence.confidence, image.pixelBounds!, start)
+    if (context.diagnostics) Object.assign(context.diagnostics, { stage: evidence.confidence >= .9 ? 'READY' : 'OCR',
+      message: evidence.reason, rawPrice: variants.map(v => v.rawText).join(' | '), variants,
+      parsedPrice: evidence.price, priceConfidence: evidence.confidence, priceEvidenceConfidence: evidence.confidence,
+      rawOcrConfidence: variants.reduce((sum, v) => sum + v.rawOcrConfidence, 0) / variants.length,
+      temporalStable: stable, labelPixelBounds: image.pixelBounds })
+    return observation(context, this.sourceType, { asset: context.assetName,
+      ...(evidence.price !== null ? { price: String(evidence.price) } : {}), confidence: evidence.confidence }, start, latency)
   }
 }
 export class ReplayMarketDataProvider extends Provider {

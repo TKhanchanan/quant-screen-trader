@@ -283,7 +283,8 @@ if (ownsInstance) void app.whenReady().then(() => {
   ipcMain.handle(IPC_CHANNELS.market, async (event, input: unknown) => {
     const command = MarketCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot observe')
-    if (command.operation === 'start') await prepare(command.platform)
+    if (command.operation === 'start' || command.operation === 'probe') await prepare(command.platform)
+    if (command.operation === 'probe') return market!.probe(command.platform)
     return market!.command(command)
   })
 

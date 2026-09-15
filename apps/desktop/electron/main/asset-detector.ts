@@ -9,11 +9,10 @@ export function normalizeAsset(label: string): string | null {
   // asset name always starts with a letter, so anything before the first one is never part of it.
   const value = label.trim().replace(/^[^\p{L}]+/u, '').replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
     .replace(/\s+(?:Digital|Binary)$/i, '')
-    .replace(/\s*\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)\s*\)?$/i, ' OTC')
     .replace(/\s*\(OTC\)$/i, ' OTC')
     .replace(/^OpenAl OTC$/, 'OpenAI OTC')
   if (!/^[\p{L}][\p{L}\p{N} /&+()._-]{1,119}$/u.test(value) || /(?:\.{2,}|…|\?)/.test(value) ||
-    /(?:balance|account|deposit|withdraw|password|wrong)/i.test(value) || /[()]/.test(value)) return null
+    /(?:balance|account|deposit|withdraw|password|wrong)/i.test(value) || /[()]/.test(value) || /^(?:buy|sell|trade|trading|login|logout|settings|menu|help|close|open|chart|digital|binary|otc)$/i.test(value)) return null
   if (!/[\p{L}\p{N}]{2,}/u.test(value)) return null
   const alnumCount = (value.match(/[\p{L}\p{N}]/gu) ?? []).length
   if (alnumCount < value.length / 2) return null

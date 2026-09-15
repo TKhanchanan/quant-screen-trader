@@ -40,8 +40,10 @@ export function parseOCRFields(text: string, confidence: number, layoutLines: OC
 export class TesseractOCRProvider implements OCRProvider {
   private worker: Promise<Worker> | null = null
   private busy = false
+  private stopped = false
   async parseText(image: NormalizedImage): Promise<ParsedFields> {
-    // ponytail: one worker per platform; skip contention instead of queuing 9 images.
+    // Each bounded batch consumer owns its worker; never overlap worker parameter changes.
+    if (this.stopped) throw new Error('OCR stopped')
     if (this.busy) throw new Error('OCR busy')
     this.busy = true
     try {
@@ -58,10 +60,17 @@ export class TesseractOCRProvider implements OCRProvider {
       const bitmap = Buffer.alloc(image.width * image.height * 4)
       image.grayscale.forEach((v, i) => { bitmap[i * 4] = v; bitmap[i * 4 + 1] = v; bitmap[i * 4 + 2] = v; bitmap[i * 4 + 3] = 255 })
       const png = image.png ? Buffer.from(image.png) : nativeImage.createFromBitmap(bitmap, { width: image.width, height: image.height }).toPNG()
-      const result = await worker.recognize(png, {}, { blocks: true })
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      const result = await Promise.race([
+        worker.recognize(png, {}, { blocks: true }),
+        new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => {
+          this.worker = null; void worker.terminate().catch(() => {})
+          reject(new Error('OCR timed out after 2000 ms'))
+        }, 2000) })
+      ]).finally(() => { clearTimeout(timeout) })
       const lines = result.data.blocks?.flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines)) ?? []
       return parseOCRFields(result.data.text, result.data.confidence / 100, lines)
     } finally { this.busy = false }
   }
-  async stop(): Promise<void> { const worker = this.worker; this.worker = null; if (worker) await (await worker).terminate() }
+  async stop(): Promise<void> { this.stopped = true; const worker = this.worker; this.worker = null; if (worker) await (await worker).terminate() }
 }

@@ -18,6 +18,8 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
   const [mode, setMode] = useState<'browser' | 'assets' | 'calibration'>('browser')
   const [now, setNow] = useState(0)
   const [market, setMarket] = useState<MarketSnapshot | null>(null)
+  const [probing, setProbing] = useState(false)
+  const [probe, setProbe] = useState<MarketSnapshot | null>(null)
   const [sync, setSync] = useState<AssetSyncState | null>(null)
   const syncRevision = useRef(-1)
   const [developer, setDeveloper] = useState(false)
@@ -85,6 +87,14 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
       if (result.error?.includes('CALIBRATION_ZOOM_MISMATCH')) calibrate()
     } catch { setActionError('Asset sync unavailable. Existing assets were preserved.') }
   }
+  const probePrices = async (): Promise<void> => {
+    setProbing(true); setActionError('')
+    try {
+      const result = await window.quantScreenTrader.market({ platform, operation: 'probe' })
+      setProbe(result); setMarket(result)
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Price probe unavailable') }
+    finally { setProbing(false) }
+  }
   const observe = async (): Promise<void> => {
     try {
       if (!market?.running && !data?.configuration.slots.some(s => s.enabled && s.assetName)) await syncOnce()
@@ -115,6 +125,7 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
         <button disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void observe()}>{market?.running ? 'Stop observation' : 'Start observation'}</button>
         <label>Sampling <select value={market?.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000)} onChange={e => void window.quantScreenTrader.market({ platform, operation: 'state', intervalMs: Number(e.target.value) }).then(setMarket)}>
           {[250, 500, 1000, 2000].map(ms => <option key={ms} value={ms}>{ms} ms target</option>)}</select></label>
+        <button disabled={busy || probing || sync?.busy || mode !== 'browser'} onClick={() => void probePrices()}>{probing ? 'Probing prices…' : 'Probe Prices'}</button>
         <label><input type="checkbox" checked={developer} onChange={e => setDeveloper(e.target.checked)} /> Developer diagnostics</label>
         <span>Enabled {data?.configuration.slots.filter(s => s.enabled).length ?? 0} · Healthy {market?.slots.filter(s => s.state === 'READY').length ?? 0} · Uncertain {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0} · Stale {market?.slots.filter(s => s.state === 'STALE').length ?? 0} · {market?.captureRate.toFixed(1) ?? 0} obs/s · Queue {market?.queueDepth ?? 0} · Engine {market?.engineAvailable ? 'receiving' : 'waiting'}</span>
       </div>
@@ -134,7 +145,7 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
         const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)
         const observed = market?.slots.find(s => s.slotId === i + 1)
         const opinion = strategy?.slots.find(s => s.slotId === i + 1)
-        return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected?.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : ''} {detected ? `${detected.source} ${Math.round(detected.confidence * 100)}%` : ''}<br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br />Price {observed?.state === 'READY' ? observed.observation?.price : '—'} · {observed?.observation?.dataQuality.state ?? '—'}
+        return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected?.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : ''} {detected ? `${detected.source} ${Math.round(detected.confidence * 100)}%` : ''}<br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br /><PriceReading observation={observed?.observation ?? null} />
           {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
           <small><br />1s {observed?.secondSamples ?? 0} {platform === 'capitalbear' ? ` · S5 ${observed?.s5Samples ?? 0} ${observed?.s5State ?? 'collecting'}` : ''} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
           {developer && <small><br />Quant: {(features?.slots.find(f => f.slotId === i + 1)?.timeframes ?? [])
@@ -156,6 +167,16 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
             <br />Grid confidence {observed?.diagnostics?.gridConfidence ?? '—'}</small>}
         </span>
       })}</div>
+      {probe && <details open><summary>Price probe · Attempted {probe.slots.filter(s => s.state !== 'DISABLED').length} · Parsed {probe.slots.filter(s => s.observation?.price != null).length} · GOOD {probe.slots.filter(s => s.observation?.dataQuality.state === 'GOOD').length} · UNCERTAIN {probe.slots.filter(s => s.observation?.dataQuality.state === 'UNCERTAIN').length}</summary>
+        <div style={{ maxHeight: 240, overflow: 'auto' }}><table><thead><tr><th>Slot / asset</th><th>Tab identity</th><th>OCR variants / candidates</th><th>Price / quality</th><th>Raw / evidence confidence</th><th>Failure reason / ROI</th></tr></thead>
+          <tbody>{probe.slots.filter(s => s.state !== 'DISABLED').map(s => <tr key={s.slotId}>
+            <td>{s.slotId} · {data?.configuration.slots.find(c => c.id === s.slotId)?.assetName}</td>
+            <td>{s.diagnostics?.tabIdentity ?? 'Unverified'}</td>
+            <td>{s.diagnostics?.variants?.map((v, i) => <div key={i}>{v.rawText || '(empty)'} → {v.price ?? '—'} · {percent(v.rawOcrConfidence)} {v.error}</div>)}</td>
+            <td>{s.observation?.price ?? '—'} · {s.observation?.dataQuality.state ?? 'INVALID'}</td>
+            <td>{percent(s.diagnostics?.rawOcrConfidence ?? 0)} / {percent(s.diagnostics?.priceEvidenceConfidence ?? 0)}</td>
+            <td>{s.diagnostics?.message ?? '—'}<br />{JSON.stringify(s.diagnostics?.pricePixelBounds)}</td>
+          </tr>)}</tbody></table></div></details>}
       {developer && <details><summary>Slot diagnostics (images are not stored)</summary><pre style={{ maxHeight: 200, overflow: 'auto' }}>{JSON.stringify({ market, sync, calibration: data?.calibrations.find(p => p.id === data.activeCalibrationId) }, null, 2)}</pre></details>}
       {mode === 'calibration' && <CalibrationControls platform={platform} onClose={close} onError={setActionError} />}
     </header>
@@ -163,4 +184,8 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
       {mode === 'assets' && data && <AssetSetup platform={platform} initialSlots={data.configuration.slots} onClose={() => setMode('browser')} />}
     </div>
   </main>
+}
+
+export function PriceReading({ observation }: { observation: MarketSnapshot['slots'][number]['observation'] }): JSX.Element {
+  return <>Price {observation?.price ?? '—'} · {observation?.dataQuality.state ?? 'INVALID'} {observation?.dataQuality.state === 'UNCERTAIN' ? percent(observation.dataQuality.confidence) : ''}</>
 }

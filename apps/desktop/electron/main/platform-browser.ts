@@ -1,6 +1,6 @@
 import { CapitalBearAssetDetector, IQOptionAssetDetector, emptyAsset, normalizeAsset } from './asset-detector'
 import { calibrationToChartGrid, calibrationZoomMatches, isAutoCalibration, normalizedToPixel, type AssetDetectionResult, type CalibrationProfile, type CalibrationSlot } from '@quant-screen-trader/shared-types'
-import { chartGridResolver } from './chart-grid'
+import { canvasPriceGeometry, chartGridResolver } from './chart-grid'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
 import { WebContentsView, BrowserWindow, type WebContents } from 'electron'
 import { type BrowserSnapshot, type Platform, type PlatformCommand } from '@quant-screen-trader/shared-types'
@@ -38,6 +38,7 @@ export function chartSurfaceActivity(image: NormalizedImage): { middle: number; 
 export interface PixelBounds { x: number; y: number; width: number; height: number }
 const DEFAULT_PLATFORM_ZOOM_FACTOR = .7
 interface CapturedTab extends ParsedFields {
+  rawOcrConfidence?: number; identityEvidenceConfidence?: number; geometryConsensus?: boolean; fingerprintStable?: boolean; ocrVotes?: number;
   present: boolean; tabIndex?: number; pixelBounds?: PixelBounds; rawOCR?: string[]; tabs?: PixelBounds[]; nameFingerprint?: Uint8Array
 }
 /**
@@ -118,7 +119,7 @@ function clippedLabelPrefix(line: string): string | null {
     : text.includes('(') && !text.includes(')')
       ? text.slice(0, text.indexOf('('))
       : undefined
-  const prefix = head?.trim()
+  const prefix = head?.split('(')[0]?.trim()
   return prefix && prefix.length >= 3 ? prefix : null
 }
 export function clippedPrefix(rawOCR: string[] | undefined): string | null {
@@ -465,18 +466,33 @@ export class PlatformBrowserManager {
       
       console.log('[SyncAssets]', platform, JSON.stringify({ branch: finalTabs.branch, count: finalTabs.length, tabs: finalTabs }))
       
+      const selected = captures.find(c => c.tabs === finalTabs)!
+      const reference = captures.find(c => c !== selected && sameTabs(c.tabs, finalTabs!, width).match)!
+      if (entry.snapshot.grid?.source === 'AUTO') {
+        const grid = chartGridResolver(platform).resolve(selected.normalized)
+        const other = chartGridResolver(platform).resolve(reference.normalized)
+        if (Object.keys(grid.bounds).some(key => Math.abs(grid.bounds[key as keyof typeof grid.bounds] - other.bounds[key as keyof typeof other.bounds]) > .002))
+          throw new Error('TAB_GEOMETRY_UNCERTAIN: chart grid changed during asset scan')
+        entry.snapshot.grid = grid
+      }
       const tabs: CapturedTab[] = []
       for (let slotId = 1; slotId <= 9; slotId++) {
         const result = await this.captureAssetLabel(slotId, finalTabs, finalImage, recognize)
+        result.geometryConsensus = true
+        result.fingerprintStable = !result.present || sameTabFingerprint(result.nameFingerprint,
+          reference.tabs[slotId - 1] ? tabNameFingerprint(reference.normalized, reference.tabs[slotId - 1]!) : undefined)
+        if (!result.fingerprintStable) { delete result.asset; result.confidence = 0 }
+        result.identityEvidenceConfidence = result.confidence
         tabs.push(result)
       }
 
       const present = tabs.filter(tab => tab.present).length
       for (const [index, tab] of tabs.entries()) {
-        if (!tab.present || normalizeAsset(tab.asset ?? '')) continue
+        if (!tab.present || !tab.fingerprintStable || (tab.confidence >= .95 && normalizeAsset(tab.asset ?? ''))) continue
         const prefix = clippedPrefix(tab.rawOCR)
-        const completed = prefix && await this.completeClippedTab(platform, index + 1, present, prefix, recognize)
-        if (completed) { tab.asset = completed.asset; tab.confidence = .95; tab.rawOCR = [...(tab.rawOCR ?? []), ...completed.rawOCR] }
+        const completed = prefix && await this.completeClippedTab(platform, index + 1, present, prefix, recognize, finalImage)
+        if (completed) tab.rawOCR = [...(tab.rawOCR ?? []), ...completed.rawOCR]
+        if (completed && completed.asset) { tab.asset = completed.asset; tab.confidence = .96; tab.identityEvidenceConfidence = .96; tab.ocrVotes = completed.ocrVotes; tab.rawOcrConfidence = completed.rawOcrConfidence }
       }
       this.identifiedTabs.set(platform, tabs)
     } finally {
@@ -491,7 +507,9 @@ export class PlatformBrowserManager {
         state: !tab.present ? 'NOT_FOUND' as const : valid ? 'DETECTED' as const : 'UNCERTAIN' as const,
         confidence: tab.confidence, evidenceType: 'CALIBRATED_OCR' as const,
         assetName: valid ? name : null, displayName: valid ? name : null, canonicalAssetId: valid ? `${platform}:${name}` : null,
-        tabIndex: index + 1, pixelBounds: tab.pixelBounds, rawOCR: tab.rawOCR }
+        tabIndex: index + 1, pixelBounds: tab.pixelBounds, rawOCR: tab.rawOCR,
+        rawOcrConfidence: tab.rawOcrConfidence, identityEvidenceConfidence: tab.identityEvidenceConfidence,
+        geometryConsensus: tab.geometryConsensus, fingerprintStable: tab.fingerprintStable, ocrVotes: tab.ocrVotes }
     })
     return { platform, slots: detected, durationMs: Date.now() - start,
       overallConfidence: detected.reduce((sum, slot) => sum + slot.confidence, 0) / 9 }
@@ -502,14 +520,13 @@ export class PlatformBrowserManager {
    * in full, so read that and accept it only when it continues exactly what the tab still shows.
    */
   private async completeClippedTab(platform: Platform, tabIndex: number, count: number, prefix: string,
-    recognize: (image: NormalizedImage) => Promise<ParsedFields>
-  ): Promise<{ asset: string; rawOCR: string[] } | null> {
+    recognize: (image: NormalizedImage) => Promise<ParsedFields>, image: Electron.NativeImage
+  ): Promise<{ asset: string | null; rawOCR: string[]; ocrVotes: number; rawOcrConfidence: number } | null> {
     const entry = this.entries.get(platform), surface = this.observationSurface(platform)
     const grid = entry?.snapshot.grid
     if (!entry || !grid || !surface.available || surface.paused) return null
     const cell = grid.slots.find(slot => slot.slotId === canvasSlotForTab(platform, tabIndex, count))
     if (!cell) return null
-    const image = await entry.view.webContents.capturePage()
     if (image.isEmpty()) return null
     const size = image.getSize()
     const { x, y, width, height } = chartNameBounds(normalizedToPixel(cell.chartBounds, size.width, size.height))
@@ -520,26 +537,49 @@ export class PlatformBrowserManager {
       ...normalizeBitmap(bitmap, resizedSize.width, resizedSize.height, threshold, true), purpose: 'ASSET' }))
     const votes = new Map<string, number>()
     for (const variant of variants) {
+      const variantVotes = new Set<string>()
       for (const line of (variant.rawText ?? variant.asset ?? '').split(/\r?\n/)) {
         const asset = normalizeAsset(chartTitleText(line))
         if (asset && asset.length > prefix.length && asset.toLowerCase().startsWith(prefix.toLowerCase()))
-          votes.set(asset, (votes.get(asset) ?? 0) + 1)
+          variantVotes.add(asset)
       }
+      if (variantVotes.size === 1) for (const asset of variantVotes) votes.set(asset, (votes.get(asset) ?? 0) + 1)
     }
     const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1])
     const rawOCR = variants.map(variant => variant.rawText ?? variant.asset ?? '')
-    return ranked[0] && ranked[0][1] >= 2 && ranked[0][1] > (ranked[1]?.[1] ?? 0) ? { asset: ranked[0][0], rawOCR } : null
+    return ranked[0] && ranked[0][1] >= 2 && ranked.length === 1 ? { asset: ranked[0][0], rawOCR, ocrVotes: ranked[0][1], rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length } : { asset: null, rawOCR, ocrVotes: ranked[0]?.[1] ?? 0, rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length }
   }
   async captureSlot(context: ObservationContext): Promise<NormalizedImage> {
-    await this.prepareChartGrid(context.platform)
-    const surface = this.observationSurface(context.platform)
-    const entry = this.entries.get(context.platform)
-    if (!entry || !surface.available || surface.paused || !surface.gridReady || this.assetScans.has(context.platform)) throw new Error('Capture unavailable: verified chart geometry required')
-    this.chartSlot(context.platform, context.slotId, context.assetName)
+    const batch = await this.captureSlots([context]), result = batch.images.get(context.slotId)!
+    if (result instanceof Error) throw result
+    return result
+  }
+  async captureSlots(contexts: ObservationContext[]): Promise<{ observedAt: number; images: Map<number, NormalizedImage | Error> }> {
+    const platform = contexts[0]?.platform
+    if (!platform || contexts.some(c => c.platform !== platform) || contexts.length > 9) throw new Error('Invalid capture batch')
+    const surface = this.observationSurface(platform), entry = this.entries.get(platform)
+    if (!entry || !surface.available || surface.paused || !surface.gridReady || this.assetScans.has(platform))
+      throw new Error('Capture unavailable: verified chart geometry required')
+    const signature = JSON.stringify(surface), observedAt = Date.now()
     const full = await entry.view.webContents.capturePage(), size = full.getSize()
     if (full.isEmpty()) throw new Error('Empty capture')
+    if (signature !== JSON.stringify(this.observationSurface(platform))) throw new Error('Capture surface changed')
     const normalizedFull = normalizeBitmap(full.toBitmap(), size.width, size.height, undefined, false)
-    const currentTabs = findAssetTabs(normalizedFull, context.platform)
+    const currentTabs = findAssetTabs(normalizedFull, platform)
+    const grid = entry.snapshot.grid?.source === 'AUTO' ? chartGridResolver(platform).resolve(normalizedFull) : entry.snapshot.grid!
+    entry.snapshot.grid = grid
+    const images = new Map<number, NormalizedImage | Error>()
+    for (const context of contexts) {
+      try {
+        const canvasSlotId = this.chartSlot(platform, context.slotId, context.assetName)
+        if (grid.source === 'AUTO') {
+          const cell = grid.slots.find(s => s.slotId === canvasSlotId)!
+          const geometry = canvasPriceGeometry(platform, cell.chartBounds, surface.bounds.width, surface.zoomFactor)
+          context.bounds = geometry.chartBounds; context.priceBounds = geometry.priceBounds
+          if (context.diagnostics) Object.assign(context.diagnostics, { gridConfidence: grid.confidence,
+            pricePixelBounds: normalizedToPixel(geometry.priceBounds, surface.bounds.width, surface.bounds.height) })
+        }
+        const crop = (): NormalizedImage => {
     const identified = this.identifiedTabs.get(context.platform)![context.slotId - 1]!
     const tab = currentTabs[context.slotId - 1]
     if (!tab) {
@@ -556,7 +596,10 @@ export class PlatformBrowserManager {
       console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_FINGERPRINT_CHANGED', reason: 'tab name fingerprint differs' }))
       throw new Error('TAB: visible tab identity changed (fingerprint). Sync Assets before observing.')
     }
-    const roi = normalizedToPixel(context.priceBounds ?? context.bounds, surface.bounds.width, surface.bounds.height)
+    const bounds = context.priceBounds ?? context.bounds, cell = context.bounds
+    if (bounds.x < cell.x || bounds.y < cell.y || bounds.x + bounds.width > cell.x + cell.width + 1e-6 ||
+      bounds.y + bounds.height > cell.y + cell.height + 1e-6) throw new Error('PRICE ROI: outside expected chart cell')
+    const roi = normalizedToPixel(bounds, surface.bounds.width, surface.bounds.height)
     const x = Math.floor(roi.x), y = Math.floor(roi.y)
     const scaleX = size.width / surface.bounds.width, scaleY = size.height / surface.bounds.height
     const image = full.crop({ x: Math.floor(x * scaleX), y: Math.floor(y * scaleY),
@@ -566,6 +609,11 @@ export class PlatformBrowserManager {
     const resized = image.resize({ width: Math.max(1, Math.round(roi.width * scale)), height: Math.max(1, Math.round(roi.height * scale)) })
     const resizedSize = resized.getSize()
     return { ...normalizeBitmap(resized.toBitmap(), resizedSize.width, resizedSize.height, undefined, false), pixelBounds: roi }
+        }
+        images.set(context.slotId, crop())
+      } catch (error) { images.set(context.slotId, error instanceof Error ? error : new Error('Capture failed')) }
+    }
+    return { observedAt, images }
   }
   async captureAssetLabel(slotId: number, tabs: PixelBounds[], image: Electron.NativeImage,
     recognize: (image: NormalizedImage) => Promise<ParsedFields>
@@ -594,15 +642,16 @@ export class PlatformBrowserManager {
     }
     const matches = [...groups.values()].sort((a, b) => b.length - a.length ||
       Math.max(...b.map(v => v.confidence)) - Math.max(...a.map(v => v.confidence)))
-    const agreed = matches[0]?.length && matches[0].length >= 2 && matches[0].length > (matches[1]?.length ?? 0)
+    const agreed = matches[0]?.length && matches[0].length >= 2 && matches.length === 1
       ? matches[0] : null
     const result = agreed
-      ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.max(.95, ...agreed.map(v => v.confidence)) }
-      : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: Math.min(.94, variants[0]!.confidence) }
-    const truncatedOtc = /\(\s*O(?:T(?:C)?)?\s*(?:\.{2,}|…)/i.test(result.asset ?? '')
+      ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: .96 }
+      : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: 0 }
+    const clipped = variants.some(v => clippedLabelPrefix(v.rawText ?? v.asset ?? '') !== null)
     const finalResult: CapturedTab = { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
-      nameFingerprint: tabNameFingerprint(normalized, tab), confidence: brightEdge <= 2 || truncatedOtc ? result.confidence : Math.min(.94, result.confidence), present: true }
-    if (truncatedOtc) delete finalResult.asset
+      nameFingerprint: tabNameFingerprint(normalized, tab), rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length,
+      ocrVotes: agreed?.length ?? 0, confidence: brightEdge <= 2 && !clipped ? result.confidence : 0, present: true }
+    if (!finalResult.confidence) delete finalResult.asset
     return finalResult
   }
   /**

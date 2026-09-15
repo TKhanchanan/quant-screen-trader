@@ -2,159 +2,96 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { defaultCalibration, type ConfigurationResult, type Platform } from '@quant-screen-trader/shared-types'
 import type { PlatformBrowserManager } from '../electron/main/platform-browser'
+import { observation, VisualMarketDataProvider, type ObservationContext } from '../electron/main/market-providers'
 import { createPlaceholderSlots } from '../src/renderer/src/features/slots/createPlaceholderSlots'
-
-vi.mock('../electron/main/market-ocr', () => ({ TesseractOCRProvider: class { stop = vi.fn(async () => {}); parseText = vi.fn(async () => ({ confidence: 0 })) } }))
+vi.mock('../electron/main/market-ocr', () => ({ TesseractOCRProvider: class { stop = vi.fn(async () => {}) } }))
 const { MarketManager } = await import('../electron/main/market-manager')
 function config(platform: Platform, count = 9): ConfigurationResult {
   const stamp = new Date().toISOString(), id = randomUUID()
   return { configuration: { platform, slots: createPlaceholderSlots(platform).map(s => ({ ...s, enabled: s.id <= count, assetName: `ASSET ${s.id}` })) },
-    calibrations: [{ id, name: 'Fixture', platform, createdAt: stamp, updatedAt: stamp,
-      slots: defaultCalibration(), zoomFactor: .7, referenceBrowserWidth: 900, referenceBrowserHeight: 600 }],
-    activeCalibrationId: id, presets: [] }
+    calibrations: [{ id, name: 'Fixture', platform, createdAt: stamp, updatedAt: stamp, slots: defaultCalibration(), zoomFactor: .7,
+      referenceBrowserWidth: 900, referenceBrowserHeight: 600 }], activeCalibrationId: id, presets: [] }
 }
-let manager: InstanceType<typeof MarketManager> | undefined
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-07T12:30:00Z')) })
-afterEach(() => { manager?.stop(); vi.useRealTimers(); vi.unstubAllGlobals() })
-it('observes 18 isolated slots with bounded latest-per-slot queue and stops disabled slots', async () => {
-  const read = vi.fn(async (c: { assetName: string; slotId: number }) => ({ asset: c.assetName, price: String(c.slotId), confidence: 1 }))
-  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true, bounds: { x: 0, y: 0, width: 900, height: 600 } }
-  const browsers = { observationSurface: () => surface, chartSlot: (_p: Platform, id: number) => id, command: () => ({ grid: { confidence: 1 } }), readSlotDOM: read } as unknown as PlatformBrowserManager
-  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
-  manager = new MarketManager(browsers, { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
-  for (const platform of ['capitalbear', 'iqoption'] as const) { manager.configure(config(platform)); manager.command({ platform, operation: 'start', intervalMs: 250 }) }
-  await vi.advanceTimersByTimeAsync(3000)
-  const snapshot = manager.command({ platform: 'capitalbear', operation: 'state' })
-  expect(snapshot.queueDepth).toBeLessThanOrEqual(18)
-  expect(snapshot.dropped).toBeGreaterThan(0)
-  expect(snapshot.slots.every(s => s.observation?.price === s.slotId && s.observation.platform === 'capitalbear')).toBe(true)
-  manager.configure(config('capitalbear', 0)); read.mockClear()
-  await vi.advanceTimersByTimeAsync(1000)
-  expect(read.mock.calls.every(([c]) => (c as { platform?: string }).platform === 'iqoption')).toBe(true)
-  surface.paused = true; read.mockClear()
-  await vi.advanceTimersByTimeAsync(1000)
-  expect(read).not.toHaveBeenCalled()
-})
-it('discards captures across configuration, resize and navigation changes', async () => {
-  let finish!: (value: { asset: string; price: string; confidence: number }) => void
-  const read = vi.fn(() => new Promise<{ asset: string; price: string; confidence: number }>(r => { finish = r }))
-  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true, bounds: { x: 0, y: 0, width: 900, height: 600 } }
-  vi.stubGlobal('fetch', vi.fn(async (url: URL | string) => String(url).endsWith('/api/market/slots/reset')
-    ? new Response(JSON.stringify({ reset: 1 })) : new Promise<Response>(() => {})))
-  manager = new MarketManager({ observationSurface: () => surface, chartSlot: (_p: Platform, id: number) => id, command: () => ({ grid: { confidence: 1 } }), readSlotDOM: read } as unknown as PlatformBrowserManager,
-    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
-  manager.configure(config('capitalbear', 1)); manager.command({ platform: 'capitalbear', operation: 'start' })
-  await vi.advanceTimersByTimeAsync(100)
-  manager.configure(config('capitalbear', 1))
-  surface.revision++
-  await vi.advanceTimersByTimeAsync(100)
-  expect(read).toHaveBeenCalledTimes(1)
-  finish({ asset: 'ASSET 1', price: '1', confidence: 1 })
-  await vi.advanceTimersByTimeAsync(1)
-  expect(manager.command({ platform: 'capitalbear', operation: 'state' }).slots[0]?.observation).toBeNull()
-})
-it('keeps capture rate platform-scoped and clears series progress when stopped', async () => {
-  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true, bounds: { x: 0, y: 0, width: 900, height: 600 } }
-  const read = async (c: { assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => ({ asset: c.assetName, price: '1.2', confidence: 1 })
-  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
-    const { observations } = JSON.parse(String(init.body)) as { observations: { platform: Platform; slotId: number; contextId: string }[] }
+let manager: InstanceType<typeof MarketManager>
+const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true, bounds: { x: 0, y: 0, width: 900, height: 600 } }
+const capture = vi.fn(async (contexts: ObservationContext[]) => ({ observedAt: Date.now(), images: new Map(contexts.map(c =>
+  [c.slotId, { width: 1, height: 1, grayscale: new Uint8Array([c.slotId]) }])) }))
+const deliver = (c: ObservationContext) => observation(c, 'VISUAL', { asset: c.assetName, price: String(c.slotId), confidence: c.slotId === 2 ? .6 : .94 }, Date.now())
+beforeEach(() => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-07T12:30:00Z')); surface.available = true; surface.paused = false; surface.revision = 0
+  capture.mockClear()
+  vi.spyOn(VisualMarketDataProvider.prototype, 'observeImage').mockImplementation(async c => deliver(c))
+  vi.stubGlobal('fetch', vi.fn(async (url: URL | string, init?: RequestInit) => {
+    if (String(url).endsWith('/api/market/slots/reset')) return new Response(JSON.stringify({ reset: 1 }))
+    const { observations } = JSON.parse(String(init?.body)) as { observations: { platform: Platform; slotId: number; contextId: string }[] }
     return new Response(JSON.stringify({ accepted: observations.length, rejected: 0, queueDepth: 0,
       slots: observations.map(o => ({ platform: o.platform, slotId: o.slotId, contextId: o.contextId, secondSamples: 5, m1Samples: 6, m1State: 'FORMING' })) }))
   }))
-  manager = new MarketManager({ observationSurface: () => surface, chartSlot: (_p: Platform, id: number) => id, command: () => ({ grid: { confidence: 1 } }), readSlotDOM: read } as unknown as PlatformBrowserManager,
-    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
-  manager.configure(config('capitalbear', 1)); manager.configure(config('iqoption', 0))
-  manager.command({ platform: 'capitalbear', operation: 'start' })
-  await vi.advanceTimersByTimeAsync(1000)
-  const capital = manager.command({ platform: 'capitalbear', operation: 'state' })
-  expect(capital.captureRate).toBeGreaterThan(0)
-  expect(capital.slots[0]?.m1Samples).toBe(6)
-  expect(manager.command({ platform: 'iqoption', operation: 'state' }).captureRate).toBe(0)
-  const stopped = manager.command({ platform: 'capitalbear', operation: 'stop' })
-  expect(stopped.slots[0]?.m1Samples).toBe(0)
-  expect(stopped.slots[0]?.secondSamples).toBe(0)
-  expect(stopped.captureRate).toBe(0)
-})
-it('does not count an unresolved asset tab as a live capture attempt', async () => {
-  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true,
-    bounds: { x: 0, y: 0, width: 900, height: 600 } }
-  let identified = false
-  const grayscale = new Uint8Array(100 * 100)
-  for (let y = 40; y < 50; y++) for (let x = 30; x < 70; x++) grayscale[y * 100 + x] = 255
-  manager = new MarketManager({ observationSurface: () => surface,
-    chartSlot: () => { if (!identified) throw new Error('Sync Assets required'); return 1 },
-    command: () => ({ grid: { confidence: 1 } }),
-    readSlotDOM: async (c: { assetName: string }) => ({ asset: c.assetName, confidence: 1 }),
-    captureSlot: async () => ({ width: 100, height: 100, grayscale }) } as unknown as PlatformBrowserManager,
+  manager = new MarketManager({ observationSurface: () => surface, chartSlot: (_p: Platform, id: number) => id,
+    command: () => ({ grid: { confidence: 1 } }), captureSlots: capture } as unknown as PlatformBrowserManager,
   { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
-  manager.configure(config('capitalbear', 1)); manager.command({ platform: 'capitalbear', operation: 'start' })
-  await vi.advanceTimersByTimeAsync(100)
-  const slot = manager.operationalState()[0]!.slots[0]!
-  expect(slot.dataUncertain).toBe(0)
-  expect(slot.observations).toBe(0)
-  expect(slot.lastCaptureAttemptAt).toBeNull()
-  identified = true
-  await vi.advanceTimersByTimeAsync(100)
-  const attempted = manager.operationalState()[0]!.slots[0]!
-  expect(attempted.dataUncertain).toBeGreaterThan(0)
-  expect(attempted.observations).toBeGreaterThan(0)
-  expect(attempted.lastCaptureAttemptAt).not.toBeNull()
 })
-it('recovers from ingestion failure with fresh observations and isolates parser errors', async () => {
-  let offline = true
-  const delivered: number[] = []
-  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
-    if (offline) return new Response('', { status: 503 })
-    const { observations } = JSON.parse(String(init.body)) as { observations: { observedAt: string }[] }
-    delivered.push(...observations.map(o => Date.parse(o.observedAt)))
-    return new Response(JSON.stringify({ accepted: observations.length, rejected: 0, queueDepth: 0, slots: [] }))
-  }))
-  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true, bounds: { x: 0, y: 0, width: 900, height: 600 } }
-  const read = async (c: { slotId: number; assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => {
-    if (c.slotId === 2) throw new Error('Isolated fixture parser failure')
-    return { asset: c.assetName, price: '1.2', confidence: 1 }
-  }
-  manager = new MarketManager({ observationSurface: () => surface, chartSlot: (_p: Platform, id: number) => id, command: () => ({ grid: { confidence: 1 } }), readSlotDOM: read } as unknown as PlatformBrowserManager,
-    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
-  manager.configure(config('capitalbear', 2)); manager.command({ platform: 'capitalbear', operation: 'start', intervalMs: 250 })
-  await vi.advanceTimersByTimeAsync(3000)
-  const failed = manager.command({ platform: 'capitalbear', operation: 'state' })
-  expect(failed.dropped).toBeGreaterThan(0); expect(failed.engineAvailable).toBe(false)
-  expect(failed.queueDepth).toBeLessThanOrEqual(18)
-  expect(failed.slots[1]?.state).toBe('DATA_UNCERTAIN')
-  const recoveredAt = Date.now(); offline = false
-  await vi.advanceTimersByTimeAsync(1000)
-  expect(delivered.length).toBeGreaterThan(0)
-  expect(delivered.every(t => t >= recoveredAt)).toBe(true)
-  expect(manager.command({ platform: 'capitalbear', operation: 'state' }).engineAvailable).toBe(true)
+afterEach(() => { manager.stop(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+it.each(['capitalbear', 'iqoption'] as const)('probes all nine %s slots from one batch without starting observation', async platform => {
+  manager.configure(config(platform))
+  const snapshot = await manager.probe(platform)
+  expect(snapshot.running).toBe(false); expect(capture).toHaveBeenCalledTimes(1)
+  expect(capture.mock.calls[0]![0]).toHaveLength(9)
+  expect(snapshot.slots.every(s => s.observation?.price === s.slotId && s.attemptCount === 1)).toBe(true)
+  expect(snapshot.slots[1]?.observation?.dataQuality.state).toBe('UNCERTAIN')
+  await vi.advanceTimersByTimeAsync(500)
+  const bodies = vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as { observations?: { slotId: number }[] })
+  expect(bodies.flatMap(b => b.observations ?? []).map(o => o.slotId).sort()).toEqual([1,2,3,4,5,6,7,8,9])
+  expect(capture).toHaveBeenCalledTimes(1)
 })
-it('resets only the changed instrument and preserves other slot contexts', async () => {
-  const surface = { available: true, paused: false, revision: 0, zoomFactor: .7, gridReady: true, bounds: { x: 0, y: 0, width: 900, height: 600 } }
-  const read = async (c: { assetName: string }): Promise<{ asset: string; price: string; confidence: number }> => ({ asset: c.assetName, price: '1.2', confidence: 1 })
-  let resetBody: unknown
-  const fetcher = vi.fn(async (url: URL | string, init?: RequestInit) => {
-    if (String(url).endsWith('/api/market/slots/reset')) {
-      resetBody = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ reset: 1 }))
-    }
-    return new Promise<Response>(() => {})
+it('captures all crops first and lets other slots publish while one worker is slow', async () => {
+  let release!: () => void
+  vi.mocked(VisualMarketDataProvider.prototype.observeImage).mockImplementation(async c => {
+    if (c.slotId === 1) await new Promise<void>(r => { release = r })
+    if (c.slotId === 3) throw new Error('Unreadable callout')
+    return deliver(c)
   })
-  vi.stubGlobal('fetch', fetcher)
-  manager = new MarketManager({ observationSurface: () => surface, chartSlot: (_p: Platform, id: number) => id, command: () => ({ grid: { confidence: 1 } }), readSlotDOM: read } as unknown as PlatformBrowserManager,
-    { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
-  const before = config('capitalbear', 2)
-  manager.configure(before); manager.command({ platform: 'capitalbear', operation: 'start' })
-  await vi.advanceTimersByTimeAsync(600)
-  const original = manager.command({ platform: 'capitalbear', operation: 'state' }).slots.map(s => s.observation?.contextId)
-  manager.configure({ ...before, configuration: { ...before.configuration,
-    slots: before.configuration.slots.map(s => s.id === 1 ? { ...s, assetName: 'NEW OTC' } : s) } })
+  manager.configure(config('iqoption'))
+  const pending = manager.probe('iqoption')
+  await vi.advanceTimersByTimeAsync(100)
+  const state = manager.command({ platform: 'iqoption', operation: 'state' })
+  expect(state.slots.every(s => s.attemptCount === 1)).toBe(true)
+  expect(state.slots[8]?.observation?.price).toBe(9)
+  expect(state.slots[2]?.diagnostics?.message).toBe('Unreadable callout')
+  release(); await pending
+  expect(state.slots[0]?.observation?.price).toBe(1)
+})
+it('gives every enabled slot repeated opportunities, updates engine samples, and respects pause/disable', async () => {
+  for (const platform of ['iqoption', 'capitalbear'] as const) {
+    manager.configure(config(platform)); manager.command({ platform, operation: 'start', intervalMs: 250 })
+  }
+  await vi.advanceTimersByTimeAsync(1200)
+  for (const platform of ['iqoption', 'capitalbear'] as const) {
+    const s = manager.command({ platform, operation: 'state' })
+    expect(s.slots.every(v => (v.attemptCount ?? 0) >= 3 && v.secondSamples === 5)).toBe(true)
+    expect(s.captureRate).toBeGreaterThan(0); expect(s.engineAvailable).toBe(true)
+  }
+  surface.paused = true; capture.mockClear(); await vi.advanceTimersByTimeAsync(1000)
+  expect(capture).not.toHaveBeenCalled()
+  surface.paused = false
+  manager.configure(config('capitalbear', 0)); capture.mockClear(); await vi.advanceTimersByTimeAsync(1000)
+  expect(capture.mock.calls.every(([contexts]) => contexts.every(c => c.platform === 'iqoption'))).toBe(true)
+  expect(manager.command({ platform: 'iqoption', operation: 'stop' }).slots.every(s => s.secondSamples === 0)).toBe(true)
+})
+it('discards an in-flight frame across navigation and configuration changes', async () => {
+  let release!: () => void
+  vi.mocked(VisualMarketDataProvider.prototype.observeImage).mockImplementation(async c => {
+    await new Promise<void>(r => { release = r }); return deliver(c)
+  })
+  manager.configure(config('capitalbear', 1)); const pending = manager.probe('capitalbear')
   await vi.advanceTimersByTimeAsync(1)
-  expect(resetBody).toEqual({ platform: 'capitalbear', slotIds: [1] })
-  const immediately = manager.command({ platform: 'capitalbear', operation: 'state' })
-  expect(immediately.slots[0]?.observation).toBeNull()
-  expect(immediately.slots[1]?.observation?.contextId).toBe(original[1])
-  await vi.advanceTimersByTimeAsync(600)
-  const after = manager.command({ platform: 'capitalbear', operation: 'state' })
-  expect(after.slots[0]?.observation?.contextId).not.toBe(original[0])
-  expect(after.slots[0]?.observation?.assetName).toBe('NEW OTC')
-  expect(after.slots[1]?.observation?.contextId).toBe(original[1])
+  manager.configure(config('capitalbear', 1)); surface.revision++
+  release(); await pending
+  expect(manager.command({ platform: 'capitalbear', operation: 'state' }).slots[0]?.observation).toBeNull()
+})
+it('returns an explicit failure per enabled slot when the frame cannot be captured', async () => {
+  capture.mockRejectedValueOnce(new Error('Surface unavailable'))
+  manager.configure(config('capitalbear'))
+  const s = await manager.probe('capitalbear')
+  expect(s.slots.every(v => v.observation === null && v.diagnostics?.message === 'Surface unavailable' && v.attemptCount === 1)).toBe(true)
 })

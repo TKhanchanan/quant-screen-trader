@@ -248,7 +248,7 @@ describe('embedded browser lifecycle', () => {
     const norm2 = normalizeBitmap(img2.toBitmap(), img2.getSize().width, img2.getSize().height, undefined, false)
     const geom2 = findAssetTabs(norm2, 'iqoption')
     await expect(manager.captureAssetLabel(1, geom2, img2, recognize))
-      .resolves.toMatchObject({ confidence: .94, present: true })
+      .resolves.toMatchObject({ confidence: 0, present: true })
   })
   it('captures only against verified geometry, whatever sits below the charts', async () => {
     const { manager, contents } = ready()
@@ -327,6 +327,46 @@ describe('nine opened tabs at operating zoom', () => {
       expect(findAssetTabs(image, platform)).toEqual(first)
       expect(first.map(t => t.x)).toEqual(first.map(t => t.x).sort((a, b) => a - b))
     }
+  })
+  it.each(['capitalbear', 'iqoption'] as const)('combines low raw OCR votes and stable geometry, then captures nine %s crops from one frame without input', async platform => {
+    views.length = 0
+    const manager = new PlatformBrowserManager(() => new View() as never)
+    manager.attach(platform, new Window() as unknown as BrowserWindow)
+    const contents = views[0]!.webContents
+    contents.url = `https://${platform}.com/`; contents.emit('did-finish-load')
+    manager.command({ operation: 'layout', platform, bounds: { x: 0, y: 0, width: 1320, height: 600 }, visible: true })
+    const stamp = new Date().toISOString()
+    manager.useCalibration(platform, { id: '00000000-0000-4000-8000-000000000002', platform,
+      name: 'Fixture grid', geometrySource: 'MANUAL', createdAt: stamp, updatedAt: stamp, zoomFactor: .7,
+      referenceBrowserWidth: 1320, referenceBrowserHeight: 600, slots: defaultCalibration(platform) })
+    const image = screenshot(9, 1)
+    for (let y = 220; y < 750; y++) for (let x = 200; x < 2800; x++) image.grayscale[y * image.width + x] = (x + y) % 2 ? 24 : 112
+    const bitmap = Uint8Array.from({ length: image.width * image.height * 4 }, (_, i) => i % 4 === 3 ? 255 : image.grayscale[Math.floor(i / 4)]!)
+    const crop = vi.fn(() => surfaceImage(false, 80, 24))
+    const native = { isEmpty: () => false, getSize: () => ({ width: image.width, height: image.height }), toBitmap: () => bitmap, crop } as unknown as Electron.NativeImage
+    contents.capturePage.mockResolvedValue(native)
+    let read = 0
+    const detected = await manager.captureAssetTabs(platform, async () => ({ asset: 'EUR/USD', confidence: [.62, .71, .76, .3][read++ % 4]! }))
+    expect(detected.slots.every(s => s.state === 'DETECTED' && s.confidence >= .95 && s.rawOcrConfidence! < .8 && s.fingerprintStable)).toBe(true)
+    contents.capturePage.mockClear(); crop.mockClear()
+    const contexts = detected.slots.map(s => ({ platform, slotId: s.slotId, assetName: 'EUR/USD',
+      contextId: '00000000-0000-4000-8000-000000000003', calibrationProfileId: null,
+      bounds: defaultCalibration(platform)[s.slotId - 1]!.bounds }))
+    const batch = await manager.captureSlots(contexts)
+    expect(batch.images.size).toBe(9); expect([...batch.images.values()].some(v => v instanceof Error)).toBe(false)
+    expect(contents.capturePage).toHaveBeenCalledTimes(1); expect(crop).toHaveBeenCalledTimes(9)
+    expect(contents.sendInputEvent).not.toHaveBeenCalled()
+    let pass = 0
+    const clipped = await manager.captureAssetTabs(platform, async () => {
+      const text = pass++ < 36 ? 'GBP/JPY (O...' : 'GBP/JPY (OTC) v'
+      return { rawText: text, confidence: .62 }
+    })
+    expect(clipped.slots.every(s => s.state === 'DETECTED' && s.assetName === 'GBP/JPY OTC')).toBe(true)
+    const garbage = await manager.captureAssetTabs(platform, async () => ({ asset: 'D D', confidence: .99 }))
+    expect(garbage.slots.every(s => s.state === 'UNCERTAIN')).toBe(true)
+    let variant = 0
+    const disagreement = await manager.captureAssetTabs(platform, async () => ({ asset: variant++ % 4 ? 'EUR/USD' : 'GBP/USD', confidence: .99 }))
+    expect(disagreement.slots.every(s => s.state === 'UNCERTAIN')).toBe(true)
   })
   it('rejects a missing interior tab instead of shifting subsequent assets', () => {
     expect(findAssetTabs(screenshot(9, 1, 2), 'iqoption')).toHaveLength(0)
@@ -435,7 +475,7 @@ describe('nine opened tabs at operating zoom', () => {
   it('drops the icon edge OCR picks up before a tab name', () => {
     expect(normalizeAsset('. OpenAl (OTC)')).toBe('OpenAI OTC')
     expect(normalizeAsset('_ EUR/USD (OTC)')).toBe('EUR/USD OTC')
-    expect(normalizeAsset('| AUS 200 (OT...')).toBe('AUS 200 OTC')
+    expect(normalizeAsset('| AUS 200 (OT...')).toBeNull()
     expect(normalizeAsset('_ GBP/JPY (')).toBeNull()
     expect(normalizeAsset('EUR/USD')).toBe('EUR/USD')
     expect(normalizeAsset('. . .')).toBeNull()

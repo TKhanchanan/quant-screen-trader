@@ -20,16 +20,23 @@ export type SourceType = z.infer<typeof SourceTypeSchema>
 export type DataQuality = z.infer<typeof DataQualitySchema>
 export const ObservationStateSchema = z.enum(['DISABLED', 'WAITING', 'CAPTURING', 'PARSING', 'READY', 'DATA_UNCERTAIN', 'STALE', 'ERROR', 'PAUSED'])
 export const MarketCommandSchema = z.strictObject({ platform: z.enum(['capitalbear', 'iqoption']),
-  operation: z.enum(['start', 'stop', 'state']), intervalMs: z.number().int().min(250).max(10000).optional() })
+  operation: z.enum(['start', 'stop', 'state', 'probe']), intervalMs: z.number().int().min(250).max(10000).optional() })
 export type MarketCommand = z.infer<typeof MarketCommandSchema>
 export const SlotDataSchema = z.strictObject({ slotId: z.number().int().min(1).max(9), state: ObservationStateSchema,
   diagnostics: z.object({ stage: z.enum(['TAB', 'MAPPING', 'CANVAS BOUNDS', 'PRICE ROI', 'OCR', 'READY']),
     message: z.string().optional(), canvasSlotId: z.number().int().min(1).max(9).optional(),
     gridConfidence: unit.optional(), rawPrice: z.string().optional(), parsedPrice: z.number().nullable().optional(),
     priceConfidence: unit.optional(), contextId: z.string().optional(),
+    tabIdentity: z.string().optional(), rawOcrConfidence: unit.optional(), priceEvidenceConfidence: unit.optional(),
+    temporalStable: z.boolean().optional(),
+    variants: z.array(z.object({ rawText: z.string(), price: z.number().nullable(), rawOcrConfidence: unit,
+      error: z.string().optional() })).max(4).optional(),
     pricePixelBounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
     labelPixelBounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional()
   }).optional(),
+  lastAttemptAt: z.number().nullable().optional(), lastParsedPriceAt: z.number().nullable().optional(),
+  lastGoodPriceAt: z.number().nullable().optional(), attemptCount: z.number().int().optional(),
+  parsedCount: z.number().int().optional(), goodCount: z.number().int().optional(), uncertainCount: z.number().int().optional(),
   s5Samples: z.number().int().nonnegative().optional(), s5State: z.enum(['FORMING', 'CLOSED']).nullable().optional(),
   secondSamples: z.number().int().nonnegative(), m1Samples: z.number().int().nonnegative(), m1State: z.enum(['FORMING', 'CLOSED']).nullable(),
   observation: MarketObservationSchema.nullable(), dropped: z.number().int().nonnegative(),
@@ -54,5 +61,8 @@ export type Candle = z.infer<typeof CandleSchema>
 export const MarketBatchResultSchema = z.strictObject({ accepted: z.number().int().nonnegative(),
   queueDepth: z.number().int().nonnegative(), rejected: z.number().int().nonnegative(),
   slots: z.array(z.strictObject({ platform: z.enum(['capitalbear', 'iqoption']), slotId: z.number().int().min(1).max(9),
-    s5Samples: z.number().int().nonnegative().optional(), s5State: z.enum(['FORMING', 'CLOSED']).nullable().optional(),
+    lastAttemptAt: z.number().nullable().optional(), lastParsedPriceAt: z.number().nullable().optional(),
+  lastGoodPriceAt: z.number().nullable().optional(), attemptCount: z.number().int().optional(),
+  parsedCount: z.number().int().optional(), goodCount: z.number().int().optional(), uncertainCount: z.number().int().optional(),
+  s5Samples: z.number().int().nonnegative().optional(), s5State: z.enum(['FORMING', 'CLOSED']).nullable().optional(),
     contextId: z.uuid(), secondSamples: z.number().int().nonnegative(), m1Samples: z.number().int().nonnegative(), m1State: z.enum(['FORMING', 'CLOSED']).nullable() })).max(18) })

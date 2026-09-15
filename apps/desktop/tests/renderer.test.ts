@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
+import { observation } from '../electron/main/market-providers'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { Dashboard } from '../src/renderer/src/components/Dashboard'
 import { Workspace } from '../src/renderer/src/components/Workspace'
-import { PlatformControlWindow } from '../src/renderer/src/components/PlatformControlWindow'
+import { PlatformControlWindow, PriceReading } from '../src/renderer/src/components/PlatformControlWindow'
 
 describe('Phase 1 renderer', () => {
   it('shows both platform workspaces on the dashboard', () => {
@@ -34,4 +36,13 @@ describe('Phase 1 renderer', () => {
       expect(markup).not.toContain('slot-summary')
     }
   })
+})
+
+it('renders an uncertain parsed price and exposes the read-only probe', () => {
+  const value = observation({ platform: 'iqoption', slotId: 1, assetName: 'EUR/USD', contextId: randomUUID(),
+    calibrationProfileId: null, bounds: { x: 0, y: 0, width: 1, height: 1 } }, 'VISUAL',
+    { asset: 'EUR/USD', price: '1.15368', confidence: .62 }, Date.now())
+  const markup = renderToStaticMarkup(createElement(PriceReading, { observation: value }))
+  expect(markup).toContain('1.15368'); expect(markup).toContain('UNCERTAIN'); expect(markup).toContain('62%')
+  expect(renderToStaticMarkup(createElement(PlatformControlWindow, { platform: 'iqoption' }))).toContain('Probe Prices')
 })

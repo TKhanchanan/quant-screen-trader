@@ -89,7 +89,7 @@ export class AssetSyncManager {
         this.apply(saved)
       }
     } catch (error) { entry.state.error = error instanceof Error &&
-      (error.message.startsWith('TAB_GEOMETRY_UNCERTAIN') || error.message.startsWith('Chart grid restoration failed') || error.message.startsWith('Chart grid preparation failed') || error.message.includes('platform was reloaded'))
+      (error.message.startsWith('TAB_GEOMETRY_UNCERTAIN') || error.message.startsWith('CANVAS_GEOMETRY_UNCERTAIN') || error.message.startsWith('Chart grid restoration failed') || error.message.startsWith('Chart grid preparation failed') || error.message.includes('platform was reloaded'))
       ? error.message : 'Asset detection unavailable. Existing assets were preserved.' }
     finally { entry.state.busy = false; entry.next = Date.now() + entry.state.intervalMs }
   }

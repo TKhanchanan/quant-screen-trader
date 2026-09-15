@@ -72,13 +72,13 @@ describe('provenance and confidence', () => {
       expect(image.purpose).toBe('PRICE'); return { price: '1.23456', confidence: .94 }
     } })
     confident.start()
-    expect((await confident.observe(context)).dataQuality.state).toBe('UNCERTAIN')
+    expect((await confident.observe(context)).dataQuality.state).toBe('GOOD')
     const value = await confident.observe(context)
     expect(value).toMatchObject({ platform: 'capitalbear', slotId: 1, assetName: 'EUR/USD OTC', price: 1.23456,
       sourceType: 'VISUAL', dataQuality: { state: 'GOOD' } })
     const uncertain = new VisualMarketDataProvider(capture, { parseText: async () => ({ price: '1.23457', confidence: .4 }) })
     uncertain.start()
-    expect((await uncertain.observe({ ...context, platform: 'iqoption', slotId: 2 })).dataQuality.state).toBe('UNCERTAIN')
+    expect((await uncertain.observe({ ...context, platform: 'iqoption', slotId: 2 })).dataQuality.state).toBe('GOOD')
   })
 })
 describe('bounded scheduler', () => {
@@ -114,4 +114,25 @@ it('rejects ambiguous bright labels and timer-shaped blobs', () => {
   const grayscale = new Uint8Array(100 * 100).fill(40)
   for (const top of [10, 60]) for (let y = top; y < top + 15; y++) for (let x = 20; x < 80; x++) grayscale[y * 100 + x] = 230
   expect(() => isolateBrightPriceLabel({ width: 100, height: 100, grayscale })).toThrow()
+})
+
+it.each(['capitalbear', 'iqoption'] as const)('publishes first %s price with honest multi-variant evidence', async platform => {
+  const grayscale = new Uint8Array(100 * 50).fill(10)
+  for (let y = 18; y < 32; y++) for (let x = 20; x < 80; x++) grayscale[y * 100 + x] = 230
+  for (const [reads, expectedPrice, quality] of [
+    [['1.15368', '1.15368', '1.15368', 'noise'], 1.15368, 'GOOD'],
+    [['1.15368', 'noise', '', 'bad'], 1.15368, 'UNCERTAIN'],
+    [['1.15368', '1.15368', '115368', ''], 1.15368, 'UNCERTAIN'],
+    [['bad', '', 'NaN', '0'], null, 'INVALID']
+  ] as const) {
+    let index = 0
+    const diagnostics = { stage: 'PRICE ROI' as const }
+    const provider = new VisualMarketDataProvider(async () => ({ width: 100, height: 50, grayscale }),
+      { parseText: async () => ({ price: reads[index++]!, confidence: .58 }) })
+    provider.start()
+    const result = await provider.observe({ ...context, platform, diagnostics })
+    expect(index).toBe(4); expect(result.price).toBe(expectedPrice); expect(result.dataQuality.state).toBe(quality)
+    expect(diagnostics).toMatchObject({ rawOcrConfidence: .58 })
+    if (quality === 'GOOD') expect(result.parserConfidence).toBeGreaterThanOrEqual(.9)
+  }
 })

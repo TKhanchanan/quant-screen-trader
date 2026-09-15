@@ -20,7 +20,7 @@ const platform = argument('platform', 'iqoption')
 const stage = argument('stage', 'inspect')
 const out = resolve(argument('out', join(tmpdir(), `qst-live-${platform}-${stage}`)))
 const entry = { inspect: 'apps/desktop/scripts/live-inspect.ts', analyze: 'apps/desktop/scripts/live-analyze.ts',
-  pipeline: 'apps/desktop/scripts/live-pipeline.ts' }[stage]
+  recovery: 'apps/desktop/scripts/live-recovery.ts', pipeline: 'apps/desktop/scripts/live-pipeline.ts' }[stage]
 if (!entry) throw new Error(`Unknown stage: ${stage}`)
 
 const directory = mkdtempSync(join(tmpdir(), 'qst-live-build-'))
