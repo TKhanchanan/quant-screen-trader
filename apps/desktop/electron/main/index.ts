@@ -135,10 +135,26 @@ function createWorkspaceWindow(platform: Platform): BrowserWindow {
     { width: 1320, height: 900 }
   )
   browsers.attach(platform, window)
+  window.once('closed', () => {
+    const controlWindow = controlWindows.get(platform)
+    if (controlWindow && !controlWindow.isDestroyed()) {
+      controlWindow.close()
+    }
+  })
   return window
 }
 
 const workspaceWindows = new PlatformWindowRegistry<BrowserWindow>(createWorkspaceWindow)
+
+function createControlWindow(platform: Platform): BrowserWindow {
+  const displayName = PLATFORM_DETAILS[platform].name
+  return createWindow(
+    `${displayName} Control — QuantScreen Trader`,
+    { view: 'platform-control', platform },
+    { width: 1320, height: 900 }
+  )
+}
+const controlWindows = new PlatformWindowRegistry<BrowserWindow>(createControlWindow)
 
 /**
  * The board and execution controls live in their own window. Kept out of the workspace because
@@ -551,7 +567,9 @@ if (ownsInstance) void app.whenReady().then(() => {
   })
   ipcMain.handle(IPC_CHANNELS.openWorkspace, (event, input: unknown) => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
-    workspaceWindows.open(PlatformSchema.parse(input))
+    const platform = PlatformSchema.parse(input)
+    workspaceWindows.open(platform)
+    controlWindows.open(platform)
   })
   ipcMain.handle(IPC_CHANNELS.openTrading, (event, input: unknown) => {
     if (authorize(event).overlay) throw new Error('Overlay cannot open windows')

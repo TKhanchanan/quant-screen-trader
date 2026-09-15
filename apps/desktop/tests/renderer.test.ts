@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { Dashboard } from '../src/renderer/src/components/Dashboard'
 import { Workspace } from '../src/renderer/src/components/Workspace'
+import { PlatformControlWindow } from '../src/renderer/src/components/PlatformControlWindow'
 
 describe('Phase 1 renderer', () => {
   it('shows both platform workspaces on the dashboard', () => {
@@ -13,11 +14,24 @@ describe('Phase 1 renderer', () => {
     expect(markup.match(/9 \/ 9/g)).toHaveLength(2)
   })
 
-  it('renders exactly nine slots in each workspace', () => {
+  it('renders exactly nine slots in each control window', () => {
+    for (const platform of ['capitalbear', 'iqoption'] as const) {
+      const markup = renderToStaticMarkup(createElement(PlatformControlWindow, { platform }))
+
+      expect(markup.match(/data-slot-id=/g)).toHaveLength(9)
+      expect(markup).toContain('Sync Assets')
+      expect(markup).toContain('Start observation')
+    }
+  })
+
+  it('renders a minimal broker workspace with no toolbar', () => {
     for (const platform of ['capitalbear', 'iqoption'] as const) {
       const markup = renderToStaticMarkup(createElement(Workspace, { platform }))
 
-      expect(markup.match(/data-slot-id=/g)).toHaveLength(9)
+      expect(markup).toContain('browser-region--full')
+      expect(markup).not.toContain('workspace-toolbar')
+      expect(markup).not.toContain('Sync Assets')
+      expect(markup).not.toContain('slot-summary')
     }
   })
 })
