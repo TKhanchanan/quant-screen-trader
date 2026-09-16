@@ -23,14 +23,19 @@ export class MarketManager {
     return [...this.workspaces].map(([platform, w]) => ({
       platform, captureRunning: w.snapshot.running,
       surfaceAvailable: this.browsers.observationSurface(platform).available && !this.browsers.observationSurface(platform).paused,
+      captureRate: w.snapshot.running ? w.count / Math.max(1, (Date.now() - w.started) / 1000) : 0,
       engineAvailable: w.snapshot.engineAvailable, intervalMs: w.snapshot.intervalMs,
       queueDepth: this.queue.size, ...this.transport,
       slots: w.config.configuration.slots.map(s => ({ slotId: s.id, enabled: s.enabled,
         assetName: s.assetName, contextId: w.contextIds.get(s.id)!,
         state: w.snapshot.slots.find(slot => slot.slotId === s.id)!.state,
+        captureEligible: !['TAB', 'MAPPING', 'CANVAS BOUNDS'].includes(w.snapshot.slots.find(slot => slot.slotId === s.id)!.diagnostics?.stage ?? 'TAB'),
         ...(this.operational.get(`${platform}:${s.id}`) ?? { observations: 0, dataUncertain: 0, lastCaptureAttemptAt: null }),
         ...Object.fromEntries(['lastAttemptAt', 'lastParsedPriceAt', 'lastGoodPriceAt', 'attemptCount', 'parsedCount', 'goodCount', 'uncertainCount']
-          .map(key => [key, w.snapshot.slots.find(slot => slot.slotId === s.id)![key as keyof MarketSnapshot['slots'][number]] ?? null])),
+          .map(key => [key, w.snapshot.slots.find(slot => slot.slotId === s.id)![key as keyof MarketSnapshot['slots'][number]] ?? (key.endsWith('Count') ? 0 : null)])),
+        secondSamples: w.snapshot.slots.find(slot => slot.slotId === s.id)!.secondSamples,
+        s5Samples: w.snapshot.slots.find(slot => slot.slotId === s.id)!.s5Samples ?? 0,
+        m1Samples: w.snapshot.slots.find(slot => slot.slotId === s.id)!.m1Samples,
         dropped: w.snapshot.slots.find(slot => slot.slotId === s.id)!.dropped }))
     }))
   }
@@ -70,7 +75,9 @@ export class MarketManager {
       signature: previous?.signature ?? '', count: 0, started: Date.now(), activeBatch: previous?.activeBatch ?? null, nextBatchAt: 0,
       resetting: reset, resetRevision: (previous?.resetRevision ?? 0) + 1, snapshot: { running: previous?.snapshot.running ?? false,
         intervalMs: previous?.snapshot.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000),
-        slots: config.configuration.slots.map(s => !changed.has(s.id) && previous ? previous.snapshot.slots.find(old => old.slotId === s.id)! : ({ slotId: s.id, state: s.enabled ? 'WAITING' : 'DISABLED', secondSamples: 0, m1Samples: 0, m1State: null, observation: null, dropped: 0, pixelBounds: null })),
+        slots: config.configuration.slots.map(s => !changed.has(s.id) && previous ? previous.snapshot.slots.find(old => old.slotId === s.id)! : ({ slotId: s.id, state: s.enabled ? 'WAITING' : 'DISABLED', secondSamples: 0, m1Samples: 0, m1State: null, observation: null, dropped: 0, pixelBounds: null,
+          ...Object.fromEntries(['lastAttemptAt', 'lastParsedPriceAt', 'lastGoodPriceAt', 'attemptCount', 'parsedCount', 'goodCount', 'uncertainCount']
+            .map(key => [key, previous?.snapshot.slots.find(old => old.slotId === s.id)?.[key as keyof MarketSnapshot['slots'][number]] ?? (key.endsWith('Count') ? 0 : null)])) })),
         dropped: 0, queueDepth: 0, queueLagMs: 0, captureRate: 0, engineAvailable: false } }
     if (previous) Object.assign(previous, next)
     const workspace = previous ?? next
@@ -139,10 +146,10 @@ export class MarketManager {
     const surface = this.browsers.observationSurface(platform), signature = JSON.stringify(surface)
     const profile = w.config.calibrations.find(p => p.id === w.config.activeCalibrationId)
     const contexts: ObservationContext[] = []
-    const fail = (slot: MarketSnapshot['slots'][number], error: unknown): void => {
-      this.captureMetric(platform, slot.slotId, true, false)
+    const fail = (slot: MarketSnapshot['slots'][number], error: unknown, captured = false): void => {
+      if (captured) this.captureMetric(platform, slot.slotId, true, false)
       slot.state = 'DATA_UNCERTAIN'; slot.observation = null
-      slot.diagnostics = { ...slot.diagnostics, stage: error instanceof Error && error.message.startsWith('TAB') ? 'TAB' : 'PRICE ROI',
+      slot.diagnostics = { ...slot.diagnostics, stage: captured ? 'PRICE ROI' : error instanceof Error && error.message.startsWith('TAB') ? 'TAB' : 'CANVAS BOUNDS',
         message: error instanceof Error ? error.message : 'Capture unavailable' }
     }
     for (const configured of w.config.configuration.slots.filter(s => s.enabled && (probe || !w.resetting.has(s.id)))) {
@@ -182,9 +189,11 @@ export class MarketManager {
       while (cursor < contexts.length) {
         const context = contexts[cursor++]!, slot = w.snapshot.slots.find(s => s.slotId === context.slotId)!
         if (!current(context)) continue
+        let captured = false
         await w.scheduler.run(`${platform}:${context.slotId}`, true, 0, async () => {
           const image = batch.images.get(context.slotId)
           if (!image || image instanceof Error) throw image ?? new Error('Missing slot crop')
+          captured = true
           slot.state = 'PARSING'
           return reader.visual.observeImage(context, image, batch.observedAt)
         }, value => {
@@ -200,7 +209,7 @@ export class MarketManager {
           // Keep every observation until transmission. Bound offline backlog and report overflow.
           if (this.queue.size >= 180) { this.queue.delete(this.queue.keys().next().value!); w.snapshot.dropped++; slot.dropped++ }
           this.queue.set(value.id, value)
-        }, error => { if (current(context)) fail(slot, error) })
+        }, error => { if (current(context)) fail(slot, error, captured) })
       }
     }))
   }
@@ -249,7 +258,10 @@ export class MarketManager {
           slot.s5Samples = status.s5Samples ?? 0; slot.s5State = status.s5State ?? null; slot.secondSamples = status.secondSamples; slot.m1Samples = status.m1Samples; slot.m1State = status.m1State
         }
       }
-      for (const w of this.workspaces.values()) { w.snapshot.engineAvailable = true; w.snapshot.queueLagMs = lag }
+      for (const platform of new Set(batch.map(o => o.platform))) {
+        const w = this.workspaces.get(platform)!
+        w.snapshot.engineAvailable = true; w.snapshot.queueLagMs = lag
+      }
     } catch {
       this.transport.droppedBatches++
       for (const o of batch) {

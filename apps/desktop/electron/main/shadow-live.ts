@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Platform } from '@quant-screen-trader/shared-types'
 import type { EngineConnectionConfig } from './engine-config'
 import type { ExecutionManager } from './execution-manager'
+import type { AssetSyncManager } from './asset-sync'
 import type { MarketManager } from './market-manager'
 
 /** Read-only observer: never issues market, policy, browser or execution commands. */
@@ -12,7 +13,8 @@ export class ShadowLiveTelemetry {
   private busy = false
   private previous = performance.now()
   constructor(private readonly market: MarketManager, private readonly execution: ExecutionManager,
-    private readonly connection: EngineConnectionConfig) {
+    private readonly connection: EngineConnectionConfig,
+    private readonly assetSync?: () => AssetSyncManager | null) {
     this.timer = setInterval(() => { void this.tick() }, 1000)
   }
   private async tick(): Promise<void> {
@@ -30,12 +32,13 @@ export class ShadowLiveTelemetry {
           }
         }
         const signature = JSON.stringify([value.captureRunning, value.surfaceAvailable,
-          value.engineAvailable, execution.armed, value.slots.map(s => [s.slotId, s.enabled, s.assetName, s.contextId, s.state])])
+          value.engineAvailable, execution.armed, value.slots.map(s => [s.slotId, s.enabled, s.assetName, s.contextId, s.captureEligible])])
         if (signature !== state.signature) { state.signature = signature; state.revision++ }
         this.states.set(value.platform, state)
         const response = await fetch(new URL('/api/shadow-live/telemetry', this.connection.healthUrl), {
           method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'error',
           signal: AbortSignal.timeout(1000), body: JSON.stringify({ ...value, instanceId: this.instanceId,
+            ...this.assetSync?.()?.operationalState(value.platform), mainRssBytes: process.memoryUsage().rss,
             healthRevision: state.revision, armed: execution.armed, brokerPresses: state.presses,
             mainLoopDelayMs: delay })
         })

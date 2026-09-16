@@ -24,6 +24,17 @@ class CaptureSlot(Model):
     lastCaptureAttemptAt: int | None = Field(default=None, ge=0)
     dataUncertain: int = Field(ge=0)
     dropped: int = Field(ge=0)
+    captureEligible: bool = False
+    lastAttemptAt: int | None = Field(default=None, ge=0)
+    lastParsedPriceAt: int | None = Field(default=None, ge=0)
+    lastGoodPriceAt: int | None = Field(default=None, ge=0)
+    attemptCount: int = Field(default=0, ge=0)
+    parsedCount: int = Field(default=0, ge=0)
+    goodCount: int = Field(default=0, ge=0)
+    uncertainCount: int = Field(default=0, ge=0)
+    secondSamples: int = Field(default=0, ge=0)
+    s5Samples: int = Field(default=0, ge=0)
+    m1Samples: int = Field(default=0, ge=0)
 
 
 class DesktopTelemetry(Model):
@@ -33,6 +44,7 @@ class DesktopTelemetry(Model):
     captureRunning: bool
     surfaceAvailable: bool
     engineAvailable: bool
+    captureRate: float = Field(default=0, ge=0)
     intervalMs: int = Field(ge=1, le=60000)
     queueDepth: int = Field(ge=0, le=1000)
     droppedBatches: int = Field(ge=0)
@@ -40,6 +52,10 @@ class DesktopTelemetry(Model):
     armed: bool
     brokerPresses: int = Field(ge=0)
     mainLoopDelayMs: float = Field(ge=0, allow_inf_nan=False)
+    autoSyncEnabled: bool = False
+    autoSyncRuns: int = Field(default=0, ge=0)
+    autoSyncAppliedChanges: int = Field(default=0, ge=0)
+    mainRssBytes: int = Field(default=0, ge=0)
     slots: list[CaptureSlot] = Field(max_length=9)
 
 
@@ -92,7 +108,7 @@ async def verify_restart(value: RestartVerification, request: Request) -> dict[s
             "source": "OPERATOR_OBSERVATION",
             **value.model_dump(),
         }
-        shadow.data["restartVerified"] = shadow.data["engineRestarts"] >= 1 and all(
+        shadow.data["restartVerified"] = shadow.data["engineRestarts"] == 1 and all(
             value.model_dump().values()
         )
         shadow.data["executionVerified"] = (
@@ -123,3 +139,22 @@ async def verify_storage_endpoint(request: Request) -> dict[str, Any]:
         return shadow.report()
     finally:
         engine.busy = False
+
+
+class AutoSyncVerification(Model):
+    platform: Platform
+    reviewedAppliedChanges: int = Field(ge=0)
+    unexpectedAutoSyncChanges: int = Field(ge=0)
+
+
+@router.post("/api/shadow-live/verify-auto-sync")
+async def verify_auto_sync(value: AutoSyncVerification, request: Request) -> dict[str, Any]:
+    shadow = recorder(request)
+    with shadow.lock:
+        platform = shadow.data["platforms"][value.platform]
+        if value.reviewedAppliedChanges != platform.get("autoSyncAppliedChanges", 0):
+            raise HTTPException(409, "Review the current applied change count")
+        platform["autoSyncVerification"] = {"source": "OPERATOR_OBSERVATION", **value.model_dump()}
+        platform["unexpectedAutoSyncChanges"] = value.unexpectedAutoSyncChanges
+    await asyncio.to_thread(shadow.flush)
+    return shadow.report()

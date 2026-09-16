@@ -7,6 +7,7 @@ Only typed market records and a closed desktop telemetry schema enter this names
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -81,6 +82,9 @@ class ShadowLiveRecorder:
         self.latencies: dict[str, deque[float]] = {}
         self.last_telemetry: dict[str, tuple[int, str, bool]] = {}
         self.segment_started = at
+        self.qualified_until = at
+        self.last_operational_snapshot: dict[str, int] = {}
+        self.last_auto_sync: dict[str, tuple[str, int, int]] = {}
         self.data: dict[str, Any] = dict(
             runId=identifier,
             version=SHADOW_LIVE_VERSION,
@@ -95,6 +99,8 @@ class ShadowLiveRecorder:
                 "watchdogVersion": "qst-watchdog-v1",
             },
             durationMs=0,
+            qualifiedCaptureDurationMs=0,
+            maxQueueDepth=0,
             engineRestarts=0,
             uncleanRestarts=0,
             recorderErrors=0,
@@ -155,6 +161,8 @@ class ShadowLiveRecorder:
             self.data["finishedAt"] = None
             if self.data["uncleanRestarts"]:
                 self.warn("UNCLEAN_RESTART_EVIDENCE_GAP")
+        self.data.setdefault("qualifiedCaptureDurationMs", 0)
+        self.data.setdefault("maxQueueDepth", 0)
         for name in PLATFORMS:
             self.data["platforms"].setdefault(
                 name,
@@ -267,6 +275,11 @@ class ShadowLiveRecorder:
         s["acceptedSamples" if accepted else "rejectedSamples"] += 1
         stale = o.dataQuality.state == "STALE" or (live and now - at > 3000)
         uncertain = o.price is None or o.dataQuality.state in ("UNCERTAIN", "INVALID")
+        quality = p.setdefault(
+            "qualityCounts",
+            {state: 0 for state in ("GOOD", "UNCERTAIN", "STALE", "INVALID", "DEGRADED")},
+        )
+        quality["STALE" if stale else o.dataQuality.state] += 1
         s["staleSamples"] += int(stale)
         s["dataUncertain"] += int(uncertain)
         p["dataUncertain"] += int(uncertain)
@@ -464,24 +477,91 @@ class ShadowLiveRecorder:
 
     @observer
     def telemetry(self, value: dict[str, Any], now: int | None = None) -> None:
+        value = copy.deepcopy(value)
         at = millis() if now is None else now
         name = value["platform"]
+        prior_desktop = self.data["desktop"].get(name)
         self.data["desktop"][name] = value
+        sync = self.last_auto_sync.get(name)
+        runs, changes = value.get("autoSyncRuns", 0), value.get("autoSyncAppliedChanges", 0)
+        previous_runs, previous_changes = (
+            sync[1:] if sync and sync[0] == value["instanceId"] else (0, 0)
+        )
+        platform = self.data["platforms"][name]
+        platform["autoSyncRuns"] = platform.get("autoSyncRuns", 0) + max(0, runs - previous_runs)
+        platform["autoSyncAppliedChanges"] = platform.get("autoSyncAppliedChanges", 0) + max(
+            0, changes - previous_changes
+        )
+        # Applied changes require operator review against the visible instruments.
+        review = platform.get("autoSyncVerification", {})
+        platform["unexpectedAutoSyncChanges"] = (
+            review["unexpectedAutoSyncChanges"]
+            if review.get("reviewedAppliedChanges") == platform["autoSyncAppliedChanges"]
+            else None
+            if platform["autoSyncAppliedChanges"]
+            else 0
+        )
+        transport = self.data.setdefault("desktopTransport", {})
+        if value["instanceId"] not in transport and len(transport) >= 64:
+            self.data["evidenceTruncated"] = True
+            self.warn("DESKTOP_SEGMENT_CAP_REACHED")
+        else:
+            prior = transport.setdefault(value["instanceId"], {"droppedBatches": 0, "http429s": 0})
+            for metric in ("droppedBatches", "http429s"):
+                prior[metric] = max(prior[metric], value.get(metric, 0))
+            self.data["droppedBatches"] = sum(v["droppedBatches"] for v in transport.values())
+            self.data["desktopHttp429s"] = sum(v["http429s"] for v in transport.values())
+        self.last_auto_sync[name] = (value["instanceId"], runs, changes)
+        totals = platform.setdefault("slotCaptureTotals", {})
+        previous_slots = (
+            {s["slotId"]: s for s in prior_desktop["slots"]}
+            if prior_desktop and prior_desktop["instanceId"] == value["instanceId"]
+            else {}
+        )
+        for slot in value["slots"]:
+            total = totals.setdefault(str(slot["slotId"]), {})
+            old = previous_slots.get(slot["slotId"], {})
+            for metric in ("attemptCount", "parsedCount", "goodCount", "uncertainCount"):
+                current = slot.get(metric, 0)
+                previous_count = old.get(metric, 0)
+                total[metric] = total.get(metric, 0) + (
+                    current - previous_count if current >= previous_count else current
+                )
+            for metric in (
+                "lastAttemptAt",
+                "lastParsedPriceAt",
+                "lastGoodPriceAt",
+                "secondSamples",
+                "s5Samples",
+                "m1Samples",
+            ):
+                total[metric] = slot.get(metric)
         enabled = [s for s in value["slots"] if s["enabled"]]
         recent = all(
-            s.get("lastCaptureAttemptAt") is not None
-            and 0 <= at - s["lastCaptureAttemptAt"] <= max(10000, value["intervalMs"] * 18)
+            s.get("captureEligible", False)
+            and s.get("lastCaptureAttemptAt") is not None
+            and 0 <= at - s["lastCaptureAttemptAt"] <= max(10000, value["intervalMs"] * 2)
             for s in enabled
         )
-        # This POST reaching the engine establishes engine availability even when every
-        # recent OCR attempt abstained before it could produce an observation batch.
-        live = bool(enabled) and recent and value["captureRunning"] and value["surfaceAvailable"]
+        live = (
+            bool(enabled)
+            and recent
+            and value["captureRunning"]
+            and value["surfaceAvailable"]
+            and value["engineAvailable"]
+        )
         previous = self.last_telemetry.get(name)
         p = self.data["platforms"][name]
         if previous and previous[1] == value["instanceId"] and previous[2] and live:
             delta = at - previous[0]
             if 0 <= delta <= 5000:
                 p["captureDurationMs"] += delta
+                # Union of actually credited platform intervals, without double-counting
+                # simultaneous brokers or bridging downtime between process segments.
+                self.data["qualifiedCaptureDurationMs"] += max(
+                    0, at - max(previous[0], self.qualified_until)
+                )
+                self.qualified_until = max(self.qualified_until, at)
                 p["continuousCaptureMs"] += delta
                 p["longestContinuousCaptureMs"] = max(
                     p["longestContinuousCaptureMs"], p["continuousCaptureMs"]
@@ -498,7 +578,11 @@ class ShadowLiveRecorder:
         self.data["unexpectedBrokerPresses"] = max(
             self.data["unexpectedBrokerPresses"] or 0, value["brokerPresses"]
         )
-        self.data["unboundedQueue"] = bool(self.data["unboundedQueue"]) or value["queueDepth"] > 18
+        self.data["maxQueueDepth"] = max(self.data["maxQueueDepth"], value["queueDepth"])
+        self.data["unboundedQueue"] = bool(self.data["unboundedQueue"]) or value["queueDepth"] > 180
+        if at - self.last_operational_snapshot.get(name, 0) >= 300000:
+            self.event("OPERATIONAL_SNAPSHOT", at=at, **value)
+            self.last_operational_snapshot[name] = at
         if value["armed"] or value["brokerPresses"]:
             self.warn("EXECUTION_SAFETY_FAILURE")
         self.latency(name, "mainLoopDelay", value["mainLoopDelayMs"])
@@ -559,9 +643,11 @@ class ShadowLiveRecorder:
                         "unexpectedBrokerPresses",
                         "unboundedQueue",
                         "recorderErrors",
+                        "evidenceTruncated",
                     )
                 )
                 or self.data["storageErrors"] >= 3
+                or any(p.get("unexpectedAutoSyncChanges") for p in self.data["platforms"].values())
             )
             capture_uncertain = any(
                 s["dataUncertain"]
@@ -574,8 +660,8 @@ class ShadowLiveRecorder:
                 or any(p["dataUncertain"] or p["rejected"] for p in self.data["platforms"].values())
             )
             self.data["health"] = "FAILED" if failed else "DEGRADED" if degraded else "HEALTHY"
-            duration_ok = all(
-                p["longestContinuousCaptureMs"] >= 3_600_000 and p["liveObservations"] > 0
+            duration_ok = self.data["qualifiedCaptureDurationMs"] >= 86_400_000 and all(
+                p["captureDurationMs"] >= 82_800_000 and p["liveObservations"] > 0
                 for p in self.data["platforms"].values()
             )
             verified = all(
@@ -598,6 +684,10 @@ class ShadowLiveRecorder:
                 duration_ok
                 and verified
                 and hard_known
+                and all(
+                    p.get("unexpectedAutoSyncChanges", 0) == 0
+                    for p in self.data["platforms"].values()
+                )
                 and self.data["paperEnabled"] is True
                 and self.data["policy"].get("mode") == "SHADOW"
                 and not self.data["evidenceTruncated"]

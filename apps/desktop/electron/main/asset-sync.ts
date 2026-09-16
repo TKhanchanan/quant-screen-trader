@@ -23,7 +23,7 @@ export class AssetStability {
     })
   }
 }
-interface Entry { config: ConfigurationResult; state: AssetSyncState; stability: AssetStability; generation: number; next: number; signature: string; active: Promise<void> | null }
+interface Entry { autoSyncRuns: number; autoSyncAppliedChanges: number; config: ConfigurationResult; state: AssetSyncState; stability: AssetStability; generation: number; next: number; signature: string; active: Promise<void> | null }
 export class AssetSyncManager {
   private readonly entries = new Map<Platform, Entry>()
   private readonly timer: ReturnType<typeof setInterval>
@@ -41,8 +41,13 @@ export class AssetSyncManager {
     if (old) {
       if (JSON.stringify(old.config) !== JSON.stringify(config)) { old.generation++; old.stability.reset(); if (JSON.stringify(old.config.configuration) !== JSON.stringify(config.configuration)) old.state.detection = null; old.state.revision++ }
       old.config = config
-    } else this.entries.set(platform, { config, generation: 0, next: 0, signature: '', active: null, stability: new AssetStability(),
+    } else this.entries.set(platform, { autoSyncRuns: 0, autoSyncAppliedChanges: 0, config, generation: 0, next: 0, signature: '', active: null, stability: new AssetStability(),
       state: { auto: false, busy: false, intervalMs: 3000, stableChecks: 3, detection: null, applied: 0, manualPreserved: 0, error: null, revision: 0 } })
+  }
+  operationalState(platform: Platform): { autoSyncEnabled: boolean; autoSyncRuns: number; autoSyncAppliedChanges: number } {
+    const entry = this.entries.get(platform)
+    return { autoSyncEnabled: entry?.state.auto ?? false, autoSyncRuns: entry?.autoSyncRuns ?? 0,
+      autoSyncAppliedChanges: entry?.autoSyncAppliedChanges ?? 0 }
   }
   async command(command: AssetSyncCommand): Promise<AssetSyncState> {
     const entry = this.entries.get(command.platform)
@@ -72,6 +77,7 @@ export class AssetSyncManager {
     try {
       if (this.ocrBusy) { entry.state.error = 'Asset OCR is busy in the other workspace. Sync again shortly.'; return }
       this.ocrBusy = true
+      if (!once) entry.autoSyncRuns++
       let result: AssetDetectionResult
       try { result = await this.browsers.captureAssetTabs(platform, image => this.ocr.parseText(image)) }
       finally { this.ocrBusy = false }
@@ -86,6 +92,7 @@ export class AssetSyncManager {
         if (!saved) { entry.state.error = 'Configuration changed during detection; sync again.'; return }
         if (entry.generation !== generation || JSON.stringify(this.browsers.observationSurface(platform)) !== signature) return
         entry.config = saved; entry.state.applied = changed; entry.state.revision++
+        if (!once) entry.autoSyncAppliedChanges += changed
         this.apply(saved)
       }
     } catch (error) { entry.state.error = error instanceof Error &&

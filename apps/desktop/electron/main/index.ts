@@ -254,7 +254,7 @@ if (ownsInstance) void app.whenReady().then(() => {
   market = new MarketManager(browsers, connection)
   execution = new ExecutionManager(browsers, new OrderExecutor(browsers), connection)
   if (process.env.QST_SHADOW_LIVE === '1')
-    shadowLive = new ShadowLiveTelemetry(market, execution, connection)
+    shadowLive = new ShadowLiveTelemetry(market, execution, connection, () => assetSync)
   const prepare = async (platform: Platform): Promise<void> => {
     const result = await prepareCalibration(platform, browsers, request => requestConfiguration(connection, request))
     market!.configure(result)

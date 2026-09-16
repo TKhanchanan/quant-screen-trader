@@ -245,6 +245,48 @@ def test_local_only_closed_telemetry_schema_and_opt_in(
         assert len(audit["storageAudit"]["sqlite"]) == 2
 
 
+def test_auto_sync_review_requires_current_count_and_transport_is_not_double_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QST_SHADOW_LIVE", "1")
+    monkeypatch.setenv("QST_COMMIT_SHA", "a" * 40)
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        value = dict(
+            platform="iqoption",
+            instanceId=str(uuid4()),
+            healthRevision=1,
+            captureRunning=False,
+            surfaceAvailable=False,
+            engineAvailable=False,
+            intervalMs=1000,
+            armed=False,
+            brokerPresses=0,
+            queueDepth=0,
+            mainLoopDelayMs=0,
+            slots=[],
+            autoSyncRuns=1,
+            autoSyncAppliedChanges=1,
+            droppedBatches=3,
+            http429s=2,
+        )
+        assert client.post("/api/shadow-live/telemetry", json=value).status_code == 200
+        review = dict(platform="iqoption", reviewedAppliedChanges=0, unexpectedAutoSyncChanges=0)
+        assert client.post("/api/shadow-live/verify-auto-sync", json=review).status_code == 409
+        review["reviewedAppliedChanges"] = 1
+        report = client.post("/api/shadow-live/verify-auto-sync", json=review).json()
+        assert report["platforms"]["iqoption"]["unexpectedAutoSyncChanges"] == 0
+        value["autoSyncAppliedChanges"] = 2
+        client.post("/api/shadow-live/telemetry", json=value)
+        value["platform"] = "capitalbear"
+        client.post("/api/shadow-live/telemetry", json=value)
+        report = client.get("/api/shadow-live/state").json()
+        assert report["platforms"]["iqoption"]["unexpectedAutoSyncChanges"] is None
+        assert report["droppedBatches"] == 3 and report["desktopHttp429s"] == 2
+        review.update(reviewedAppliedChanges=2, unexpectedAutoSyncChanges=1)
+        report = client.post("/api/shadow-live/verify-auto-sync", json=review).json()
+        assert report["result"] == "FAIL"
+
+
 def test_first_eligible_price_cannot_be_skipped(tmp_path: Path) -> None:
     from quant_engine.paper.engine import PaperUpdate
 
@@ -298,7 +340,7 @@ def test_capture_duration_requires_recent_data_and_excludes_stalls(tmp_path: Pat
         brokerPresses=0,
         queueDepth=1,
         mainLoopDelayMs=0,
-        slots=[dict(slotId=1, enabled=True, dataUncertain=0)],
+        slots=[dict(slotId=1, enabled=True, captureEligible=True, dataUncertain=0)],
     )
     r.telemetry(value, at)
     r.telemetry(value, at + 1000)
@@ -333,8 +375,9 @@ def test_zero_selection_completed_acceptance_does_not_require_trades(tmp_path: P
     r = recorder(tmp_path)
     # Only a predicate fixture, never exported as a real session.
     for p in r.data["platforms"].values():
-        p.update(longestContinuousCaptureMs=3600000, liveObservations=10)
+        p.update(captureDurationMs=82_800_000, liveObservations=10)
     r.data.update(
+        qualifiedCaptureDurationMs=86_400_000,
         restartVerified=True,
         storageVerified=True,
         executionVerified=True,
@@ -352,7 +395,7 @@ def test_zero_selection_completed_acceptance_does_not_require_trades(tmp_path: P
     assert r.report(fixtures.EPOCH)["acceptance"] == "PENDING"
 
 
-def test_failed_ocr_attempts_count_as_capture_without_fabricating_samples(tmp_path: Path) -> None:
+def test_engine_unavailable_does_not_qualify_ocr_work(tmp_path: Path) -> None:
     r = recorder(tmp_path)
     value = dict(
         platform="iqoption",
@@ -366,11 +409,167 @@ def test_failed_ocr_attempts_count_as_capture_without_fabricating_samples(tmp_pa
         brokerPresses=0,
         queueDepth=0,
         mainLoopDelayMs=0,
-        slots=[dict(slotId=1, enabled=True, dataUncertain=1, lastCaptureAttemptAt=fixtures.EPOCH)],
+        slots=[
+            dict(
+                slotId=1,
+                enabled=True,
+                captureEligible=True,
+                dataUncertain=1,
+                lastCaptureAttemptAt=fixtures.EPOCH,
+            )
+        ],
     )
     r.telemetry(value, fixtures.EPOCH)
     r.telemetry(value, fixtures.EPOCH + 1000)
-    assert r.data["platforms"]["iqoption"]["captureDurationMs"] == 1000
+    assert r.data["platforms"]["iqoption"]["captureDurationMs"] == 0
     assert r.data["platforms"]["iqoption"]["observations"] == 0
     assert r.report(fixtures.EPOCH + 1000)["health"] == "DEGRADED"
     assert r.report(fixtures.EPOCH + 1000)["acceptance"] == "PENDING"
+
+
+def test_24h_union_does_not_double_count_brokers_or_restart_downtime(tmp_path: Path) -> None:
+    r = recorder(tmp_path)
+    at = fixtures.EPOCH
+    instance = str(uuid4())
+
+    def heartbeat(name: str, timestamp: int, eligible: bool = True) -> None:
+        r.telemetry(
+            dict(
+                platform=name,
+                instanceId=instance,
+                healthRevision=1,
+                captureRunning=True,
+                surfaceAvailable=True,
+                engineAvailable=True,
+                intervalMs=500,
+                armed=False,
+                brokerPresses=0,
+                queueDepth=30,
+                mainLoopDelayMs=0,
+                slots=[
+                    dict(
+                        slotId=1,
+                        enabled=True,
+                        captureEligible=eligible,
+                        dataUncertain=0,
+                        lastCaptureAttemptAt=timestamp,
+                    )
+                ],
+            ),
+            timestamp,
+        )
+
+    for t in [at, at + 1000, at + 2000]:
+        for name in ("capitalbear", "iqoption"):
+            heartbeat(name, t)
+    assert r.data["qualifiedCaptureDurationMs"] == 2000
+    assert all(p["captureDurationMs"] == 2000 for p in r.data["platforms"].values())
+    assert r.data["unboundedQueue"] is False
+    for name in ("capitalbear", "iqoption"):
+        heartbeat(name, at + 3000, False)
+        heartbeat(name, at + 4000, False)
+    assert r.data["qualifiedCaptureDurationMs"] == 2000
+    run_id = r.data["runId"]
+    r.flush(now=at + 4000, finish=True)
+    r = ShadowLiveRecorder(
+        tmp_path, commit_sha="a" * 40, application_version="0.1.0", run_id=run_id, now=at + 100000
+    )
+    instance = str(uuid4())
+    heartbeat("capitalbear", at + 100000)
+    heartbeat("capitalbear", at + 101000)
+    assert r.data["qualifiedCaptureDurationMs"] == 3000
+    assert r.report(at + 101000)["acceptance"] == "PENDING"
+
+
+def test_live_slot_metrics_fit_closed_telemetry_contract() -> None:
+    from quant_engine.shadow_live_api import DesktopTelemetry
+
+    payload: dict[str, Any] = dict(
+        platform="capitalbear",
+        instanceId=str(uuid4()),
+        healthRevision=1,
+        captureRunning=True,
+        surfaceAvailable=True,
+        engineAvailable=True,
+        intervalMs=500,
+        queueDepth=30,
+        droppedBatches=0,
+        http429s=0,
+        armed=False,
+        brokerPresses=0,
+        mainLoopDelayMs=0,
+        autoSyncEnabled=False,
+        autoSyncRuns=0,
+        autoSyncAppliedChanges=0,
+        mainRssBytes=123456,
+        slots=[
+            dict(
+                slotId=1,
+                enabled=True,
+                assetName="EUR/USD",
+                contextId=str(uuid4()),
+                state="READY",
+                observations=4,
+                dataUncertain=1,
+                dropped=0,
+                captureEligible=True,
+                lastCaptureAttemptAt=fixtures.EPOCH,
+                lastAttemptAt=fixtures.EPOCH,
+                lastParsedPriceAt=fixtures.EPOCH,
+                lastGoodPriceAt=fixtures.EPOCH,
+                attemptCount=4,
+                parsedCount=4,
+                goodCount=3,
+                uncertainCount=1,
+                secondSamples=3,
+                s5Samples=1,
+                m1Samples=3,
+            )
+        ],
+    )
+    assert DesktopTelemetry.model_validate(payload).slots[0].parsedCount == 4
+    payload["slots"][0]["cookies"] = "forbidden"
+    with pytest.raises(ValueError):
+        DesktopTelemetry.model_validate(payload)
+
+
+def test_operational_slot_totals_survive_context_changes_and_process_segments(
+    tmp_path: Path,
+) -> None:
+    r = recorder(tmp_path)
+    at = fixtures.EPOCH
+    value: dict[str, Any] = dict(
+        platform="iqoption",
+        instanceId=str(uuid4()),
+        healthRevision=1,
+        captureRunning=False,
+        surfaceAvailable=False,
+        engineAvailable=False,
+        intervalMs=500,
+        armed=False,
+        brokerPresses=0,
+        queueDepth=0,
+        mainLoopDelayMs=0,
+        slots=[
+            dict(
+                slotId=1,
+                enabled=True,
+                captureEligible=False,
+                dataUncertain=0,
+                attemptCount=10,
+                parsedCount=8,
+                goodCount=7,
+                uncertainCount=1,
+                contextId=str(uuid4()),
+            )
+        ],
+    )
+    r.telemetry(value, at)
+    value["slots"][0].update(contextId=str(uuid4()), attemptCount=11)
+    r.telemetry(value, at + 1000)
+    assert r.data["platforms"]["iqoption"]["slotCaptureTotals"]["1"]["attemptCount"] == 11
+    value["instanceId"] = str(uuid4())
+    value["slots"][0].update(attemptCount=2, parsedCount=1, goodCount=1, uncertainCount=0)
+    r.telemetry(value, at + 2000)
+    assert r.data["platforms"]["iqoption"]["slotCaptureTotals"]["1"]["attemptCount"] == 13
+    assert r.data["qualifiedCaptureDurationMs"] == 0

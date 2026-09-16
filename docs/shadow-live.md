@@ -35,7 +35,7 @@ The old Phase 13 binary cannot record Phase 14.
 4. Use existing calibration, asset synchronization and Start observation controls. Keep
    both surfaces available. Record a deliberate asset/context transition using normal
    operator controls. Do not change analytical thresholds if boards remain incomplete.
-5. Observe each broker continuously for at least **60 minutes**, preferably 2–4 hours.
+5. Accumulate at least **24 hours of qualified capture in total**, with at least **23 hours per broker**. Simultaneous broker intervals count once toward the total; process uptime and restart downtime do not count.
    CapitalBear primary is S5; IQ Option primary is M1. M5/M10 stay context only.
 
 ## Evidence and endpoints
@@ -153,9 +153,9 @@ does not increment observation or data-uncertainty counters, refresh the attempt
 toward live duration. Grid, calibration and unavailable-surface failures likewise remain outside
 live capture time. Failed OCR after a real capture attempt counts as observation work without
 inventing market samples.
-Receipt of desktop telemetry establishes engine reachability even when no market batch could be
-produced. Gaps longer than five seconds break continuity. Idle process lifetime never satisfies
-the 60-minute targets.
+Telemetry must report engine availability and eligible synchronized slots; receipt of a heartbeat alone is insufficient. Gaps longer than five seconds break continuity. `qualifiedCaptureDurationMs` is the union of credited platform intervals; each platform also reports `captureDurationMs`. Idle process lifetime never satisfies the 24-hour / 23-hour targets.
+
+The closed telemetry schema includes per-slot attempts, parsed/GOOD/UNCERTAIN counts, latest attempt/parse/GOOD times, and 1s/S5/M1 samples. Operational snapshots enter the bounded recorder every five minutes, including main-process RSS and Auto Sync counters. Keep Auto Sync off for the first 30–60 minutes. Applied automatic changes require review against the actual visible instruments; they are never automatically declared expected. The market queue is bounded at 180 observations, transmitted in batches of at most 18. Crossing the batch size is not unbounded growth; exceeding the queue capacity is a hard failure. Detailed event overflow is also a hard failure.
 Broker-press and armed observations are sticky failure signals. The execution observer can
 miss activity during telemetry gaps, so independent operator verification is required.
 
@@ -165,3 +165,7 @@ acceptance notes. Never commit the browser profile, screenshots, secrets, or a w
 The initial committed artifact explicitly records **LIVE ACCEPTANCE PENDING**; synthetic test
 fixtures are never substituted for market evidence. Do not mark Phase 14 closed until the
 actual sustained session, restart, protected diff review, and normal GitHub CI all pass.
+
+## Auto Sync review during the soak
+
+The recorder counts Auto Sync scans and applied slot changes separately from manual Sync. When automatic changes occur, inspect the visible instruments and recorded context transitions before submitting `POST /api/shadow-live/verify-auto-sync` with `platform`, `reviewedAppliedChanges` (the current recorded count), and `unexpectedAutoSyncChanges` (the actually observed number). The attestation is labeled `OPERATOR_OBSERVATION`. An unreviewed applied change keeps acceptance pending, a later change invalidates the earlier review, and any unexpected change fails acceptance. Never attest zero without checking.

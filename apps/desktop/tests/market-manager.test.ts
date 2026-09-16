@@ -94,4 +94,5 @@ it('returns an explicit failure per enabled slot when the frame cannot be captur
   manager.configure(config('capitalbear'))
   const s = await manager.probe('capitalbear')
   expect(s.slots.every(v => v.observation === null && v.diagnostics?.message === 'Surface unavailable' && v.attemptCount === 1)).toBe(true)
+  expect(manager.operationalState()[0]!.slots.every(v => !v.captureEligible && v.lastCaptureAttemptAt === null)).toBe(true)
 })
