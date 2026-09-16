@@ -123,6 +123,7 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
       <div className="toolbar"><h1>{details.name}</h1><EngineStatus health={engineHealth} />
         <span>Session: {session?.state ?? 'STARTING'} · Load: {session?.loadState ?? 'idle'}</span>
         <button onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'reload', platform }).catch(() => setActionError('Reload failed'))}>Reload Platform</button>
+        <button disabled={busy || mode !== 'browser'} onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'closePortfolio', platform }).then(() => setActionError('')).catch(() => setActionError('Close portfolio failed'))}>Close Portfolio Panel</button>
         <button disabled={!data || busy || mode !== 'browser'} onClick={calibrate}>Calibrate Chart Area</button>
         <button disabled={!data || busy || mode !== 'browser'} onClick={() => setMode('assets')}>Asset Setup</button>
         <button disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void syncOnce()}>Sync Assets</button>
@@ -138,7 +139,7 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
         <span>Enabled {data?.configuration.slots.filter(s => s.enabled).length ?? 0} · Healthy {market?.slots.filter(s => s.state === 'READY').length ?? 0} · Uncertain {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0} · Stale {market?.slots.filter(s => s.state === 'STALE').length ?? 0} · {market?.captureRate.toFixed(1) ?? 0} obs/s · Queue {market?.queueDepth ?? 0} · Engine {market?.engineAvailable ? 'receiving' : 'waiting'}</span>
       </div>
       <p>Login manually in the platform. Authentication remains UNKNOWN unless visible UI evidence can prove it.</p>
-      {sync?.syncStatus === 'SCANNING' && <p role="status">Asset sync: Scanning tabs…</p>}
+      {sync?.syncStatus === 'SCANNING' && <p role="status">Asset sync: Scanning charts…</p>}
       {sync?.syncFresh && sync.detection && <p role="status">Asset sync: Detected {sync.detection.slots.filter(s => s.state === 'DETECTED').length} · Uncertain {sync.detection.slots.filter(s => s.state === 'UNCERTAIN').length} · Not found {sync.detection.slots.filter(s => s.state === 'NOT_FOUND').length} · Applied {sync.applied} · Manual slots preserved {sync.manualPreserved}{sync.lastSuccessfulSyncAt ? ` (at ${new Date(sync.lastSuccessfulSyncAt).toLocaleTimeString()})` : ''}</p>}
       {sync && !sync.syncFresh && (sync.syncStatus === 'FAILED' || sync.error) && <p role="alert" className="error-banner">SYNC FAILED — configured assets below are from last successful sync{sync.error ? `: ${sync.error}` : ''}</p>}
       {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
@@ -159,9 +160,9 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
         const candidateName = detected?.rawOCR?.[0] || detected?.assetName
         return <span key={i} data-slot-id={i + 1}>
           {isFresh && detected ? (
-            <>{i + 1} · {detected.state === 'DETECTED' ? (detected.displayName || detected.assetName) : detected.state === 'NOT_FOUND' ? 'Empty tab' : candidateName ? `Uncertain (${candidateName})` : 'Uncertain tab'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : detected.state === 'DETECTED' ? 'DETECTED' : 'NOT FOUND'} {detected.source} {Math.round(detected.confidence * 100)}%{slot?.assetName && detected.assetName !== slot.assetName ? <><br /><small>Configured: {configuredName}</small></> : null}</>
+            <>{i + 1} · {detected.state === 'DETECTED' ? (detected.displayName || detected.assetName) : detected.state === 'NOT_FOUND' ? 'Empty chart' : candidateName ? `Uncertain (${candidateName})` : 'Uncertain chart'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : detected.state === 'DETECTED' ? 'DETECTED' : 'NOT FOUND'} {detected.source} {Math.round(detected.confidence * 100)}%{slot?.assetName && detected.assetName !== slot.assetName ? <><br /><small>Configured: {configuredName}</small></> : null}</>
           ) : (
-            <>{i + 1} · Configured: {configuredName}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br /><span style={{ color: '#ffaa00' }}>Current tab: {sync?.syncStatus === 'SCANNING' ? 'SCANNING…' : 'UNVERIFIED (SYNC STALE)'}</span></>
+            <>{i + 1} · Configured: {configuredName}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br /><span style={{ color: '#ffaa00' }}>Current live identity: {sync?.syncStatus === 'SCANNING' ? 'SCANNING…' : 'UNVERIFIED'}</span>{sync?.lastSuccessfulSyncAt ? <><br /><small>Last successful sync: {new Date(sync.lastSuccessfulSyncAt).toLocaleTimeString()}</small></> : null}</>
           )}
           <br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br /><PriceReading observation={observed?.observation ?? null} />
           {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
@@ -174,9 +175,9 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
             {opinion?.vetoes.length ? ` · veto ${opinion.vetoes.join(', ')}` : ''}
             {strategy?.available === false ? ' (engine unreachable)' : ''} · v{strategy?.strategyVersion ?? '—'}
             <br />Votes: {(opinion?.votes ?? []).map(voteLabel).join(' · ') || 'none'}
-            <br />Stage: {observed?.diagnostics?.stage ?? 'TAB'} · Canvas cell {observed?.diagnostics?.canvasSlotId ?? '—'}
+            <br />Stage: {observed?.diagnostics?.stage ?? 'CHART'} · Canvas cell {observed?.diagnostics?.canvasSlotId ?? '—'}
             <br />{observed?.diagnostics?.message}
-            <br />Tab {detected?.tabIndex ?? i + 1}: {JSON.stringify(detected?.pixelBounds)}
+            <br />Chart cell {detected?.tabIndex ?? i + 1}: {JSON.stringify(detected?.pixelBounds)}
             <br />OCR: {detected?.rawOCR?.join(' | ')}
             <br />Chart: {JSON.stringify(observed?.pixelBounds)}
             <br />Price ROI: {JSON.stringify(observed?.diagnostics?.pricePixelBounds)}

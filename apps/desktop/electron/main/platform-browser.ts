@@ -1,9 +1,9 @@
 import { CapitalBearAssetDetector, IQOptionAssetDetector, emptyAsset, normalizeAsset } from './asset-detector'
-import { calibrationToChartGrid, calibrationZoomMatches, isAutoCalibration, normalizedToPixel, type AssetDetectionResult, type CalibrationProfile, type CalibrationSlot } from '@quant-screen-trader/shared-types'
+import { calibrationToChartGrid, calibrationZoomMatches, isAutoCalibration, normalizedToPixel, type AssetDetectionResult, type CalibrationProfile, type CalibrationSlot, type DetectedAsset } from '@quant-screen-trader/shared-types'
 import { canvasPriceGeometry, chartGridResolver } from './chart-grid'
 import { normalizeBitmap, type NormalizedImage, type ObservationContext, type ParsedFields } from './market-providers'
 import { WebContentsView, BrowserWindow, type WebContents } from 'electron'
-import { type BrowserSnapshot, type Platform, type PlatformCommand } from '@quant-screen-trader/shared-types'
+import { type BrowserSnapshot, type Platform, type PlatformCommand, PLATFORM_DETAILS } from '@quant-screen-trader/shared-types'
 import { allowedLoginNavigation, allowedNavigation, getPlatformConfig, safeOrigin } from '../platforms/config'
 
 interface Entry {
@@ -14,6 +14,10 @@ interface Entry {
   visible: boolean
   revision: number
   preparedRevision: number
+  portfolioCleanupDocumentId: number
+  portfolioCleanupDone: boolean
+  portfolioCleanupPromise: Promise<'CLOSED' | 'ALREADY_CLOSED' | 'NOT_FOUND' | 'FAILED'> | null
+  portfolioCleanupStatus?: 'CLOSED' | 'ALREADY_CLOSED' | 'NOT_FOUND' | 'FAILED' | undefined
 }
 function imageActivity(image: NormalizedImage, top: number, bottom: number): number {
   const x0 = Math.floor(image.width * .06), x1 = Math.floor(image.width * .98)
@@ -46,7 +50,7 @@ interface CapturedTab extends ParsedFields {
  * tolerance rather than exactly — a broker reflows its tab bar by a pixel or two after a resize,
  * and demanding byte-identical geometry across a whole nine-tab scan rejected every real sync.
  */
-function sameTabs(a: PixelBounds[] | undefined, b: PixelBounds[] | undefined, width: number): { match: boolean; reason?: string; firstCount: number; secondCount: number; xShift?: number; widthShift?: number; tolerance: number } {
+export function sameTabs(a: PixelBounds[] | undefined, b: PixelBounds[] | undefined, width: number): { match: boolean; reason?: string; firstCount: number; secondCount: number; xShift?: number; widthShift?: number; tolerance: number } {
   const tolerance = Math.max(2, width * .01)
   if (!a || !b || a.length !== b.length || !a.length) return { match: false, reason: 'COUNT', firstCount: a?.length ?? 0, secondCount: b?.length ?? 0, tolerance }
   let xShift = 0, widthShift = 0
@@ -79,7 +83,7 @@ function tabNameFingerprint(image: NormalizedImage, tab: PixelBounds): Uint8Arra
   }
   return result
 }
-function sameTabFingerprint(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+export function sameTabFingerprint(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
   if (!a || !b || a.length !== b.length || !a.length) return false
   let difference = 0, changed = 0
   for (let index = 0; index < a.length; index++) {
@@ -89,11 +93,54 @@ function sameTabFingerprint(a: Uint8Array | undefined, b: Uint8Array | undefined
   }
   return difference / a.length <= 12 && changed / a.length <= .1
 }
-// The title line a chart cell prints for itself, clear of its close button, instrument icon and
-// the instrument-type subtitle below it. This larger text is the authority for instrument names.
-function chartNameBounds(cell: PixelBounds): PixelBounds {
+export function chartNameBounds(cell: PixelBounds): PixelBounds {
   return { x: Math.floor(cell.x + cell.width * .12), y: Math.floor(cell.y + cell.height * .025),
     width: Math.max(1, Math.floor(cell.width * .5)), height: Math.max(1, Math.floor(cell.height * .085)) }
+}
+
+export function chartTitleFingerprint(image: NormalizedImage, titleBounds: PixelBounds): Uint8Array {
+  const columns = 24, rows = 8, result = new Uint8Array(columns * rows)
+  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
+    const left = Math.floor(titleBounds.x + column * titleBounds.width / columns)
+    const right = Math.max(left + 1, Math.floor(titleBounds.x + (column + 1) * titleBounds.width / columns))
+    const top = Math.floor(titleBounds.y + row * titleBounds.height / rows)
+    const bottom = Math.max(top + 1, Math.floor(titleBounds.y + (row + 1) * titleBounds.height / rows))
+    let total = 0, count = 0
+    for (let y = Math.max(0, top); y < Math.min(bottom, image.height); y++)
+      for (let x = Math.max(0, left); x < Math.min(right, image.width); x++) {
+        total += image.grayscale[y * image.width + x]!
+        count++
+      }
+    result[row * columns + column] = count ? Math.round(total / count) : 0
+  }
+  return result
+}
+
+export function sameChartTitleFingerprint(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
+  if (!a || !b || a.length !== b.length || !a.length) return false
+  let difference = 0, changed = 0
+  for (let index = 0; index < a.length; index++) {
+    const delta = Math.abs(a[index]! - b[index]!)
+    difference += delta
+    if (delta > 32) changed++
+  }
+  return difference / a.length <= 12 && changed / a.length <= .1
+}
+
+export interface IdentifiedChartSlot {
+  slotId: number
+  assetName: string
+  source: 'DOM' | 'OCR'
+  confidence: number
+  titleFingerprint: Uint8Array
+  gridRevision: number
+  pixelBounds?: PixelBounds
+  state?: DetectedAsset['state']
+  evidenceType?: DetectedAsset['evidenceType']
+  rawOCR?: string[]
+  rawOcrConfidence?: number
+  identityEvidenceConfidence?: number
+  ocrVotes?: number
 }
 /**
  * The legible part of a clipped tab label, e.g. "Australian D…" -> "Australian D". Read from the
@@ -274,7 +321,7 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
 
 export class PlatformBrowserManager {
   private readonly entries = new Map<Platform, Entry>()
-  private readonly identifiedTabs = new Map<Platform, CapturedTab[]>()
+  private readonly identifiedSlots = new Map<Platform, IdentifiedChartSlot[]>()
   private readonly assetScans = new Set<Platform>()
   private readonly preparations = new Map<Platform, Promise<void>>()
   constructor(private readonly createOverlay: (platform: Platform) => WebContentsView) {}
@@ -284,6 +331,7 @@ export class PlatformBrowserManager {
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
       navigateOnDragDrop: false, spellcheck: false } })
     const entry: Entry = { window, view, overlay: null, visible: false, revision: 0, preparedRevision: -1,
+      portfolioCleanupDocumentId: 0, portfolioCleanupDone: false, portfolioCleanupPromise: null,
       snapshot: { session: { platform, state: 'STARTING', loadState: 'idle', lastUpdatedAt: new Date().toISOString() },
         bounds: { x: 0, y: 180, width: 1, height: 1 }, zoomFactor: DEFAULT_PLATFORM_ZOOM_FACTOR, draft: null } }
     this.entries.set(platform, entry)
@@ -340,7 +388,7 @@ export class PlatformBrowserManager {
       if (errorCode) loginError = undefined
       entry.revision++
       entry.snapshot.grid = null
-      this.identifiedTabs.delete(platform)
+      this.identifiedSlots.delete(platform)
       const origin = safeOrigin(contents.getURL())
       entry.snapshot.session = { platform, state: status, loadState, lastUpdatedAt: new Date().toISOString(),
         ...(origin ? { currentUrl: origin } : {}),
@@ -348,13 +396,27 @@ export class PlatformBrowserManager {
         ...(loginError ? { ...loginError, state: 'ERROR' } : {}) }
     }
     contents.on('did-start-navigation', (_event, url, inPlace, mainFrame) => {
-      if (mainFrame && !inPlace && allowedLoginNavigation(config, url)) {
-        loginError = undefined
-        state('LOADING', 'loading')
+      if (mainFrame && !inPlace) {
+        entry.portfolioCleanupDocumentId++
+        entry.portfolioCleanupDone = false
+        entry.portfolioCleanupPromise = null
+        entry.portfolioCleanupStatus = undefined
+        if (allowedLoginNavigation(config, url)) {
+          loginError = undefined
+          state('LOADING', 'loading')
+        }
       }
     })
-    contents.on('dom-ready', () => { contents.setZoomFactor(entry.snapshot.zoomFactor); state('UNKNOWN', 'loaded') })
-    contents.on('did-finish-load', () => { contents.setZoomFactor(entry.snapshot.zoomFactor); state('UNKNOWN', 'loaded') })
+    contents.on('dom-ready', () => {
+      contents.setZoomFactor(entry.snapshot.zoomFactor)
+      state('UNKNOWN', 'loaded')
+      void this.closePortfolioPanel(platform).catch(() => {})
+    })
+    contents.on('did-finish-load', () => {
+      contents.setZoomFactor(entry.snapshot.zoomFactor)
+      state('UNKNOWN', 'loaded')
+      void this.closePortfolioPanel(platform).catch(() => {})
+    })
     contents.on('did-fail-load', (_event, code, _description, _url, mainFrame) => {
       if (mainFrame && code !== -3) state(code === -106 ? 'DISCONNECTED' : 'ERROR', 'failed', String(code))
     })
@@ -369,6 +431,199 @@ export class PlatformBrowserManager {
     })
     void contents.loadURL(config.startUrl).catch(() => { /* did-fail-load reports a sanitized error. */ })
   }
+  async closePortfolioPanel(platform: Platform): Promise<'CLOSED' | 'ALREADY_CLOSED' | 'NOT_FOUND' | 'FAILED'> {
+    const entry = this.entries.get(platform)
+    if (!entry || entry.view.webContents.isDestroyed()) return 'FAILED'
+    if (entry.portfolioCleanupPromise) return entry.portfolioCleanupPromise
+    if (entry.portfolioCleanupDone) return entry.portfolioCleanupStatus ?? 'ALREADY_CLOSED'
+
+    const docId = entry.portfolioCleanupDocumentId
+    const cleanup = (async (): Promise<'CLOSED' | 'ALREADY_CLOSED' | 'NOT_FOUND' | 'FAILED'> => {
+      const contents = entry.view.webContents
+      const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+      for (let attempt = 0; attempt < 15; attempt++) {
+        try {
+          if (contents.isDestroyed() || entry.portfolioCleanupDocumentId !== docId) return 'FAILED'
+
+          // 1. Try DOM elements first (supports standard DOM buttons/tabs and unit test mocks)
+          const domResult = await contents.executeJavaScript(`(() => {
+            const isVisible = (e) => {
+              if (!e) return false;
+              const b = e.getBoundingClientRect(), s = getComputedStyle(e);
+              return b.width > 0 && b.height > 0 && s.display !== 'none' && s.visibility === 'visible' &&
+                Number(s.opacity) > 0 && !e.closest('[hidden]');
+            };
+            const candidates = [...document.querySelectorAll('button, [role="button"], [role="tab"], div, span, a')]
+              .filter(e => {
+                if (e.closest('form,input,textarea,[contenteditable]')) return false;
+                const t = (e.innerText || '').trim();
+                const aria = (e.getAttribute('aria-label') || '').trim();
+                const title = (e.getAttribute('title') || '').trim();
+                const matches = (s) => s === 'พอร์ตทั้งหมด' || s.toLowerCase() === 'total portfolio' ||
+                  s.startsWith('พอร์ตทั้งหมด') || s.toLowerCase().startsWith('total portfolio');
+                return (matches(t) || matches(aria) || matches(title)) && isVisible(e);
+              });
+            if (!candidates.length) return { status: 'NOT_FOUND' };
+            const toggle = candidates.find(e => e.matches('button, [role="button"], [role="tab"]') || e.getAttribute('aria-expanded') !== null) ||
+              candidates.sort((a, b) => (a.innerText?.length || 0) - (b.innerText?.length || 0))[0];
+            if (!toggle) return { status: 'NOT_FOUND' };
+
+            const ariaExpanded = toggle.getAttribute('aria-expanded') ?? toggle.closest('[aria-expanded]')?.getAttribute('aria-expanded');
+            const activeClass = (toggle.className + ' ' + (toggle.parentElement?.className || '')).toLowerCase();
+            const hasActiveIndicator = activeClass.includes('active') || activeClass.includes('opened') || activeClass.includes('expanded') || activeClass.includes('selected');
+            const portfolioPanel = document.querySelector('[class*="portfolio"], [data-testid*="portfolio"]');
+            const panelVisible = portfolioPanel && isVisible(portfolioPanel) && portfolioPanel.getBoundingClientRect().height > 80;
+
+            const isOpen = ariaExpanded === 'true' || (ariaExpanded !== 'false' && (hasActiveIndicator || panelVisible));
+            if (!isOpen) return { status: 'ALREADY_CLOSED' };
+
+            toggle.click();
+            return { status: 'CLOSED' };
+          })()`) as { status?: 'CLOSED' | 'ALREADY_CLOSED' | 'NOT_FOUND' } | null
+
+          if (domResult?.status === 'CLOSED') {
+            await wait(350)
+            if (entry.snapshot.grid?.source === 'AUTO') entry.snapshot.grid = null
+            entry.preparedRevision = -1
+            entry.revision++
+            entry.portfolioCleanupDone = true
+            entry.portfolioCleanupStatus = 'CLOSED'
+            console.log(`[${platform}] PORTFOLIO_CLEANUP: CLOSED`)
+            return 'CLOSED'
+          }
+          if (domResult?.status === 'ALREADY_CLOSED') {
+            entry.portfolioCleanupDone = true
+            entry.portfolioCleanupStatus = 'ALREADY_CLOSED'
+            console.log(`[${platform}] PORTFOLIO_CLEANUP: ALREADY_CLOSED`)
+            return 'ALREADY_CLOSED'
+          }
+
+          // 2. Canvas inspection & dispatch fallback (WebGL traderoom applications)
+          const isOpen = await this.isPortfolioPanelOpen(platform)
+          if (!isOpen) {
+            entry.portfolioCleanupDone = true
+            entry.portfolioCleanupStatus = 'ALREADY_CLOSED'
+            console.log(`[${platform}] PORTFOLIO_CLEANUP: ALREADY_CLOSED (canvas)`)
+            return 'ALREADY_CLOSED'
+          }
+
+          console.log(`[${platform}] Portfolio panel detected OPEN, dispatching close click to canvas...`)
+          // Click drawer tab header line (at x: 60, y: height * 0.755)
+          const clicked = await contents.executeJavaScript(`(() => {
+            const canvas = document.getElementById('glcanvas');
+            if (!canvas) return false;
+            const rect = canvas.getBoundingClientRect();
+            function clickCanvas(clientX, clientY) {
+              const opts = { clientX, clientY, screenX: clientX, screenY: clientY, bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
+              canvas.dispatchEvent(new MouseEvent('mousemove', { ...opts, buttons: 0 }));
+              canvas.dispatchEvent(new MouseEvent('mousedown', opts));
+              canvas.dispatchEvent(new MouseEvent('mouseup', { ...opts, buttons: 0 }));
+              canvas.dispatchEvent(new MouseEvent('click', { ...opts, buttons: 0 }));
+            }
+            clickCanvas(60, Math.round(rect.height * 0.755));
+            return true;
+          })()`) as boolean
+
+          if (clicked) {
+            await wait(400)
+            const stillOpen = await this.isPortfolioPanelOpen(platform)
+            if (!stillOpen) {
+              if (entry.snapshot.grid?.source === 'AUTO') entry.snapshot.grid = null
+              entry.preparedRevision = -1
+              entry.revision++
+              entry.portfolioCleanupDone = true
+              entry.portfolioCleanupStatus = 'CLOSED'
+              console.log(`[${platform}] PORTFOLIO_CLEANUP: CLOSED (via drawer tab)`)
+              return 'CLOSED'
+            }
+
+            // If still open, try clicking left sidebar icon at (22, 75)
+            await contents.executeJavaScript(`(() => {
+              const canvas = document.getElementById('glcanvas');
+              if (!canvas) return;
+              function clickCanvas(clientX, clientY) {
+                const opts = { clientX, clientY, screenX: clientX, screenY: clientY, bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
+                canvas.dispatchEvent(new MouseEvent('mousemove', { ...opts, buttons: 0 }));
+                canvas.dispatchEvent(new MouseEvent('mousedown', opts));
+                canvas.dispatchEvent(new MouseEvent('mouseup', { ...opts, buttons: 0 }));
+                canvas.dispatchEvent(new MouseEvent('click', { ...opts, buttons: 0 }));
+              }
+              clickCanvas(22, 75);
+            })()`)
+            await wait(400)
+            const openAfterSidebar = await this.isPortfolioPanelOpen(platform)
+            if (!openAfterSidebar) {
+              if (entry.snapshot.grid?.source === 'AUTO') entry.snapshot.grid = null
+              entry.preparedRevision = -1
+              entry.revision++
+              entry.portfolioCleanupDone = true
+              entry.portfolioCleanupStatus = 'CLOSED'
+              console.log(`[${platform}] PORTFOLIO_CLEANUP: CLOSED (via sidebar icon)`)
+              return 'CLOSED'
+            }
+          }
+        } catch {
+          // Page may be navigating or busy rendering
+        }
+        await wait(280)
+      }
+      entry.portfolioCleanupDone = true
+      entry.portfolioCleanupStatus = 'NOT_FOUND'
+      console.log(`[${platform}] PORTFOLIO_CLEANUP: NOT_FOUND`)
+      return 'NOT_FOUND'
+    })()
+
+    entry.portfolioCleanupPromise = cleanup
+    return cleanup.finally(() => {
+      if (entry.portfolioCleanupPromise === cleanup) entry.portfolioCleanupPromise = null
+    })
+  }
+  async isPortfolioPanelOpen(platform: Platform): Promise<boolean> {
+    const entry = this.entries.get(platform)
+    if (!entry || entry.view.webContents.isDestroyed()) return false
+    try {
+      // Check DOM first
+      const domOpen = await entry.view.webContents.executeJavaScript(`(() => {
+        const isVisible = (e) => {
+          if (!e) return false;
+          const b = e.getBoundingClientRect(), s = getComputedStyle(e);
+          return b.width > 0 && b.height > 0 && s.display !== 'none' && s.visibility === 'visible' &&
+            Number(s.opacity) > 0 && !e.closest('[hidden]');
+        };
+        const portfolioPanel = document.querySelector('[class*="portfolio"], [data-testid*="portfolio"]');
+        return Boolean(portfolioPanel && isVisible(portfolioPanel) && portfolioPanel.getBoundingClientRect().height > 80);
+      })()`) as boolean
+      if (domOpen) return true
+
+      // Check canvas surface pixels (for WebGL traderoom)
+      const native = await entry.view.webContents.capturePage()
+      if (native.isEmpty()) return false
+      const size = native.getSize()
+      const bmp = native.toBitmap()
+
+      // Sample lower middle band: y: 0.80..0.88, x: 0.30..0.70
+      const startY = Math.round(size.height * 0.80), endY = Math.round(size.height * 0.88)
+      const startX = Math.round(size.width * 0.30), endX = Math.round(size.width * 0.70)
+      let count = 0, highBrightnessCount = 0, coloredPixels = 0
+
+      for (let y = startY; y < endY; y += 2) {
+        for (let x = startX; x < endX; x += 2) {
+          const idx = (y * size.width + x) * 4
+          const b = bmp[idx]!, g = bmp[idx + 1]!, r = bmp[idx + 2]!
+          count++
+          if ((r + g + b) / 3 > 70) highBrightnessCount++
+          if (Math.abs(r - g) > 25) coloredPixels++
+        }
+      }
+      if (count === 0) return false
+      const brightRatio = highBrightnessCount / count
+      const colorRatio = coloredPixels / count
+      return colorRatio < 0.05 && brightRatio < 0.04
+    } catch {
+      return false
+    }
+  }
   private prepareChartGrid(platform: Platform): Promise<void> {
     const active = this.preparations.get(platform)
     if (active) return active
@@ -379,6 +634,11 @@ export class PlatformBrowserManager {
   private async ensureChartGrid(platform: Platform): Promise<void> {
     const entry = this.entries.get(platform), surface = this.observationSurface(platform)
     if (!entry || !surface.available || surface.paused) throw new Error('Chart grid preparation unavailable')
+    const status = await this.closePortfolioPanel(platform)
+    if (status === 'NOT_FOUND' || status === 'FAILED') {
+      const isOpen = await this.isPortfolioPanelOpen(platform)
+      if (isOpen) throw new Error(`${PLATFORM_DETAILS[platform].name} portfolio panel is still open. Close it or retry Reload Platform.`)
+    }
     if (entry.preparedRevision === entry.revision) return
     const capture = async (): Promise<NormalizedImage> => {
       const native = await entry.view.webContents.capturePage()
@@ -404,7 +664,7 @@ export class PlatformBrowserManager {
       if (Math.abs(actual - entry.snapshot.zoomFactor) > .001) {
         entry.view.webContents.setZoomFactor(entry.snapshot.zoomFactor)
         entry.snapshot.grid = null; entry.revision++
-        this.identifiedTabs.delete(platform)
+        this.identifiedSlots.delete(platform)
       }
     }
     return { available: !!entry && entry.visible && !entry.view.webContents.isDestroyed() &&
@@ -416,6 +676,9 @@ export class PlatformBrowserManager {
   async resolveGrid(platform: Platform): Promise<BrowserSnapshot> {
     const entry = this.entries.get(platform), surface = this.observationSurface(platform)
     if (!entry || !surface.available || surface.paused) throw new Error('CANVAS_GEOMETRY_UNCERTAIN: show the broker grid first.')
+    await this.closePortfolioPanel(platform)
+    const isOpen = await this.isPortfolioPanelOpen(platform)
+    if (isOpen) throw new Error(`${PLATFORM_DETAILS[platform].name} portfolio panel is still open. Close it or retry Reload Platform.`)
     entry.snapshot.grid = null
     const signature = JSON.stringify(this.observationSurface(platform))
     const capture = async () => {
@@ -425,7 +688,7 @@ export class PlatformBrowserManager {
     }
     const first = await capture(), second = await capture()
     if (JSON.stringify(this.observationSurface(platform)) !== signature ||
-      Object.keys(first.bounds).some(key => Math.abs(first.bounds[key as keyof typeof first.bounds] - second.bounds[key as keyof typeof first.bounds]) > .002))
+      Object.keys(first.bounds).some(key => Math.abs(first.bounds[key as keyof typeof first.bounds] - second.bounds[key as keyof typeof second.bounds]) > .002))
       throw new Error('CANVAS_GEOMETRY_UNCERTAIN: grid changed during capture. Retry Calibrate Chart Area.')
     entry.snapshot.grid = second
     return entry.snapshot
@@ -445,140 +708,206 @@ export class PlatformBrowserManager {
     const evaluate = (script: string): Promise<unknown> => entry.view.webContents.executeJavaScript(script)
     return (platform === 'capitalbear' ? new CapitalBearAssetDetector(evaluate) : new IQOptionAssetDetector(evaluate)).detectAssets(calibration)
   }
-  chartSlot(platform: Platform, tabIndex: number, assetName: string): number {
-    const tabs = this.identifiedTabs.get(platform), tab = tabs?.[tabIndex - 1]
-    if (!tab || tab.confidence < .95 || normalizeAsset(tab.asset ?? '') !== normalizeAsset(assetName))
-      throw new Error('TAB: identity is uncertain. Sync Assets before observing this slot.')
-    return canvasSlotForTab(platform, tabIndex, tabs!.filter(t => t.present).length)
+  chartSlot(platform: Platform, slotId: number, assetName: string): number {
+    const slots = this.identifiedSlots.get(platform)
+    const slot = slots?.find(s => s.slotId === slotId)
+    if (!slot || slot.confidence < .95 || normalizeAsset(slot.assetName) !== normalizeAsset(assetName))
+      throw new Error('CHART_SLOT: identity is uncertain. Sync Assets before observing this slot.')
+    return slotId
   }
   async captureAssetTabs(platform: Platform, recognize: (image: NormalizedImage) => Promise<ParsedFields>): Promise<AssetDetectionResult> {
-    this.identifiedTabs.delete(platform)
+    this.identifiedSlots.delete(platform)
     await this.prepareChartGrid(platform)
     const surface = this.observationSurface(platform)
     const entry = this.entries.get(platform)
     if (!entry || !surface.available || surface.paused || !surface.gridReady)
       throw new Error('Chart grid preparation failed: verified chart geometry required before Sync Assets.')
-    const start = Date.now(), width = surface.bounds.width
+    const start = Date.now()
     this.assetScans.add(platform)
 
-    let finalTabs: (PixelBounds[] & { branch?: 'UNDERLINE' | 'FALLBACK' }) | null = null
-    let finalImage: Electron.NativeImage | null = null
+    const identified: IdentifiedChartSlot[] = []
+    const detected: DetectedAsset[] = []
     try {
-      const capture = async (): Promise<{ image: Electron.NativeImage; normalized: NormalizedImage; tabs: PixelBounds[] & { branch?: 'UNDERLINE' | 'FALLBACK' } }> => {
-        const image = await entry.view.webContents.capturePage()
-        if (image.isEmpty()) throw new Error('Empty asset tab capture')
-        const size = image.getSize()
-        const normalized = normalizeBitmap(image.toBitmap(), size.width, size.height, undefined, false)
+      // 1. Single captured frame for all 9 chart-cell identities
+      const finalImage = await entry.view.webContents.capturePage()
+      if (finalImage.isEmpty()) throw new Error('Empty asset capture')
+      const size = finalImage.getSize()
+      const normalized = normalizeBitmap(finalImage.toBitmap(), size.width, size.height, undefined, false)
+
+      const grid = entry.snapshot.grid?.source === 'AUTO'
+        ? chartGridResolver(platform).resolve(normalized)
+        : entry.snapshot.grid!
+      entry.snapshot.grid = grid
+
+      // 2. Optional top-tab detection for diagnostic cross-check only
+      try {
         const tabs = findAssetTabs(normalized, platform)
-        return { image, normalized, tabs }
-      }
-      
-      const captures = [await capture(), await capture(), await capture()]
-      
-      const m01 = sameTabs(captures[0]!.tabs, captures[1]!.tabs, width)
-      const m02 = sameTabs(captures[0]!.tabs, captures[2]!.tabs, width)
-      const m12 = sameTabs(captures[1]!.tabs, captures[2]!.tabs, width)
-
-      if (m01.match) { finalTabs = captures[1]!.tabs; finalImage = captures[1]!.image }
-      else if (m12.match) { finalTabs = captures[2]!.tabs; finalImage = captures[2]!.image }
-      else if (m02.match) { finalTabs = captures[2]!.tabs; finalImage = captures[2]!.image }
-      
-      if (!finalTabs || !finalImage) {
-        const counts = captures.map(c => c.tabs.length)
-        const details = { rejection: 'TAB_GEOMETRY_UNCERTAIN', counts, match01: m01, match12: m12, match02: m02 }
-        console.log('[SyncAssets]', platform, JSON.stringify(details))
-        throw new Error(`TAB_GEOMETRY_UNCERTAIN: tab bar was not isolated consistently (counts: ${counts.join(', ')})`)
+        console.log(`[SyncAssets] ${platform} optional tab scan: found ${tabs.length} tabs`)
+      } catch (err) {
+        console.log(`[SyncAssets] ${platform} optional tab scan:`, err instanceof Error ? err.message : String(err))
       }
 
-      if (finalTabs.length < 3)
-        throw new Error('TAB_GEOMETRY_UNCERTAIN: at least three opened chart tabs are required')
-      
-      console.log('[SyncAssets]', platform, JSON.stringify({ branch: finalTabs.branch, count: finalTabs.length, tabs: finalTabs }))
-      
-      const selected = captures.find(c => c.tabs === finalTabs)!
-      const reference = captures.find(c => c !== selected && sameTabs(c.tabs, finalTabs!, width).match)!
-      if (entry.snapshot.grid?.source === 'AUTO') {
-        const grid = chartGridResolver(platform).resolve(selected.normalized)
-        const other = chartGridResolver(platform).resolve(reference.normalized)
-        if (Object.keys(grid.bounds).some(key => Math.abs(grid.bounds[key as keyof typeof grid.bounds] - other.bounds[key as keyof typeof other.bounds]) > .002))
-          throw new Error('TAB_GEOMETRY_UNCERTAIN: chart grid changed during asset scan')
-        entry.snapshot.grid = grid
+      // 3. Priority 1: Visible DOM detector
+      let domResult: AssetDetectionResult | null = null
+      try {
+        const calibration: CalibrationSlot[] = grid.slots.map(s => ({
+          id: s.slotId,
+          bounds: s.chartBounds
+        }))
+        domResult = await this.detectAssets(platform, calibration)
+      } catch (err) {
+        console.log(`[SyncAssets] ${platform} DOM detection:`, err instanceof Error ? err.message : String(err))
       }
-      const tabs: CapturedTab[] = []
+
+      // 4. Evaluate each chart cell
       for (let slotId = 1; slotId <= 9; slotId++) {
-        const result = await this.captureAssetLabel(slotId, finalTabs, finalImage, recognize)
-        result.geometryConsensus = true
-        result.fingerprintStable = !result.present || sameTabFingerprint(result.nameFingerprint,
-          reference.tabs[slotId - 1] ? tabNameFingerprint(reference.normalized, reference.tabs[slotId - 1]!) : undefined)
-        if (!result.fingerprintStable) { delete result.asset; result.confidence = 0 }
-        result.identityEvidenceConfidence = result.confidence
-        tabs.push(result)
+        const cell = grid.slots.find(s => s.slotId === slotId)
+        if (!cell) {
+          detected.push(emptyAsset(platform, slotId, 'NOT_FOUND'))
+          continue
+        }
+
+        const cellPixel = normalizedToPixel(cell.chartBounds, size.width, size.height)
+        const titleBounds = chartNameBounds(cellPixel)
+
+        const domSlot = domResult?.slots.find(s => s.slotId === slotId)
+        const domName = domSlot?.state === 'DETECTED' && domSlot.assetName ? normalizeAsset(domSlot.assetName) : null
+
+        if (domName && (domSlot?.confidence ?? 0) >= .95) {
+          const fingerprint = chartTitleFingerprint(normalized, titleBounds)
+          identified.push({
+            slotId,
+            assetName: domName,
+            source: 'DOM',
+            confidence: domSlot!.confidence,
+            titleFingerprint: fingerprint,
+            gridRevision: entry.revision,
+            pixelBounds: titleBounds,
+            state: 'DETECTED',
+            evidenceType: domSlot!.evidenceType ?? 'CHART_LABEL'
+          })
+          detected.push({
+            ...emptyAsset(platform, slotId),
+            state: 'DETECTED',
+            assetName: domName,
+            displayName: domSlot!.displayName ?? domName,
+            canonicalAssetId: `${platform}:${domName}`,
+            source: 'DOM',
+            confidence: domSlot!.confidence,
+            evidenceType: domSlot!.evidenceType ?? 'CHART_LABEL',
+            pixelBounds: titleBounds,
+            identityEvidenceConfidence: domSlot!.confidence,
+            fingerprintStable: true,
+            geometryConsensus: true,
+            tabIndex: slotId
+          })
+          continue
+        }
+
+        // Priority 2: Visual Chart-Title Fallback inside chart cell
+        if (titleBounds.width < 8 || titleBounds.height < 4 ||
+          titleBounds.x + titleBounds.width > size.width || titleBounds.y + titleBounds.height > size.height) {
+          detected.push(emptyAsset(platform, slotId, 'UNCERTAIN'))
+          continue
+        }
+
+        const cropped = finalImage.crop(titleBounds).resize({ width: titleBounds.width * 3, height: titleBounds.height * 3 })
+        const croppedSize = cropped.getSize()
+        const bitmap = cropped.toBitmap()
+        const variants: ParsedFields[] = []
+        for (const threshold of [undefined, 125, 145, 165]) {
+          variants.push(await recognize({
+            ...normalizeBitmap(bitmap, croppedSize.width, croppedSize.height, threshold, true),
+            purpose: 'ASSET'
+          }))
+        }
+
+        const votes = new Map<string, number>()
+        for (const variant of variants) {
+          const text = variant.rawText ?? variant.asset ?? ''
+          const candidateSet = new Set<string>()
+          for (const line of text.split(/\r?\n/)) {
+            const cleaned = chartTitleText(line)
+            const asset = normalizeAsset(cleaned)
+            if (asset) candidateSet.add(asset)
+          }
+          if (candidateSet.size === 1) {
+            for (const asset of candidateSet) {
+              votes.set(asset, (votes.get(asset) ?? 0) + 1)
+            }
+          }
+        }
+
+        const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1])
+        const winner = ranked[0]
+        const agreed = winner && winner[1] >= 2 && winner[1] > (ranked[1]?.[1] ?? 0)
+
+        if (agreed && winner) {
+          const assetName = winner[0]
+          const fingerprint = chartTitleFingerprint(normalized, titleBounds)
+          const rawOCR = variants.map(v => v.rawText ?? v.asset ?? '')
+          const rawOcrConfidence = variants.reduce((n, v) => n + v.confidence, 0) / variants.length
+          identified.push({
+            slotId,
+            assetName,
+            source: 'OCR',
+            confidence: .96,
+            titleFingerprint: fingerprint,
+            gridRevision: entry.revision,
+            pixelBounds: titleBounds,
+            state: 'DETECTED',
+            evidenceType: 'CALIBRATED_OCR',
+            rawOCR,
+            rawOcrConfidence,
+            ocrVotes: winner[1]
+          })
+          detected.push({
+            ...emptyAsset(platform, slotId),
+            state: 'DETECTED',
+            assetName,
+            displayName: assetName,
+            canonicalAssetId: `${platform}:${assetName}`,
+            source: 'OCR',
+            confidence: .96,
+            evidenceType: 'CALIBRATED_OCR',
+            pixelBounds: titleBounds,
+            rawOCR,
+            rawOcrConfidence,
+            identityEvidenceConfidence: .96,
+            fingerprintStable: true,
+            geometryConsensus: true,
+            ocrVotes: winner[1],
+            tabIndex: slotId
+          })
+        } else {
+          // Priority 3: UNCERTAIN
+          const rawOCR = variants.map(v => v.rawText ?? v.asset ?? '')
+          const rawOcrConfidence = variants.reduce((n, v) => n + v.confidence, 0) / variants.length
+          detected.push({
+            ...emptyAsset(platform, slotId, 'UNCERTAIN'),
+            source: 'OCR',
+            confidence: 0,
+            evidenceType: 'CALIBRATED_OCR',
+            pixelBounds: titleBounds,
+            rawOCR,
+            rawOcrConfidence,
+            ocrVotes: winner?.[1] ?? 0,
+            tabIndex: slotId
+          })
+        }
       }
 
-      const present = tabs.filter(tab => tab.present).length
-      for (const [index, tab] of tabs.entries()) {
-        if (!tab.present || !tab.fingerprintStable || (tab.confidence >= .95 && normalizeAsset(tab.asset ?? ''))) continue
-        const prefix = clippedPrefix(tab.rawOCR)
-        const completed = prefix && await this.completeClippedTab(platform, index + 1, present, prefix, recognize, finalImage)
-        if (completed) tab.rawOCR = [...(tab.rawOCR ?? []), ...completed.rawOCR]
-        if (completed && completed.asset) { tab.asset = completed.asset; tab.confidence = .96; tab.identityEvidenceConfidence = .96; tab.ocrVotes = completed.ocrVotes; tab.rawOcrConfidence = completed.rawOcrConfidence }
-      }
-      this.identifiedTabs.set(platform, tabs)
+      this.identifiedSlots.set(platform, identified)
     } finally {
       this.assetScans.delete(platform)
     }
-    
-    const tabs = this.identifiedTabs.get(platform)!
-    const detected = tabs.map((tab, index) => {
-      const name = tab.asset ? normalizeAsset(tab.asset) : null
-      const valid = name && tab.confidence >= .95
-      return { ...emptyAsset(platform, index + 1), source: 'OCR' as const,
-        state: !tab.present ? 'NOT_FOUND' as const : valid ? 'DETECTED' as const : 'UNCERTAIN' as const,
-        confidence: tab.confidence, evidenceType: 'CALIBRATED_OCR' as const,
-        assetName: valid ? name : null, displayName: valid ? name : null, canonicalAssetId: valid ? `${platform}:${name}` : null,
-        tabIndex: index + 1, pixelBounds: tab.pixelBounds, rawOCR: tab.rawOCR,
-        rawOcrConfidence: tab.rawOcrConfidence, identityEvidenceConfidence: tab.identityEvidenceConfidence,
-        geometryConsensus: tab.geometryConsensus, fingerprintStable: tab.fingerprintStable, ocrVotes: tab.ocrVotes }
-    })
-    return { platform, slots: detected, durationMs: Date.now() - start,
-      overallConfidence: detected.reduce((sum, slot) => sum + slot.confidence, 0) / 9 }
-  }
-  /**
-   * A broker tab bar clips long instrument names to a fixed width, which leaves the tab OCR with
-   * a prefix that must never be guessed at. The chart cell the tab addresses prints the same name
-   * in full, so read that and accept it only when it continues exactly what the tab still shows.
-   */
-  private async completeClippedTab(platform: Platform, tabIndex: number, count: number, prefix: string,
-    recognize: (image: NormalizedImage) => Promise<ParsedFields>, image: Electron.NativeImage
-  ): Promise<{ asset: string | null; rawOCR: string[]; ocrVotes: number; rawOcrConfidence: number } | null> {
-    const entry = this.entries.get(platform), surface = this.observationSurface(platform)
-    const grid = entry?.snapshot.grid
-    if (!entry || !grid || !surface.available || surface.paused) return null
-    const cell = grid.slots.find(slot => slot.slotId === canvasSlotForTab(platform, tabIndex, count))
-    if (!cell) return null
-    if (image.isEmpty()) return null
-    const size = image.getSize()
-    const { x, y, width, height } = chartNameBounds(normalizedToPixel(cell.chartBounds, size.width, size.height))
-    if (width < 8 || height < 4 || x + width > size.width || y + height > size.height) return null
-    const resized = image.crop({ x, y, width, height }).resize({ width: width * 3, height: height * 3 })
-    const resizedSize = resized.getSize(), bitmap = resized.toBitmap(), variants: ParsedFields[] = []
-    for (const threshold of [undefined, 125, 145, 165]) variants.push(await recognize({
-      ...normalizeBitmap(bitmap, resizedSize.width, resizedSize.height, threshold, true), purpose: 'ASSET' }))
-    const votes = new Map<string, number>()
-    for (const variant of variants) {
-      const variantVotes = new Set<string>()
-      for (const line of (variant.rawText ?? variant.asset ?? '').split(/\r?\n/)) {
-        const asset = normalizeAsset(chartTitleText(line))
-        if (asset && asset.length > prefix.length && asset.toLowerCase().startsWith(prefix.toLowerCase()))
-          variantVotes.add(asset)
-      }
-      if (variantVotes.size === 1) for (const asset of variantVotes) votes.set(asset, (votes.get(asset) ?? 0) + 1)
+
+    return {
+      platform,
+      slots: detected,
+      durationMs: Date.now() - start,
+      overallConfidence: detected.reduce((sum, slot) => sum + slot.confidence, 0) / 9
     }
-    const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1])
-    const rawOCR = variants.map(variant => variant.rawText ?? variant.asset ?? '')
-    const winner = ranked[0]
-    const agreed = winner && winner[1] >= 2 && winner[1] > (ranked[1]?.[1] ?? 0)
-    return agreed && winner ? { asset: winner[0], rawOCR, ocrVotes: winner[1], rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length } : { asset: null, rawOCR, ocrVotes: winner?.[1] ?? 0, rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length }
   }
   async captureSlot(context: ObservationContext): Promise<NormalizedImage> {
     const batch = await this.captureSlots([context]), result = batch.images.get(context.slotId)!
@@ -596,50 +925,51 @@ export class PlatformBrowserManager {
     if (full.isEmpty()) throw new Error('Empty capture')
     if (signature !== JSON.stringify(this.observationSurface(platform))) throw new Error('Capture surface changed')
     const normalizedFull = normalizeBitmap(full.toBitmap(), size.width, size.height, undefined, false)
-    const currentTabs = findAssetTabs(normalizedFull, platform)
     const grid = entry.snapshot.grid?.source === 'AUTO' ? chartGridResolver(platform).resolve(normalizedFull) : entry.snapshot.grid!
     entry.snapshot.grid = grid
     const images = new Map<number, NormalizedImage | Error>()
+    const synchronizedSlots = this.identifiedSlots.get(platform)
+
     for (const context of contexts) {
       try {
         const canvasSlotId = this.chartSlot(platform, context.slotId, context.assetName)
+        const cell = grid.slots.find(s => s.slotId === canvasSlotId)
+        if (!cell) throw new Error('CHART_SLOT: chart cell missing in grid.')
         if (grid.source === 'AUTO') {
-          const cell = grid.slots.find(s => s.slotId === canvasSlotId)!
           const geometry = canvasPriceGeometry(platform, cell.chartBounds, surface.bounds.width, surface.zoomFactor)
           context.bounds = geometry.chartBounds; context.priceBounds = geometry.priceBounds
           if (context.diagnostics) Object.assign(context.diagnostics, { gridConfidence: grid.confidence,
             pricePixelBounds: normalizedToPixel(geometry.priceBounds, surface.bounds.width, surface.bounds.height) })
         }
         const crop = (): NormalizedImage => {
-    const identified = this.identifiedTabs.get(context.platform)![context.slotId - 1]!
-    const tab = currentTabs[context.slotId - 1]
-    if (!tab) {
-      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_GEOMETRY_CHANGED', reason: 'tab not found at index', currentCount: currentTabs.length, expectedCount: identified.tabs?.length }))
-      throw new Error('TAB: visible tab identity changed (tab missing). Sync Assets before observing.')
-    }
-    const match = sameTabs(currentTabs, identified.tabs, size.width)
-    if (!match.match) {
-      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_GEOMETRY_CHANGED', reason: 'tab positions shifted', ...match, currentCount: currentTabs.length, expectedCount: identified.tabs?.length }))
-      throw new Error('TAB: visible tab identity changed (geometry). Sync Assets before observing.')
-    }
-    const currentFingerprint = tabNameFingerprint(normalizedFull, tab)
-    if (!sameTabFingerprint(currentFingerprint, identified.nameFingerprint)) {
-      console.log('[CaptureSlot]', context.platform, JSON.stringify({ slotId: context.slotId, rejection: 'TAB_FINGERPRINT_CHANGED', reason: 'tab name fingerprint differs' }))
-      throw new Error('TAB: visible tab identity changed (fingerprint). Sync Assets before observing.')
-    }
-    const bounds = context.priceBounds ?? context.bounds, cell = context.bounds
-    if (bounds.x < cell.x || bounds.y < cell.y || bounds.x + bounds.width > cell.x + cell.width + 1e-6 ||
-      bounds.y + bounds.height > cell.y + cell.height + 1e-6) throw new Error('PRICE ROI: outside expected chart cell')
-    const roi = normalizedToPixel(bounds, surface.bounds.width, surface.bounds.height)
-    const x = Math.floor(roi.x), y = Math.floor(roi.y)
-    const scaleX = size.width / surface.bounds.width, scaleY = size.height / surface.bounds.height
-    const image = full.crop({ x: Math.floor(x * scaleX), y: Math.floor(y * scaleY),
-      width: Math.ceil(roi.width * scaleX), height: Math.ceil(roi.height * scaleY) })
-    // Normalize the native device scale to bounded pixel dimensions, preserve original in memory only.
-    const scale = Math.min(2, 1024 / roi.width, 1024 / roi.height)
-    const resized = image.resize({ width: Math.max(1, Math.round(roi.width * scale)), height: Math.max(1, Math.round(roi.height * scale)) })
-    const resizedSize = resized.getSize()
-    return { ...normalizeBitmap(resized.toBitmap(), resizedSize.width, resizedSize.height, undefined, false), pixelBounds: roi }
+          const identified = synchronizedSlots?.find(s => s.slotId === context.slotId)
+          if (!identified || identified.confidence < .95 || normalizeAsset(identified.assetName) !== normalizeAsset(context.assetName)) {
+            throw new Error('CHART_SLOT: identity is uncertain. Sync Assets before observing.')
+          }
+          const cellPixel = normalizedToPixel(cell.chartBounds, size.width, size.height)
+          const titleBounds = chartNameBounds(cellPixel)
+          const currentFingerprint = chartTitleFingerprint(normalizedFull, titleBounds)
+          if (!sameChartTitleFingerprint(currentFingerprint, identified.titleFingerprint)) {
+            console.log('[CaptureSlot]', context.platform, JSON.stringify({
+              slotId: context.slotId,
+              rejection: 'ASSET_IDENTITY_CHANGED',
+              reason: 'chart title fingerprint differs'
+            }))
+            throw new Error('ASSET_IDENTITY_CHANGED — Sync Assets required')
+          }
+          const bounds = context.priceBounds ?? context.bounds, cellBounds = context.bounds
+          if (bounds.x < cellBounds.x || bounds.y < cellBounds.y || bounds.x + bounds.width > cellBounds.x + cellBounds.width + 1e-6 ||
+            bounds.y + bounds.height > cellBounds.y + cellBounds.height + 1e-6) throw new Error('PRICE ROI: outside expected chart cell')
+          const roi = normalizedToPixel(bounds, surface.bounds.width, surface.bounds.height)
+          const x = Math.floor(roi.x), y = Math.floor(roi.y)
+          const scaleX = size.width / surface.bounds.width, scaleY = size.height / surface.bounds.height
+          const image = full.crop({ x: Math.floor(x * scaleX), y: Math.floor(y * scaleY),
+            width: Math.ceil(roi.width * scaleX), height: Math.ceil(roi.height * scaleY) })
+          // Normalize the native device scale to bounded pixel dimensions, preserve original in memory only.
+          const scale = Math.min(2, 1024 / roi.width, 1024 / roi.height)
+          const resized = image.resize({ width: Math.max(1, Math.round(roi.width * scale)), height: Math.max(1, Math.round(roi.height * scale)) })
+          const resizedSize = resized.getSize()
+          return { ...normalizeBitmap(resized.toBitmap(), resizedSize.width, resizedSize.height, undefined, false), pixelBounds: roi }
         }
         images.set(context.slotId, crop())
       } catch (error) { images.set(context.slotId, error instanceof Error ? error : new Error('Capture failed')) }
@@ -816,7 +1146,15 @@ export class PlatformBrowserManager {
         entry.snapshot.draft = { ...request.draft, zoomFactor: entry.snapshot.zoomFactor }
         break
       case 'endCalibration': this.endCalibration(entry); break
+      case 'closePortfolio':
+        void this.closePortfolioPanel(request.platform).catch(() => {})
+        break
     }
+    return entry.snapshot
+  }
+  snapshot(platform: Platform): BrowserSnapshot {
+    const entry = this.entries.get(platform)
+    if (!entry) throw new Error('Workspace is not open')
     return entry.snapshot
   }
 }

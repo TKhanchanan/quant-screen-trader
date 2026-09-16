@@ -183,7 +183,7 @@ export const CalibrationDraftSchema = z.object({ slots: CalibrationSlotsSchema,
   assets: SlotConfigurationSchema, zoomFactor: z.number().min(0.25).max(5) })
 export type CalibrationDraft = z.infer<typeof CalibrationDraftSchema>
 export const PlatformCommandSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.enum(['state', 'reload', 'endCalibration', 'resolveGrid']), platform: PlatformSchema }),
+  z.object({ operation: z.enum(['state', 'reload', 'endCalibration', 'resolveGrid', 'closePortfolio']), platform: PlatformSchema }),
   z.object({ operation: z.literal('layout'), platform: PlatformSchema,
     bounds: BrowserRectangleSchema, visible: z.boolean() }),
   z.object({ operation: z.enum(['beginCalibration', 'draft']), platform: PlatformSchema,

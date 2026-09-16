@@ -15,9 +15,6 @@ export function normalizeAsset(label: string): string | null {
     .replace(/^[^\p{L}]+/u, '').replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
     .replace(/\s+(?:Digital|Binary)$/i, '')
     .replace(/(?:\s*[(]\s*|\s+)(?:OTC|OT)\s*[)]?\s*$/i, ' OTC')
-    .replace(/^Open(?:id|Al|ad) OTC$/i, 'OpenAI OTC')
-    .replace(/^[EF]UR[\s/]*[J]?PY(\s+OTC)?$/i, 'EUR/JPY$1')
-    .replace(/^NZD[\s/]*A?S+D(\s+OTC)?$/i, 'NZD/USD$1')
 
   value = value.replace(PAIR_REGEX, (_m, c1, c2, otc) => {
     return c1.toUpperCase() + '/' + c2.toUpperCase() + (otc ? ' OTC' : '')

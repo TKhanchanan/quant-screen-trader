@@ -149,14 +149,14 @@ export class MarketManager {
     const fail = (slot: MarketSnapshot['slots'][number], error: unknown, captured = false): void => {
       if (captured) this.captureMetric(platform, slot.slotId, true, false)
       slot.state = 'DATA_UNCERTAIN'; slot.observation = null
-      slot.diagnostics = { ...slot.diagnostics, stage: captured ? 'PRICE ROI' : error instanceof Error && error.message.startsWith('TAB') ? 'TAB' : 'CANVAS BOUNDS',
+      slot.diagnostics = { ...slot.diagnostics, stage: captured ? 'PRICE ROI' : error instanceof Error && (error.message.startsWith('TAB') || error.message.startsWith('CHART') || error.message.startsWith('ASSET')) ? 'MAPPING' : 'CANVAS BOUNDS',
         message: error instanceof Error ? error.message : 'Capture unavailable' }
     }
     for (const configured of w.config.configuration.slots.filter(s => s.enabled && (probe || !w.resetting.has(s.id)))) {
       const slot = w.snapshot.slots.find(s => s.slotId === configured.id)!
       slot.lastAttemptAt = Date.now(); slot.attemptCount = (slot.attemptCount ?? 0) + 1
       if (probe) slot.observation = null
-      slot.diagnostics = { stage: 'TAB' }
+      slot.diagnostics = { stage: 'MAPPING' }
       try {
         if (!surface.available || surface.paused || !profile || !surface.gridReady || !calibrationZoomMatches(profile, surface))
           throw new Error('Verified grid and matching calibration required')

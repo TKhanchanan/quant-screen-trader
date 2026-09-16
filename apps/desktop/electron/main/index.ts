@@ -582,6 +582,10 @@ if (ownsInstance) void app.whenReady().then(() => {
     if (scope.overlay && command.operation !== 'state' && command.operation !== 'draft')
       throw new Error('Overlay operation not authorized')
     if (command.operation === 'resolveGrid') return browsers.resolveGrid(command.platform)
+    if (command.operation === 'closePortfolio') {
+      await browsers.closePortfolioPanel(command.platform)
+      return browsers.snapshot(command.platform)
+    }
     const result = browsers.command(command)
     const current = browsers.observationSurface(command.platform)
     if (command.operation === 'layout' && command.visible && !current.paused && !current.gridReady) {

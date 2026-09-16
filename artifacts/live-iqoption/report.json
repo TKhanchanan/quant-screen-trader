@@ -1,0 +1,46 @@
+{
+  "platform": "iqoption",
+  "requestedZoom": 0.7,
+  "zoomFactor": 0.7,
+  "currentOrigin": "https://iqoption.com",
+  "browserBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1440,
+    "height": 940
+  },
+  "captureSize": {
+    "width": 1440,
+    "height": 940
+  },
+  "tabCount": 1,
+  "tabGeometryStable": false,
+  "tabs": [
+    {
+      "tabIndex": 1,
+      "pixelBounds": {
+        "x": 638,
+        "y": 26,
+        "width": 74,
+        "height": 83
+      },
+      "nameBounds": {
+        "x": 658,
+        "y": 35,
+        "width": 51,
+        "height": 35
+      },
+      "rawOCR": [
+        "",
+        "_",
+        "co",
+        "JR"
+      ],
+      "normalizedAsset": null,
+      "confidence": 0
+    }
+  ],
+  "canvasGrid": {
+    "error": "CANVAS_GEOMETRY_UNCERTAIN: visible 3×3 separators are ambiguous. Use Calibrate Chart Area."
+  }
+}
