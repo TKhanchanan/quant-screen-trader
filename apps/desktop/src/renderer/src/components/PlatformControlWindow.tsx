@@ -88,6 +88,10 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
     } catch { setActionError('Asset sync unavailable. Existing assets were preserved.') }
   }
   const probePrices = async (): Promise<void> => {
+    if (!sync?.syncFresh) {
+      setActionError('Asset identity is unverified (sync is stale). Sync Assets before probing prices.')
+      return
+    }
     setProbing(true); setActionError('')
     try {
       const result = await window.quantScreenTrader.market({ platform, operation: 'probe' })
@@ -97,6 +101,10 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
   }
   const observe = async (): Promise<void> => {
     try {
+      if (!market?.running && !sync?.syncFresh) {
+        setActionError('Asset identity is unverified (sync is stale). Sync Assets before observing.')
+        return
+      }
       if (!market?.running && !data?.configuration.slots.some(s => s.enabled && s.assetName)) await syncOnce()
       const current = await execute({ operation: 'get', platform })
       if (!market?.running && !current?.configuration.slots.some(s => s.enabled && s.assetName)) { setActionError('No identified assets. Sync Assets or use Asset Setup.'); return }
@@ -130,8 +138,9 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
         <span>Enabled {data?.configuration.slots.filter(s => s.enabled).length ?? 0} · Healthy {market?.slots.filter(s => s.state === 'READY').length ?? 0} · Uncertain {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0} · Stale {market?.slots.filter(s => s.state === 'STALE').length ?? 0} · {market?.captureRate.toFixed(1) ?? 0} obs/s · Queue {market?.queueDepth ?? 0} · Engine {market?.engineAvailable ? 'receiving' : 'waiting'}</span>
       </div>
       <p>Login manually in the platform. Authentication remains UNKNOWN unless visible UI evidence can prove it.</p>
-      {sync?.detection && <p role="status">Asset sync: Detected {sync.detection.slots.filter(s => s.state === 'DETECTED').length} · Uncertain {sync.detection.slots.filter(s => s.state === 'UNCERTAIN').length} · Not found {sync.detection.slots.filter(s => s.state === 'NOT_FOUND').length} · Applied {sync.applied} · Manual slots preserved {sync.manualPreserved}</p>}
-      {sync?.error && <p role="alert">{sync.error}</p>}
+      {sync?.syncStatus === 'SCANNING' && <p role="status">Asset sync: Scanning tabs…</p>}
+      {sync?.syncFresh && sync.detection && <p role="status">Asset sync: Detected {sync.detection.slots.filter(s => s.state === 'DETECTED').length} · Uncertain {sync.detection.slots.filter(s => s.state === 'UNCERTAIN').length} · Not found {sync.detection.slots.filter(s => s.state === 'NOT_FOUND').length} · Applied {sync.applied} · Manual slots preserved {sync.manualPreserved}{sync.lastSuccessfulSyncAt ? ` (at ${new Date(sync.lastSuccessfulSyncAt).toLocaleTimeString()})` : ''}</p>}
+      {sync && !sync.syncFresh && (sync.syncStatus === 'FAILED' || sync.error) && <p role="alert" className="error-banner">SYNC FAILED — configured assets below are from last successful sync{sync.error ? `: ${sync.error}` : ''}</p>}
       {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
       {(error || actionError) && <p role="alert" className="error-banner">{error || actionError}</p>}
       {/* The board and the execution controls open in their own window. Every row of chrome here
@@ -145,7 +154,16 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
         const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)
         const observed = market?.slots.find(s => s.slotId === i + 1)
         const opinion = strategy?.slots.find(s => s.slotId === i + 1)
-        return <span key={i} data-slot-id={i + 1}>{i + 1} · {slot?.displayName || slot?.assetName || 'Unassigned'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected?.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : ''} {detected ? `${detected.source} ${Math.round(detected.confidence * 100)}%` : ''}<br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br /><PriceReading observation={observed?.observation ?? null} />
+        const isFresh = Boolean(sync?.syncFresh && detected)
+        const configuredName = slot?.displayName || slot?.assetName || 'Unassigned'
+        const candidateName = detected?.rawOCR?.[0] || detected?.assetName
+        return <span key={i} data-slot-id={i + 1}>
+          {isFresh && detected ? (
+            <>{i + 1} · {detected.state === 'DETECTED' ? (detected.displayName || detected.assetName) : detected.state === 'NOT_FOUND' ? 'Empty tab' : candidateName ? `Uncertain (${candidateName})` : 'Uncertain tab'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : detected.state === 'DETECTED' ? 'DETECTED' : 'NOT FOUND'} {detected.source} {Math.round(detected.confidence * 100)}%{slot?.assetName && detected.assetName !== slot.assetName ? <><br /><small>Configured: {configuredName}</small></> : null}</>
+          ) : (
+            <>{i + 1} · Configured: {configuredName}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br /><span style={{ color: '#ffaa00' }}>Current tab: {sync?.syncStatus === 'SCANNING' ? 'SCANNING…' : 'UNVERIFIED (SYNC STALE)'}</span></>
+          )}
+          <br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br /><PriceReading observation={observed?.observation ?? null} />
           {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
           <small><br />1s {observed?.secondSamples ?? 0} {platform === 'capitalbear' ? ` · S5 ${observed?.s5Samples ?? 0} ${observed?.s5State ?? 'collecting'}` : ''} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
           {developer && <small><br />Quant: {(features?.slots.find(f => f.slotId === i + 1)?.timeframes ?? [])

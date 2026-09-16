@@ -39,10 +39,17 @@ export class AssetSyncManager {
   configure(config: ConfigurationResult): void {
     const platform = config.configuration.platform, old = this.entries.get(platform)
     if (old) {
-      if (JSON.stringify(old.config) !== JSON.stringify(config)) { old.generation++; old.stability.reset(); if (JSON.stringify(old.config.configuration) !== JSON.stringify(config.configuration)) old.state.detection = null; old.state.revision++ }
+      if (JSON.stringify(old.config) !== JSON.stringify(config)) {
+        old.generation++; old.stability.reset()
+        if (JSON.stringify(old.config.configuration) !== JSON.stringify(config.configuration)) {
+          old.state.detection = null
+          old.state.syncFresh = false
+        }
+        old.state.revision++
+      }
       old.config = config
     } else this.entries.set(platform, { autoSyncRuns: 0, autoSyncAppliedChanges: 0, config, generation: 0, next: 0, signature: '', active: null, stability: new AssetStability(),
-      state: { auto: false, busy: false, intervalMs: 3000, stableChecks: 3, detection: null, applied: 0, manualPreserved: 0, error: null, revision: 0 } })
+      state: { auto: false, busy: false, intervalMs: 3000, stableChecks: 3, detection: null, applied: 0, manualPreserved: 0, error: null, revision: 0, syncFresh: false, lastSuccessfulSyncAt: null, lastSyncAttemptAt: null, syncStatus: 'IDLE' } })
   }
   operationalState(platform: Platform): { autoSyncEnabled: boolean; autoSyncRuns: number; autoSyncAppliedChanges: number } {
     const entry = this.entries.get(platform)
@@ -71,11 +78,27 @@ export class AssetSyncManager {
     const surface = this.browsers.observationSurface(platform)
     const signature = JSON.stringify(surface)
     if (signature !== entry.signature) { entry.signature = signature; entry.generation++; entry.stability.reset() }
-    if (!surface.available || surface.paused) { entry.state.error = 'Asset sync paused: show the platform and close calibration.'; return }
+    if (!surface.available || surface.paused) {
+      entry.state.error = 'Asset sync paused: show the platform and close calibration.'
+      entry.state.syncFresh = false
+      entry.state.syncStatus = 'FAILED'
+      entry.state.detection = null
+      return
+    }
     const generation = entry.generation, before = entry.config
     entry.state.busy = true; entry.state.error = null; entry.state.applied = 0
+    entry.state.syncStatus = 'SCANNING'
+    entry.state.syncFresh = false
+    entry.state.detection = null
+    entry.state.lastSyncAttemptAt = new Date().toISOString()
     try {
-      if (this.ocrBusy) { entry.state.error = 'Asset OCR is busy in the other workspace. Sync again shortly.'; return }
+      if (this.ocrBusy) {
+        entry.state.error = 'Asset OCR is busy in the other workspace. Sync again shortly.'
+        entry.state.syncFresh = false
+        entry.state.syncStatus = 'FAILED'
+        entry.state.detection = null
+        return
+      }
       this.ocrBusy = true
       if (!once) entry.autoSyncRuns++
       let result: AssetDetectionResult
@@ -89,16 +112,32 @@ export class AssetSyncManager {
       const changed = slots.filter((s, i) => JSON.stringify(s) !== JSON.stringify(before.configuration.slots[i])).length
       if (changed) {
         const saved = await this.save(platform, before, slots)
-        if (!saved) { entry.state.error = 'Configuration changed during detection; sync again.'; return }
+        if (!saved) {
+          entry.state.error = 'Configuration changed during detection; sync again.'
+          entry.state.syncFresh = false
+          entry.state.syncStatus = 'FAILED'
+          entry.state.detection = null
+          return
+        }
         if (entry.generation !== generation || JSON.stringify(this.browsers.observationSurface(platform)) !== signature) return
         entry.config = saved; entry.state.applied = changed; entry.state.revision++
         if (!once) entry.autoSyncAppliedChanges += changed
         this.apply(saved)
       }
-    } catch (error) { entry.state.error = error instanceof Error &&
-      (error.message.startsWith('TAB_GEOMETRY_UNCERTAIN') || error.message.startsWith('CANVAS_GEOMETRY_UNCERTAIN') || error.message.startsWith('Chart grid restoration failed') || error.message.startsWith('Chart grid preparation failed') || error.message.includes('platform was reloaded'))
-      ? error.message : 'Asset detection unavailable. Existing assets were preserved.' }
-    finally { entry.state.busy = false; entry.next = Date.now() + entry.state.intervalMs }
+      entry.state.syncFresh = true
+      entry.state.syncStatus = 'APPLIED'
+      entry.state.lastSuccessfulSyncAt = new Date().toISOString()
+    } catch (error) {
+      entry.state.syncFresh = false
+      entry.state.syncStatus = 'FAILED'
+      entry.state.detection = null
+      entry.state.error = error instanceof Error &&
+        (error.message.startsWith('TAB_GEOMETRY_UNCERTAIN') || error.message.startsWith('CANVAS_GEOMETRY_UNCERTAIN') || error.message.startsWith('Chart grid restoration failed') || error.message.startsWith('Chart grid preparation failed') || error.message.includes('platform was reloaded'))
+        ? error.message : 'Asset detection unavailable. Existing assets were preserved.'
+    } finally {
+      entry.state.busy = false
+      entry.next = Date.now() + entry.state.intervalMs
+    }
   }
   stop(): void { clearInterval(this.timer); for (const e of this.entries.values()) e.generation++; void this.ocr.stop().catch(() => {}) }
 }

@@ -48,6 +48,11 @@ it('rejects OCR garbage and validates plausible asset names', () => {
   expect(normalizeAsset('EUR/USD')).toBe('EUR/USD')
   expect(normalizeAsset('Gold/Silver')).toBe('Gold/Silver')
   expect(normalizeAsset('S&P500/Gold')).toBe('S&P500/Gold')
+  expect(normalizeAsset('FUR PY OT )')).toBe('EUR/JPY OTC')
+  expect(normalizeAsset('NZDASSD (OT )')).toBe('NZD/USD OTC')
+  expect(normalizeAsset('Openid (OTC)')).toBe('OpenAI OTC')
+  expect(normalizeAsset('[USD/BRL [OT )')).toBe('USD/BRL OTC')
+  expect(normalizeAsset('usD CoP [OT )')).toBe('USD/COP OTC')
 })
 it('accepts a safe single-name OCR asset and rejects account or numeric text', () => {
   expect(parseOCRFields('Apple\n1.23456\n82%\n00:59', .98).asset).toBe('Apple')

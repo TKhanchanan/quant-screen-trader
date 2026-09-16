@@ -140,6 +140,7 @@ export function canvasSlotForTab(platform: Platform, tabIndex: number, count: nu
 }
 
 export function findAssetTabs(image: NormalizedImage, platform: Platform): PixelBounds[] & { branch?: 'UNDERLINE' | 'FALLBACK' } {
+  console.log(`[findAssetTabs] ${platform} capture size: ${image.width}x${image.height}`)
   // The opened tabs have long, separated underlines. Locate their actual band first
   // so chart titles below it cannot extend an apparent vertical tab boundary.
   const underlineRows: { y: number; runs: { x: number; width: number }[] }[] = []
@@ -159,7 +160,12 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
   }
   const underline = underlineRows.sort((a, b) => b.runs.length - a.runs.length ||
     b.runs.reduce((sum, run) => sum + run.width, 0) - a.runs.reduce((sum, run) => sum + run.width, 0))[0]
-  if (underline && underline.runs.length <= 9) {
+  let underlineRejectReason: string | null
+  if (!underline) {
+    underlineRejectReason = 'no underline candidate rows found'
+  } else if (underline.runs.length > 9) {
+    underlineRejectReason = `run count exceeded 9 (${underline.runs.length})`
+  } else {
     const band = underlineRows.filter(row => Math.abs(row.y - underline.y) <= 2 && row.runs.length === underline.runs.length)
     underline.runs = underline.runs.map((run, index) => {
       const pieces = band.map(row => row.runs[index]!).filter(piece => Math.abs(piece.x - run.x) < image.width * .025)
@@ -175,19 +181,29 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
       }
       return { ...run, y: top, height: underline.y - top + 1 }
     })
-    if (tabs.some((tab, i) => i > 0 && tab.x - tabs[i - 1]!.x - tabs[i - 1]!.width > Math.max(tab.width, tabs[i - 1]!.width) * .35)) {
-      console.log(`[findAssetTabs] ${platform} branch: UNDERLINE count: 0 (rejected due to gap)`)
+    const hasGap = tabs.some((tab, i) => i > 0 && tab.x - tabs[i - 1]!.x - tabs[i - 1]!.width > Math.max(tab.width, tabs[i - 1]!.width) * .35)
+    if (hasGap && (platform !== 'iqoption' || tabs.length >= 4)) {
+      const reason = 'rejected due to gap between tabs'
+      console.log(`[findAssetTabs] ${platform} UNDERLINE: candidate row count=${underlineRows.length}, best row y=${underline.y}, run count=${underline.runs.length}, reason rejected: ${reason}`)
+      console.log(`[findAssetTabs] ${platform} branch: UNDERLINE count: 0 (${reason})`)
       return Object.assign([], { branch: 'UNDERLINE' as const })
-    }
-    if (tabs.every(tab => tab.height >= image.height * .025 && tab.width / tab.height >= 1.5) &&
-      tabs.every(tab => Math.abs(tab.y - tabs[0]!.y) <= 3)) {
+    } else if (platform === 'iqoption' && tabs.length < 9) {
+      underlineRejectReason = `IQ Option inactive tabs lack underline (found ${tabs.length}); falling back to edge boundaries`
+    } else if (!tabs.every(tab => tab.height >= image.height * .025 && tab.width / tab.height >= 1.5)) {
+      underlineRejectReason = `tab height or aspect ratio rejected (heights: ${tabs.map(t => t.height).join(',')}, minHeight: ${image.height * .025})`
+    } else if (!tabs.every(tab => Math.abs(tab.y - tabs[0]!.y) <= 3)) {
+      underlineRejectReason = `tab y variance exceeded 3 (${tabs.map(t => t.y).join(',')})`
+    } else {
+      console.log(`[findAssetTabs] ${platform} UNDERLINE: candidate row count=${underlineRows.length}, best row y=${underline.y}, run count=${underline.runs.length}, accepted=${tabs.length}`)
       console.log(`[findAssetTabs] ${platform} branch: UNDERLINE count: ${tabs.length}\n` + tabs.map((t, i) => `  tab ${i}: x=${t.x} y=${t.y} w=${t.width} h=${t.height}`).join('\n'))
       return Object.assign(tabs, { branch: 'UNDERLINE' as const })
     }
   }
+  console.log(`[findAssetTabs] ${platform} UNDERLINE: candidate row count=${underlineRows.length}, best row y=${underline?.y ?? 'none'}, run count=${underline?.runs.length ?? 0}, reason rejected: ${underlineRejectReason}`)
+
   const top = Math.max(1, Math.floor(image.height * .005))
   const bottom = Math.min(image.height, Math.ceil(image.height * .12))
-  const start = Math.floor(image.width * (platform === 'capitalbear' ? .14 : .1))
+  const start = Math.floor(image.width * (platform === 'capitalbear' ? .14 : .08))
   const end = Math.ceil(image.width * .985)
   const edges: { x: number; score: number; top: number; bottom: number }[] = []
   for (let x = start; x < end; x++) {
@@ -202,23 +218,25 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
         }
       }
     }
-    if (rows.length >= image.height * .03) edges.push({ x, score: rows.length, top: rows[0]!, bottom: rows.at(-1)! })
+    if (rows.length >= image.height * .025) edges.push({ x, score: rows.length, top: rows[0]!, bottom: rows.at(-1)! })
   }
   const boundaries: typeof edges = []
   for (let index = 0; index < edges.length;) {
     let last = index
-    while (last + 1 < edges.length && edges[last + 1]!.x <= edges[last]!.x + 1) last++
+    while (last + 1 < edges.length && edges[last + 1]!.x <= edges[last]!.x + 2) last++
     boundaries.push(edges.slice(index, last + 1).sort((a, b) => b.score - a.score)[0]!)
     index = last + 1
   }
-  const minimumWidth = Math.max(image.width * .035, image.height * .1)
+  const minimumWidth = image.width * .035
   const maximumWidth = image.width * .18
+  const yTolerance = Math.max(3, Math.round(image.height * 0.008))
+  const heightTolerance = Math.max(8, Math.round(image.height * 0.015))
   const candidates = boundaries.flatMap((left, index) => boundaries.slice(index + 1).flatMap(right => {
-      const width = right.x - left.x
-      if (width < minimumWidth || width > maximumWidth ||
-        Math.abs(right.top - left.top) > 3 || Math.abs(right.bottom - left.bottom) > 3) return []
+    const width = right.x - left.x
+    if (width < minimumWidth || width > maximumWidth ||
+      Math.abs(right.top - left.top) > yTolerance || Math.abs(right.bottom - left.bottom) > heightTolerance) return []
     const y = Math.max(left.top, right.top), height = Math.min(left.bottom, right.bottom) - y + 1
-    return height >= image.height * .03 ? [{ x: left.x, y, width, height }] : []
+    return height >= image.height * .025 ? [{ x: left.x, y, width, height }] : []
   }))
   const chains: PixelBounds[][] = []
   for (const [index, tab] of candidates.entries()) {
@@ -226,19 +244,30 @@ export function findAssetTabs(image: NormalizedImage, platform: Platform): Pixel
       .filter(({ candidate }) => {
         const gap = tab.x - candidate.x - candidate.width
         const widthTolerance = platform === 'capitalbear' ? .20 : .08
-        return gap >= -4 && gap <= Math.max(tab.width, candidate.width) * .35 && Math.abs(tab.y - candidate.y) <= 3 &&
-          Math.abs(tab.height - candidate.height) <= 3 &&
+        return gap >= -4 && gap <= Math.max(tab.width, candidate.width) * .35 &&
+          Math.abs(tab.y - candidate.y) <= yTolerance &&
+          Math.abs(tab.height - candidate.height) <= heightTolerance &&
           Math.abs(tab.width - candidate.width) <= Math.max(tab.width, candidate.width) * widthTolerance
       }).sort((a, b) => b.chain.length - a.chain.length)[0]
     chains[index] = [...(previous?.chain ?? []), tab]
   }
   const best = chains.sort((a, b) => b.length - a.length || a[0]!.x - b[0]!.x)[0] ?? []
-  if (best.length > 9 || candidates.some(tab => best.length && Math.abs(tab.y - best[0]!.y) <= 3 &&
+  let fallbackRejectReason: string | null = null
+  if (best.length === 0) {
+    fallbackRejectReason = 'no candidate chains formed'
+  } else if (best.length > 9) {
+    fallbackRejectReason = `chain length exceeded 9 (${best.length})`
+  } else if (best.length < 9 && candidates.some(tab => best.length && Math.abs(tab.y - best[0]!.y) <= yTolerance &&
     Math.abs(tab.width - best[0]!.width) < best[0]!.width * .1 &&
     (tab.x + tab.width < best[0]!.x || tab.x > best.at(-1)!.x + best.at(-1)!.width))) {
-    console.log(`[findAssetTabs] ${platform} branch: FALLBACK count: 0 (rejected due to bounds/count)`)
+    fallbackRejectReason = `rejected due to bounds/count (candidate outside best chain of length ${best.length})`
+  }
+  if (fallbackRejectReason) {
+    console.log(`[findAssetTabs] ${platform} FALLBACK: edge count=${edges.length}, boundary count=${boundaries.length}, candidate count=${candidates.length}, best chain count=${best.length}, reason rejected: ${fallbackRejectReason}`)
+    console.log(`[findAssetTabs] ${platform} branch: FALLBACK count: 0 (${fallbackRejectReason})`)
     return Object.assign([], { branch: 'FALLBACK' as const })
   }
+  console.log(`[findAssetTabs] ${platform} FALLBACK: edge count=${edges.length}, boundary count=${boundaries.length}, candidate count=${candidates.length}, best chain count=${best.length}, accepted=${best.length}`)
   console.log(`[findAssetTabs] ${platform} branch: FALLBACK count: ${best.length}\n` + best.map((t, i) => `  tab ${i}: x=${t.x} y=${t.y} w=${t.width} h=${t.height}`).join('\n'))
   return Object.assign(best, { branch: 'FALLBACK' as const })
 }
@@ -622,11 +651,7 @@ export class PlatformBrowserManager {
   ): Promise<CapturedTab> {
     const tab = tabs[slotId - 1]
     if (!tab) return { confidence: 1, present: false, tabs }
-    let brightEdge = 0
     const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
-    for (let row = Math.floor(tab.y + tab.height * .15); row < tab.y + tab.height * .58; row++)
-      for (let column = Math.floor(tab.x + tab.width * .96); column < tab.x + tab.width * .995; column++)
-        if (normalized.grayscale[row * normalized.width + column]! >= 150) brightEdge++
     // A tab clipped down to its instrument icon cannot carry a legible name. Judge that by the
     // tab's own shape: comparing its width against the whole surface height rejected every real
     // tab as soon as the capture was taller than a tab is wide.
@@ -653,11 +678,10 @@ export class PlatformBrowserManager {
     const result = agreed
       ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: .96 }
       : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: 0 }
-    const clipped = variants.some(v => clippedLabelPrefix(v.rawText ?? v.asset ?? '') !== null)
-    const confidence =
-      brightEdge <= 2 && !clipped
-        ? result.confidence
-        : Math.min(.94, result.confidence)
+    const clipped = !result.asset && variants.some(v => clippedLabelPrefix(v.rawText ?? v.asset ?? '') !== null)
+    const confidence = !clipped
+      ? result.confidence
+      : Math.min(.94, result.confidence)
     const finalResult: CapturedTab = { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
       nameFingerprint: tabNameFingerprint(normalized, tab), rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length,
       ocrVotes: agreed?.length ?? 0, confidence, present: true }

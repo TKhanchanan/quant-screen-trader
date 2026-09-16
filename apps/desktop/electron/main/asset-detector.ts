@@ -4,13 +4,25 @@ import { AssetDetectionResultSchema, type AssetDetectionResult, type Calibration
 const Rect = z.strictObject({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), width: z.number().positive().max(1), height: z.number().positive().max(1) })
 export const ChartLabelSchema = z.strictObject({ bounds: Rect, label: z.string().max(120), tooltip: z.string().max(120).nullable() })
 export type ChartLabel = z.infer<typeof ChartLabelSchema>
+const CURRENCIES = 'USD|EUR|GBP|JPY|AUD|CAD|NZD|CHF|BRL|COP|SGD|HKD|SEK|NOK|TRY|ZAR|MXN|INR|CNY|KRW'
+const PAIR_REGEX = new RegExp('^(' + CURRENCIES + ')\\s*[\\s/]?[\\s/]?\\s*(' + CURRENCIES + ')(\\s+OTC)?$', 'i')
+
 export function normalizeAsset(label: string): string | null {
   // OCR of a tab label picks up the edge of the instrument icon as a stray leading mark. An
   // asset name always starts with a letter, so anything before the first one is never part of it.
-  const value = label.trim().replace(/^[^\p{L}]+/u, '').replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
+  let value = label.trim()
+    .replace(/[[{]/g, '(').replace(/[\]}]/g, ')')
+    .replace(/^[^\p{L}]+/u, '').replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/')
     .replace(/\s+(?:Digital|Binary)$/i, '')
-    .replace(/\s*\(OTC\)$/i, ' OTC')
-    .replace(/^OpenAl OTC$/, 'OpenAI OTC')
+    .replace(/(?:\s*[(]\s*|\s+)(?:OTC|OT)\s*[)]?\s*$/i, ' OTC')
+    .replace(/^Open(?:id|Al|ad) OTC$/i, 'OpenAI OTC')
+    .replace(/^[EF]UR[\s/]*[J]?PY(\s+OTC)?$/i, 'EUR/JPY$1')
+    .replace(/^NZD[\s/]*A?S+D(\s+OTC)?$/i, 'NZD/USD$1')
+
+  value = value.replace(PAIR_REGEX, (_m, c1, c2, otc) => {
+    return c1.toUpperCase() + '/' + c2.toUpperCase() + (otc ? ' OTC' : '')
+  })
+
   if (!/^[\p{L}][\p{L}\p{N} /&+()._-]{1,119}$/u.test(value) || /(?:\.{2,}|…|\?)/.test(value) ||
     /(?:balance|account|deposit|withdraw|password|wrong)/i.test(value) || /[()]/.test(value) || /^(?:buy|sell|trade|trading|login|logout|settings|menu|help|close|open|chart|digital|binary|otc)$/i.test(value)) return null
   if (!/[\p{L}\p{N}]{2,}/u.test(value)) return null

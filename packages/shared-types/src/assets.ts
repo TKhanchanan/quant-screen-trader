@@ -24,5 +24,7 @@ export const AssetSyncCommandSchema = z.strictObject({ platform: Platform, opera
 export type AssetSyncCommand = z.infer<typeof AssetSyncCommandSchema>
 export const AssetSyncStateSchema = z.strictObject({ auto: z.boolean(), busy: z.boolean(), intervalMs: z.number(), stableChecks: z.number(),
   detection: AssetDetectionResultSchema.nullable(), applied: z.number().int().nonnegative(),
-  manualPreserved: z.number().int().nonnegative(), error: z.string().nullable(), revision: z.number().int().nonnegative() })
+  manualPreserved: z.number().int().nonnegative(), error: z.string().nullable(), revision: z.number().int().nonnegative(),
+  syncFresh: z.boolean().optional(), lastSuccessfulSyncAt: z.string().nullable().optional(),
+  lastSyncAttemptAt: z.string().nullable().optional(), syncStatus: z.enum(['IDLE', 'SCANNING', 'APPLIED', 'FAILED']).optional() })
 export type AssetSyncState = z.infer<typeof AssetSyncStateSchema>
