@@ -410,12 +410,12 @@ export class PlatformBrowserManager {
     contents.on('dom-ready', () => {
       contents.setZoomFactor(entry.snapshot.zoomFactor)
       state('UNKNOWN', 'loaded')
-      void this.closePortfolioPanel(platform).catch(() => {})
+      if (platform === 'capitalbear') void this.closePortfolioPanel(platform).catch(() => {})
     })
     contents.on('did-finish-load', () => {
       contents.setZoomFactor(entry.snapshot.zoomFactor)
       state('UNKNOWN', 'loaded')
-      void this.closePortfolioPanel(platform).catch(() => {})
+      if (platform === 'capitalbear') void this.closePortfolioPanel(platform).catch(() => {})
     })
     contents.on('did-fail-load', (_event, code, _description, _url, mainFrame) => {
       if (mainFrame && code !== -3) state(code === -106 ? 'DISCONNECTED' : 'ERROR', 'failed', String(code))

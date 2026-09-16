@@ -138,3 +138,10 @@ tmp/
 temp/
 *.tmp
 *.temp
+
+# Broker screenshots and visual debug captures
+artifacts/*.png
+artifacts/**/*.png
+artifacts/**/*.jpg
+artifacts/**/*.jpeg
+artifacts/**/*.bmp
