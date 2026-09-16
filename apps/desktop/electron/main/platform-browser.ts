@@ -547,7 +547,9 @@ export class PlatformBrowserManager {
     }
     const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1])
     const rawOCR = variants.map(variant => variant.rawText ?? variant.asset ?? '')
-    return ranked[0] && ranked[0][1] >= 2 && ranked.length === 1 ? { asset: ranked[0][0], rawOCR, ocrVotes: ranked[0][1], rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length } : { asset: null, rawOCR, ocrVotes: ranked[0]?.[1] ?? 0, rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length }
+    const winner = ranked[0]
+    const agreed = winner && winner[1] >= 2 && winner[1] > (ranked[1]?.[1] ?? 0)
+    return agreed && winner ? { asset: winner[0], rawOCR, ocrVotes: winner[1], rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length } : { asset: null, rawOCR, ocrVotes: winner?.[1] ?? 0, rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length }
   }
   async captureSlot(context: ObservationContext): Promise<NormalizedImage> {
     const batch = await this.captureSlots([context]), result = batch.images.get(context.slotId)!
@@ -642,15 +644,23 @@ export class PlatformBrowserManager {
     }
     const matches = [...groups.values()].sort((a, b) => b.length - a.length ||
       Math.max(...b.map(v => v.confidence)) - Math.max(...a.map(v => v.confidence)))
-    const agreed = matches[0]?.length && matches[0].length >= 2 && matches.length === 1
-      ? matches[0] : null
+    const agreed =
+      matches[0]?.length &&
+      matches[0].length >= 2 &&
+      matches[0].length > (matches[1]?.length ?? 0)
+        ? matches[0]
+        : null
     const result = agreed
       ? { ...agreed.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: .96 }
       : { ...variants.sort((a, b) => b.confidence - a.confidence)[0]!, confidence: 0 }
     const clipped = variants.some(v => clippedLabelPrefix(v.rawText ?? v.asset ?? '') !== null)
+    const confidence =
+      brightEdge <= 2 && !clipped
+        ? result.confidence
+        : Math.min(.94, result.confidence)
     const finalResult: CapturedTab = { ...result, tabIndex: slotId, pixelBounds: tab, tabs, rawOCR: variants.map(v => v.rawText ?? v.asset ?? ''),
       nameFingerprint: tabNameFingerprint(normalized, tab), rawOcrConfidence: variants.reduce((n, v) => n + v.confidence, 0) / variants.length,
-      ocrVotes: agreed?.length ?? 0, confidence: brightEdge <= 2 && !clipped ? result.confidence : 0, present: true }
+      ocrVotes: agreed?.length ?? 0, confidence, present: true }
     if (!finalResult.confidence) delete finalResult.asset
     return finalResult
   }

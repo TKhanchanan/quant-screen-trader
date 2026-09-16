@@ -48,6 +48,39 @@ class Window extends EventEmitter {
   isDestroyed = (): boolean => false
   getContentSize = (): number[] => [1320, 900]
 }
+const bitmap = (value: number, width = 2, height = 1): Electron.NativeImage => {
+  const resize = vi.fn((size: Electron.ResizeOptions) => bitmap(value, size.width, size.height))
+  const crop = vi.fn((bounds: Electron.Rectangle) => bitmap(value, bounds.width, bounds.height))
+  return { isEmpty: () => false, resize, crop, getSize: () => ({ width, height }),
+    toBitmap: () => new Uint8Array(width * height * 4).map((_, index) => index % 4 === 3 ? 255 : value) } as unknown as Electron.NativeImage
+}
+const ready = (platform: 'capitalbear' | 'iqoption' = 'capitalbear'):
+{ manager: InstanceType<typeof PlatformBrowserManager>; contents: Contents } => {
+  const manager = new PlatformBrowserManager(() => new View() as never)
+  const window = new Window()
+  manager.attach(platform, window as unknown as BrowserWindow)
+  const contents = views[0]!.webContents
+  contents.url = `https://${platform}.com/`
+  contents.emit('did-finish-load')
+  manager.command({ operation: 'layout', platform, bounds: { x: 0, y: 200, width: 900, height: 600 }, visible: true })
+  return { manager, contents }
+}
+const tabs = (platform: 'capitalbear' | 'iqoption', tabWidth = 120): Electron.NativeImage => {
+  const width = 900, height = 600, pixels = new Uint8Array(width * height * 4)
+  for (let index = 0; index < pixels.length; index += 4) {
+    pixels[index] = 32; pixels[index + 1] = 32; pixels[index + 2] = 32; pixels[index + 3] = 255
+  }
+  const left = platform === 'capitalbear' ? 220 : 160
+  for (let y = 12; y < 63; y++) for (const x of [left, left + tabWidth, left + tabWidth + 20,
+    left + tabWidth * 2 + 20, left + tabWidth * 2 + 40, left + tabWidth * 3 + 40]) {
+    const column = x + Math.floor((y - 12) / 20)
+    const index = (y * width + column) * 4
+    pixels[index] = 96; pixels[index + 1] = 96; pixels[index + 2] = 96
+  }
+  const image = bitmap(200, width, height) as unknown as { toBitmap: () => Uint8Array }
+  image.toBitmap = () => pixels
+  return image as unknown as Electron.NativeImage
+}
 describe('embedded browser lifecycle', () => {
   beforeEach(() => { views.length = 0; popups.length = 0 })
   it.each(['capitalbear', 'iqoption'] as const)('scopes Google login and callbacks to %s', (platform) => {
@@ -170,39 +203,7 @@ describe('embedded browser lifecycle', () => {
     expect(manager.command({ operation: 'state', platform: 'capitalbear' }).zoomFactor).toBe(.7)
     expect(views[0]?.webContents.setZoomFactor).not.toHaveBeenCalledWith(1)
   })
-  const bitmap = (value: number, width = 2, height = 1): Electron.NativeImage => {
-    const resize = vi.fn((size: Electron.ResizeOptions) => bitmap(value, size.width, size.height))
-    const crop = vi.fn((bounds: Electron.Rectangle) => bitmap(value, bounds.width, bounds.height))
-    return { isEmpty: () => false, resize, crop, getSize: () => ({ width, height }),
-      toBitmap: () => new Uint8Array(width * height * 4).map((_, index) => index % 4 === 3 ? 255 : value) } as unknown as Electron.NativeImage
-  }
-  const ready = (platform: 'capitalbear' | 'iqoption' = 'capitalbear'):
-  { manager: InstanceType<typeof PlatformBrowserManager>; contents: Contents } => {
-    const manager = new PlatformBrowserManager(() => new View() as never)
-    const window = new Window()
-    manager.attach(platform, window as unknown as BrowserWindow)
-    const contents = views[0]!.webContents
-    contents.url = `https://${platform}.com/`
-    contents.emit('did-finish-load')
-    manager.command({ operation: 'layout', platform, bounds: { x: 0, y: 200, width: 900, height: 600 }, visible: true })
-    return { manager, contents }
-  }
-  const tabs = (platform: 'capitalbear' | 'iqoption', tabWidth = 120): Electron.NativeImage => {
-    const width = 900, height = 600, pixels = new Uint8Array(width * height * 4)
-    for (let index = 0; index < pixels.length; index += 4) {
-      pixels[index] = 32; pixels[index + 1] = 32; pixels[index + 2] = 32; pixels[index + 3] = 255
-    }
-    const left = platform === 'capitalbear' ? 220 : 160
-    for (let y = 12; y < 63; y++) for (const x of [left, left + tabWidth, left + tabWidth + 20,
-      left + tabWidth * 2 + 20, left + tabWidth * 2 + 40, left + tabWidth * 3 + 40]) {
-      const column = x + Math.floor((y - 12) / 20)
-      const index = (y * width + column) * 4
-      pixels[index] = 96; pixels[index + 1] = 96; pixels[index + 2] = 96
-    }
-    const image = bitmap(200, width, height) as unknown as { toBitmap: () => Uint8Array }
-    image.toBitmap = () => pixels
-    return image as unknown as Electron.NativeImage
-  }
+
   it.each(['capitalbear', 'iqoption'] as const)('captures the %s asset tab without broker input', async (platform) => {
     const { manager, contents } = ready(platform)
     const image = tabs(platform)
@@ -365,8 +366,8 @@ describe('nine opened tabs at operating zoom', () => {
     const garbage = await manager.captureAssetTabs(platform, async () => ({ asset: 'D D', confidence: .99 }))
     expect(garbage.slots.every(s => s.state === 'UNCERTAIN')).toBe(true)
     let variant = 0
-    const disagreement = await manager.captureAssetTabs(platform, async () => ({ asset: variant++ % 4 ? 'EUR/USD' : 'GBP/USD', confidence: .99 }))
-    expect(disagreement.slots.every(s => s.state === 'UNCERTAIN')).toBe(true)
+    const tie = await manager.captureAssetTabs(platform, async () => ({ asset: variant++ % 2 ? 'EUR/USD' : 'GBP/USD', confidence: .99 }))
+    expect(tie.slots.every(s => s.state === 'UNCERTAIN')).toBe(true)
   })
   it('rejects a missing interior tab instead of shifting subsequent assets', () => {
     expect(findAssetTabs(screenshot(9, 1, 2), 'iqoption')).toHaveLength(0)
@@ -485,6 +486,140 @@ describe('nine opened tabs at operating zoom', () => {
     expect(Array.from({ length: 5 }, (_, i) => canvasSlotForTab(platform, i + 1, 5))).toEqual([1, 2, 3, 4, 5])
     expect(() => canvasSlotForTab(platform, 6, 5)).toThrow('MAPPING')
     expect(() => canvasSlotForTab(platform, 1, 10)).toThrow('MAPPING')
+  })
+
+  describe('asset OCR majority consensus and evidence preservation', () => {
+    it('detects majority 3 votes EUR/GBP + 1 EUR/GBF', async () => {
+      const { manager, contents } = ready('capitalbear')
+      const image = tabs('capitalbear')
+      contents.capturePage.mockResolvedValue(image)
+      let call = 0
+      const recognize = vi.fn(async () => {
+        const asset = call++ === 3 ? 'EUR/GBF' : 'EUR/GBP'
+        return { asset, rawText: asset, confidence: .98 }
+      })
+      const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+      const geometry = findAssetTabs(normalized, 'capitalbear')
+      const result = await manager.captureAssetLabel(2, geometry, image, recognize)
+      expect(result.confidence).toBeGreaterThanOrEqual(.95)
+      expect(result.asset).toBe('EUR/GBP')
+      expect(result.ocrVotes).toBe(3)
+    })
+
+    it('detects majority 2 votes EUR/USD + 1 EUR/USO', async () => {
+      const { manager, contents } = ready('capitalbear')
+      const image = tabs('capitalbear')
+      contents.capturePage.mockResolvedValue(image)
+      let call = 0
+      const recognize = vi.fn(async () => {
+        const asset = call === 0 || call === 1 ? 'EUR/USD' : call === 2 ? 'EUR/USO' : null
+        call++
+        return { ...(asset ? { asset } : {}), rawText: asset ?? '???', confidence: .98 }
+      })
+      const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+      const geometry = findAssetTabs(normalized, 'capitalbear')
+      const result = await manager.captureAssetLabel(2, geometry, image, recognize)
+      expect(result.confidence).toBeGreaterThanOrEqual(.95)
+      expect(result.asset).toBe('EUR/USD')
+      expect(result.ocrVotes).toBe(2)
+    })
+
+    it('marks 2 vs 2 tie as UNCERTAIN', async () => {
+      const { manager, contents } = ready('capitalbear')
+      const image = tabs('capitalbear')
+      contents.capturePage.mockResolvedValue(image)
+      let call = 0
+      const recognize = vi.fn(async () => {
+        const asset = call++ < 2 ? 'EUR/USD' : 'EUR/USO'
+        return { asset, rawText: asset, confidence: .98 }
+      })
+      const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+      const geometry = findAssetTabs(normalized, 'capitalbear')
+      const result = await manager.captureAssetLabel(2, geometry, image, recognize)
+      expect(result.confidence).toBe(0)
+      expect(result.asset).toBeUndefined()
+    })
+
+    it('does not zero confidence for brightEdge > 2 with non-clipped majority', async () => {
+      const { manager, contents } = ready('capitalbear')
+      const image = tabs('capitalbear')
+      const normalized = normalizeBitmap(image.toBitmap(), image.getSize().width, image.getSize().height, undefined, false)
+      const geometry = findAssetTabs(normalized, 'capitalbear')
+      const tab = geometry[1]!
+      const width = 900, height = 600
+      const pixels = new Uint8Array(image.toBitmap())
+      for (let row = Math.floor(tab.y + tab.height * .15); row < tab.y + tab.height * .58; row++) {
+        for (let column = Math.floor(tab.x + tab.width * .96); column < tab.x + tab.width * .995; column++) {
+          const idx = (row * width + column) * 4
+          pixels[idx] = 200; pixels[idx + 1] = 200; pixels[idx + 2] = 200; pixels[idx + 3] = 255
+        }
+      }
+      const brightImage = {
+        ...image,
+        toBitmap: () => pixels,
+        crop: (image as { crop: unknown }).crop,
+        getSize: () => ({ width, height }),
+        isEmpty: () => false
+      } as unknown as Electron.NativeImage
+      contents.capturePage.mockResolvedValue(brightImage)
+      const recognize = vi.fn(async () => ({ asset: 'EUR/USD', rawText: 'EUR/USD', confidence: .98 }))
+      const result = await manager.captureAssetLabel(2, geometry, brightImage, recognize)
+      expect(result.confidence).toBe(.94)
+      expect(result.confidence).toBeGreaterThan(0)
+      expect(result.asset).toBe('EUR/USD')
+      expect(result.rawOCR).toEqual(['EUR/USD', 'EUR/USD', 'EUR/USD', 'EUR/USD'])
+    })
+
+    it('detects clipped GBP/JPY OTC with 3 matching title votes + 1 noise', async () => {
+      views.length = 0
+      const manager = new PlatformBrowserManager(() => new View() as never)
+      manager.attach('capitalbear', new Window() as unknown as BrowserWindow)
+      const contents = views[0]!.webContents
+      contents.url = 'https://capitalbear.com/'; contents.emit('did-finish-load')
+      manager.command({ operation: 'layout', platform: 'capitalbear', bounds: { x: 0, y: 0, width: 1320, height: 600 }, visible: true })
+      const stamp = new Date().toISOString()
+      manager.useCalibration('capitalbear', { id: '00000000-0000-4000-8000-000000000002', platform: 'capitalbear',
+        name: 'Fixture grid', geometrySource: 'MANUAL', createdAt: stamp, updatedAt: stamp, zoomFactor: .7,
+        referenceBrowserWidth: 1320, referenceBrowserHeight: 600, slots: defaultCalibration('capitalbear') })
+      const image = screenshot(9, 1)
+      for (let y = 220; y < 750; y++) for (let x = 200; x < 2800; x++) image.grayscale[y * image.width + x] = (x + y) % 2 ? 24 : 112
+      const bitmap = Uint8Array.from({ length: image.width * image.height * 4 }, (_, i) => i % 4 === 3 ? 255 : image.grayscale[Math.floor(i / 4)]!)
+      const crop = vi.fn(() => surfaceImage(false, 80, 24))
+      const native = { isEmpty: () => false, getSize: () => ({ width: image.width, height: image.height }), toBitmap: () => bitmap, crop } as unknown as Electron.NativeImage
+      contents.capturePage.mockResolvedValue(native)
+
+      let call = 0
+      const detected = await manager.captureAssetTabs('capitalbear', async () => {
+        call++
+        if (call <= 36) {
+          return { rawText: 'GBP/JPY (O...', confidence: .62 }
+        }
+        const isNoise = (call - 36) % 4 === 0
+        const text = isNoise ? 'GBP/USD (OTC) v' : 'GBP/JPY (OTC) v'
+        return { rawText: text, confidence: .75 }
+      })
+      expect(detected.slots.every(s => s.state === 'DETECTED' && s.assetName === 'GBP/JPY OTC')).toBe(true)
+    })
+
+    it('represents all CapitalBear target assets without a hardcoded allowlist', () => {
+      const assets = [
+        'GBP/JPY OTC',
+        'AUD/CAD OTC',
+        'EUR/GBP OTC',
+        'EUR/JPY OTC',
+        'NZD/USD OTC',
+        'Amazon OTC',
+        'OpenAI OTC',
+        'Anthropic OTC',
+        'MELANIA Coin OTC'
+      ]
+      for (const asset of assets) {
+        expect(normalizeAsset(asset)).toBe(asset)
+        expect(normalizeAsset(`_ ${asset}`)).toBe(asset)
+        expect(normalizeAsset(`. ${asset}`)).toBe(asset)
+        expect(normalizeAsset(asset.replace(' OTC', ' (OTC)'))).toBe(asset)
+      }
+    })
   })
 })
 })
