@@ -84,6 +84,16 @@ const tabs = (platform: 'capitalbear' | 'iqoption', tabWidth = 120): Electron.Na
 }
 describe('embedded browser lifecycle', () => {
   beforeEach(() => { views.length = 0; popups.length = 0 })
+  it('never automates portfolio controls during shadow-live acceptance', async () => {
+    vi.stubEnv('QST_SHADOW_LIVE', '1')
+    try {
+      const { manager, contents } = ready()
+      contents.emit('dom-ready')
+      expect(await manager.closePortfolioPanel('capitalbear')).toBe('FAILED')
+      expect(contents.executeJavaScript).not.toHaveBeenCalled()
+      expect(contents.sendInputEvent).not.toHaveBeenCalled()
+    } finally { vi.unstubAllEnvs() }
+  })
   it.each(['capitalbear', 'iqoption'] as const)('scopes Google login and callbacks to %s', (platform) => {
     const manager = new PlatformBrowserManager(() => new View() as never)
     const owner = new Window(), other = new Window()

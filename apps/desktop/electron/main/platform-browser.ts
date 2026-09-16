@@ -432,6 +432,8 @@ export class PlatformBrowserManager {
     void contents.loadURL(config.startUrl).catch(() => { /* did-fail-load reports a sanitized error. */ })
   }
   async closePortfolioPanel(platform: Platform): Promise<'CLOSED' | 'ALREADY_CLOSED' | 'NOT_FOUND' | 'FAILED'> {
+    // Shadow-live acceptance requires the operator to close broker panels manually.
+    if (process.env.QST_SHADOW_LIVE === '1') return 'FAILED'
     const entry = this.entries.get(platform)
     if (!entry || entry.view.webContents.isDestroyed()) return 'FAILED'
     if (entry.portfolioCleanupPromise) return entry.portfolioCleanupPromise
