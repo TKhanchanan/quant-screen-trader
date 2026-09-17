@@ -3,6 +3,12 @@
 Counters cover the run; detailed events stop at 64 MiB (and invalidate acceptance).
 Latency percentiles describe the last 2048 measurements; count/max cover the whole run.
 Only typed market records and a closed desktop telemetry schema enter this namespace.
+
+Detail is tiered so a 24-hour run fits the event bound. Every board revision and policy decision
+is counted and checked as it happens. Boards that name a selection, INVALID boards, and policy
+decisions that pass the baseline gate, act, diverge or leave SHADOW are written in full; the
+thousands of non-selecting revisions and their SKIP decisions become five-minute BOARD_SUMMARY
+counts per platform.
 """
 
 from __future__ import annotations
@@ -32,10 +38,13 @@ from quant_engine.paper.policy import PaperSettings
 from quant_engine.paper.resolver import accepts_entry, accepts_expiry, same_identity
 from quant_engine.policy.models import SOURCE_VERSIONS, AdaptivePolicyDecision
 
-SHADOW_LIVE_VERSION = "qst-shadow-live-v1"
+SHADOW_LIVE_VERSION = "qst-shadow-live-v2"
 MAX_EVENTS_BYTES = 64 * 1024 * 1024
 MAX_RECENT = 2048
 PLATFORMS = ("capitalbear", "iqoption")
+SUMMARY_WINDOW_MS = 300_000
+SUMMARY_KEYS = 64
+CONTEXT_HISTORY = 16
 
 
 def millis() -> int:
@@ -66,9 +75,12 @@ class ShadowLiveRecorder:
         application_version: str,
         run_id: str | None = None,
         now: int | None = None,
+        clock: Callable[[], int] = millis,
     ) -> None:
         self.lock = RLock()
-        at = millis() if now is None else now
+        # The live engine never passes a clock. Only the Phase 14 rehearsal injects virtual time.
+        self.clock = clock
+        at = clock() if now is None else now
         identifier = str(UUID(run_id)) if run_id else str(uuid4())
         self.folder = root / identifier
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -85,6 +97,9 @@ class ShadowLiveRecorder:
         self.qualified_until = at
         self.last_operational_snapshot: dict[str, int] = {}
         self.last_auto_sync: dict[str, tuple[str, int, int]] = {}
+        # (asset, context, first accepted sample, first sample of the next identity or reset).
+        self.contexts: dict[str, deque[tuple[str, str, int, int | None]]] = {}
+        self.board_windows: dict[str, dict[str, Any]] = {}
         self.data: dict[str, Any] = dict(
             runId=identifier,
             version=SHADOW_LIVE_VERSION,
@@ -296,6 +311,11 @@ class ShadowLiveRecorder:
         if stale or uncertain or (live and parsed > now):
             self.violation("causalityViolations", "INVALID_LIVE_SAMPLE_ACCEPTED")
         identity = (o.assetName, str(o.contextId))
+        history = self.contexts.setdefault(key, deque(maxlen=CONTEXT_HISTORY))
+        if not history or history[-1][:2] != identity:
+            if history and history[-1][3] is None:
+                history[-1] = (*history[-1][:3], at)
+            history.append((*identity, at, None))
         if (s["assetName"], s["contextId"]) != identity:
             if s["contextId"] is not None:
                 s["contextTransitions"] += 1
@@ -329,16 +349,27 @@ class ShadowLiveRecorder:
         s.update(source=o.sourceType, lastSampleAt=at, requiredAt=max(parsed, s["requiredAt"]))
         for timeframe, seconds in TIMEFRAMES.items():
             end = (at // (seconds * 1000) + 1) * seconds * 1000
-            key = f"{o.platform}:{o.slotId}:{o.contextId}:{timeframe}:{end}"
-            self.candle_requirements[key] = max(parsed, self.candle_requirements.get(key, 0))
+            candle = f"{o.platform}:{o.slotId}:{o.contextId}:{timeframe}:{end}"
+            self.candle_requirements[candle] = max(parsed, self.candle_requirements.get(candle, 0))
             if len(self.candle_requirements) > 4096:
                 self.candle_requirements.pop(next(iter(self.candle_requirements)))
         p["pipeline"]["Phase5"] += 1
-        self.latency(o.platform, "captureToAccepted", max(0, millis() - at))
+        self.latency(o.platform, "captureToAccepted", max(0, self.clock() - at))
 
-    def check_context(self, name: str, slot: int, asset: str, context: str) -> None:
-        current = self.data["slots"].get(f"{name}:{slot}")
-        if current is None or (current["assetName"], current["contextId"]) != (asset, context):
+    def check_context(self, name: str, slot: int, asset: str, context: str, at: int) -> None:
+        """A derived record must carry the identity the slot actually had when its data existed.
+
+        Comparing with the slot's *current* identity would call the last bar of a context that
+        closed on the next context's first reading contamination, and would miss nothing a
+        timed check misses: a context that never covered ``at`` is still a violation.
+        """
+        history = self.contexts.get(f"{name}:{slot}", ())
+        if not any(
+            (entry_asset, entry_context) == (asset, context)
+            and start < at
+            and (end is None or at <= end)
+            for entry_asset, entry_context, start, end in history
+        ):
             self.violation("crossContextContamination", "DERIVED_CONTEXT_MISMATCH")
 
     @observer
@@ -357,10 +388,18 @@ class ShadowLiveRecorder:
         name = bundle.platform
         self.data["platforms"][name]["pipeline"]["Phase7"] += 1
         required = available_at
+        self.check_context(
+            name, bundle.slotId, bundle.assetName, str(bundle.contextId), bundle.asOf
+        )
         for snapshot in [bundle.primary, *bundle.contexts.values()]:
             if snapshot is None:
                 continue
-            self.check_context(name, snapshot.slotId, snapshot.assetName, str(snapshot.contextId))
+            if (snapshot.slotId, snapshot.assetName, snapshot.contextId) != (
+                bundle.slotId,
+                bundle.assetName,
+                bundle.contextId,
+            ):
+                self.violation("crossContextContamination", "MIXED_CONTEXT_BUNDLE")
             if snapshot.featureTime > bundle.asOf:
                 self.violation("causalityViolations", "FUTURE_CONTEXT_CANDLE")
             key = f"{name}:{snapshot.slotId}:{snapshot.contextId}:{snapshot.timeframe}:{snapshot.featureTime}"
@@ -384,10 +423,13 @@ class ShadowLiveRecorder:
         if self.once(key):
             self.data["platforms"][name]["boards"][board.status] += 1
             self.data["platforms"][name]["pipeline"]["Phase8"] += 1
-            self.event("BOARD", board=board.model_dump(mode="json"), decisionAvailableAt=at)
+            if board.selectedSlotId is not None or board.status == "INVALID":
+                self.event("BOARD", board=board.model_dump(mode="json"), decisionAvailableAt=at)
+            else:
+                self.summarize_board(board)
         required = board.asOf
         for c in board.candidates:
-            self.check_context(name, c.slotId, c.assetName, str(c.contextId))
+            self.check_context(name, c.slotId, c.assetName, str(c.contextId), c.asOf)
             dependency = self.lineage.get(f"{name}:{c.slotId}:{c.contextId}:{c.asOf}")
             if dependency is None:
                 self.warn("MISSING_DECISION_LINEAGE")
@@ -409,7 +451,18 @@ class ShadowLiveRecorder:
             self.violation("causalityViolations", "FUTURE_POLICY_EVIDENCE")
         if self.once(f"policy:{decision.decisionId}"):
             self.data["platforms"][name]["policyActions"][decision.policyAction] += 1
-            self.event("POLICY", decision=decision.model_dump(mode="json"), baselineOffered=permits)
+            if (
+                decision.baseGatePassed
+                or decision.policyAction != "SKIP"
+                or decision.adaptiveAction != decision.baselineAction
+                or decision.mode != "SHADOW"
+                or not permits
+            ):
+                self.event(
+                    "POLICY", decision=decision.model_dump(mode="json"), baselineOffered=permits
+                )
+            else:
+                self.summarize_policy(board, decision)
 
     @observer
     def first_price(
@@ -449,7 +502,11 @@ class ShadowLiveRecorder:
                 p["outcomes"][trade.outcome] += 1
             if trade.status in ("PENDING_ENTRY", "OPEN", "RESOLVED"):
                 self.check_context(
-                    trade.platform, trade.slotId, trade.assetName, str(trade.contextId)
+                    trade.platform,
+                    trade.slotId,
+                    trade.assetName,
+                    str(trade.contextId),
+                    trade.boardAsOf,
                 )
             if trade.entryTime is not None and trade.entryTime < trade.decisionAvailableAt:
                 self.violation("causalityViolations", "EARLY_PAPER_ENTRY")
@@ -464,21 +521,100 @@ class ShadowLiveRecorder:
                 price = trade.entryPrice if trade.status == "OPEN" else trade.expiryPrice
                 if stamp != sample.timestamp or price != sample.price:
                     self.violation("causalityViolations", "NON_CANONICAL_PAPER_PRICE")
+                if (sample.slotId, sample.assetName, sample.contextId) != (
+                    trade.slotId,
+                    trade.assetName,
+                    trade.contextId,
+                ):
+                    self.violation("crossContextContamination", "PAPER_PRICE_CONTEXT_MISMATCH")
             self.event("PAPER", trade=trade.model_dump(mode="json"))
+
+    def summary_window(self, name: str, as_of: int) -> dict[str, Any]:
+        window = self.board_windows.get(name)
+        if window is not None and as_of >= window["fromAsOf"] + SUMMARY_WINDOW_MS:
+            self.emit_summary(name)
+            window = None
+        if window is None:
+            window = dict(
+                fromAsOf=as_of,
+                toAsOf=as_of,
+                boardRevisions={},
+                boardReasons={},
+                missingSlots={},
+                candidateStatus={},
+                exclusionReasons={},
+                maxRankScore=0.0,
+                maxEnsembleConfidence=0.0,
+                policyActions={},
+                policyReasons={},
+                policyVetoes={},
+                evidenceStatus={},
+            )
+            self.board_windows[name] = window
+        window["fromAsOf"] = min(window["fromAsOf"], as_of)
+        window["toAsOf"] = max(window["toAsOf"], as_of)
+        return window
+
+    @staticmethod
+    def tally(counts: dict[str, int], key: object) -> None:
+        name = str(key)
+        if name not in counts and len(counts) >= SUMMARY_KEYS:
+            name = "OTHER"
+        counts[name] = counts.get(name, 0) + 1
+
+    def summarize_board(self, board: OpportunityBoard) -> None:
+        window = self.summary_window(board.platform, board.asOf)
+        self.data["platforms"][board.platform]["summarizedBoardRevisions"] = (
+            self.data["platforms"][board.platform].get("summarizedBoardRevisions", 0) + 1
+        )
+        self.tally(window["boardRevisions"], board.status)
+        for code in board.reasons:
+            self.tally(window["boardReasons"], code)
+        for slot in board.missingSlots:
+            self.tally(window["missingSlots"], slot)
+        for candidate in board.candidates:
+            self.tally(window["candidateStatus"], candidate.candidateStatus)
+            for code in candidate.exclusionReasons:
+                self.tally(window["exclusionReasons"], code)
+            window["maxRankScore"] = max(window["maxRankScore"], candidate.rankScore)
+            window["maxEnsembleConfidence"] = max(
+                window["maxEnsembleConfidence"], candidate.ensembleConfidence
+            )
+
+    def summarize_policy(self, board: OpportunityBoard, decision: AdaptivePolicyDecision) -> None:
+        window = self.summary_window(board.platform, board.asOf)
+        self.data["platforms"][board.platform]["summarizedPolicyDecisions"] = (
+            self.data["platforms"][board.platform].get("summarizedPolicyDecisions", 0) + 1
+        )
+        self.tally(window["policyActions"], decision.policyAction)
+        self.tally(window["evidenceStatus"], decision.evidenceStatus)
+        for code in decision.reasons:
+            self.tally(window["policyReasons"], code)
+        for code in decision.vetoes:
+            self.tally(window["policyVetoes"], code)
+
+    def emit_summary(self, name: str) -> None:
+        window = self.board_windows.pop(name, None)
+        if window is not None:
+            self.event("BOARD_SUMMARY", platform=name, **window)
 
     @observer
     def reset(self, name: str, slots: list[int]) -> None:
+        at = self.clock()
         for slot in slots:
             current = self.data["slots"].get(f"{name}:{slot}")
             if current:
                 current["slotResets"] += 1
                 current["contextId"] = None
-        self.event("SLOT_RESET", platform=name, slotIds=slots, at=millis())
+            history = self.contexts.get(f"{name}:{slot}")
+            if history and history[-1][3] is None:
+                history[-1] = (*history[-1][:3], at)
+        self.event("SLOT_RESET", platform=name, slotIds=slots, at=at)
 
     @observer
     def telemetry(self, value: dict[str, Any], now: int | None = None) -> None:
         value = copy.deepcopy(value)
-        at = millis() if now is None else now
+        at = self.clock() if now is None else now
         name = value["platform"]
         prior_desktop = self.data["desktop"].get(name)
         self.data["desktop"][name] = value
@@ -611,11 +747,11 @@ class ShadowLiveRecorder:
         if code == "HTTP_429":
             self.data["http429s"] += 1
             self.data["engineBusyEvents"] += 1
-        self.event("ERROR", code=code, at=millis())
+        self.event("ERROR", code=code, at=self.clock())
 
     def report(self, now: int | None = None) -> dict[str, Any]:
         with self.lock:
-            at = millis() if now is None else now
+            at = self.clock() if now is None else now
             if self.data["finishedAt"] is None:
                 self.data["durationMs"] = self.completed_duration + max(
                     0, at - self.segment_started
@@ -716,7 +852,10 @@ class ShadowLiveRecorder:
 
     @observer
     def flush(self, *, now: int | None = None, finish: bool = False) -> None:
-        at = millis() if now is None else now
+        at = self.clock() if now is None else now
+        if finish:
+            for name in list(self.board_windows):
+                self.emit_summary(name)
         payload = "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in self.pending)
         if self.data["eventBytes"] + len(payload.encode()) <= MAX_EVENTS_BYTES:
             with self.events.open("a") as output:

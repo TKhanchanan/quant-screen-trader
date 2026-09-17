@@ -25,13 +25,15 @@
     "typecheck": "npm run typecheck:js && npm run typecheck:python",
     "test:js": "npm run test --workspaces --if-present",
     "test:python": "node scripts/python.mjs -m pytest services/quant-engine/tests",
-    "test": "npm run test:js && npm run test:python && npm run test:package",
+    "test": "npm run test:js && npm run test:python && npm run test:package && npm run test:phase14",
     "build": "npm run build --workspaces --if-present",
     "package:engine": "node scripts/package.mjs engine",
     "package:mac": "node scripts/package.mjs mac",
     "package:win": "node scripts/package.mjs win",
     "package:verify": "node scripts/package.mjs verify",
-    "test:package": "node --test packaging/package.test.mjs"
+    "test:package": "node --test packaging/package.test.mjs",
+    "test:phase14": "node --test scripts/phase14/*.test.mjs",
+    "rehearsal:phase14": "node scripts/phase14-rehearsal.mjs"
   },
   "allowScripts": {
     "esbuild@0.25.12": true,

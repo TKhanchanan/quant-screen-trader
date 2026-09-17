@@ -4,7 +4,10 @@
 both brokers have sustained macOS arm64 evidence, a controlled restart, and green CI.**
 Phase 12 remains closed; Phase 13 macOS is accepted and Windows is deferred.
 
-The opt-in `qst-shadow-live-v1` recorder observes the existing Phase 4–12 pipeline.
+**Operators:** run the real soak with the step-by-step [Phase 14 operator runbook](phase14-operator-runbook.md)
+and the scripts in `scripts/phase14/`. No AI session needs to stay open while it runs.
+
+The opt-in `qst-shadow-live-v2` recorder observes the existing Phase 4–12 pipeline.
 It does not change policy mode, features, strategies, gates, paper semantics, accounting,
 watchdog thresholds, execution settings, or broker controls. No screenshots, raw OCR text,
 cookies, browser storage, credentials, broker balances, or exception/path text enter its output.
@@ -43,7 +46,8 @@ The old Phase 13 binary cannot record Phase 14.
 The engine writes only `<app-data>/phase14/<runId>/`:
 
 - `summary.json`: atomic checkpoint, run counters, per-platform/per-slot state and latency.
-- `events.jsonl`: board, selection, policy, paper, context/source/reset and health events.
+- `events.jsonl`: selection board, policy, paper, context/source/reset, health and five-minute
+  board-summary events (see *Detail tiers* below).
 - `lease.sqlite3`: process-held exclusive lease; prevents simultaneous writers to one run.
 
 Use the configured loopback port (8765 by default). These endpoints reject browser origins
@@ -65,6 +69,22 @@ READY events include the selected candidate, confidence, lead margin, agreement 
 Policy events preserve their original baseline/adaptive actions, evidence status, snapshot,
 matched rules, vetoes and reasons. They are never re-evaluated against newer evidence.
 
+**Detail tiers (v2).** Every board revision and policy decision is still counted and passes every
+causal and context check as it happens. What changed is what is *written in full*:
+
+- `BOARD` events: boards that name a selection, and INVALID boards;
+- `POLICY` events: decisions that pass the baseline gate, act (ALLOW/WATCH), diverge from the
+  baseline, run outside SHADOW or were not offered to paper;
+- `BOARD_SUMMARY` events: per platform, every five minutes of board time, the counts of all other
+  revisions by status, board reasons, missing slots, candidate status, exclusion reasons, highest
+  rank score and confidence, and their SKIP decisions by action, evidence status, reason and veto.
+  Each platform also reports `summarizedBoardRevisions` and `summarizedPolicyDecisions`.
+
+v1 wrote every revision in full. At live capture rates (nine CapitalBear slots closing S5 bars,
+thousands of provisional revisions an hour) that filled the 64 MiB bound in roughly 2–13 hours of
+capture, so a 24-hour run could only ever end in `EVENT_CAP_REACHED`. The bound, its hard failure
+and every counter are unchanged; the accelerated rehearsal measures the v2 rate.
+
 Latency is in milliseconds. `captureToAccepted` measures wall time from capture to canonical
 acceptance. The four downstream spans use a monotonic clock at actual processing boundaries:
 `primaryAvailableToEnsemble`, `ensembleToBoard`, `boardToPolicy`, `policyToPaperIntent`.
@@ -77,6 +97,15 @@ window**, then propagates required availability through feature bundles and boar
 An arrival that closes a prior candle does not lend its later price to that candle.
 The recorder checks joined context timestamps, decision availability, policy evidence time,
 context identity, entry/expiry timing, canonical price equality and first eligible sample.
+
+Context identity is checked **as of the record's own time**. Each slot keeps a short history of
+the identities it carried: from the first accepted reading of a context to the first accepted
+reading of the next one (or a slot reset). A feature bundle, board candidate or paper trade must
+carry an identity that covered its `asOf` / `boardAsOf`, a bundle may never join snapshots from
+different contexts (`MIXED_CONTEXT_BUNDLE`), and a paper price must come from the trade's own
+context (`PAPER_PRICE_CONTEXT_MISMATCH`). v1 compared every record with the slot's *current*
+identity, so the last bar of a context — closed by the next context's first reading after Start
+observation or a surface change — was reported as contamination although nothing had been joined.
 Any detected violation is a hard failure; instrumentation never repairs or retimes a decision.
 
 Arrays and identity caches are bounded: 512 pending events, 64 recent events/segments,
@@ -133,7 +162,11 @@ curl --fail -X POST http://127.0.0.1:8765/api/shadow-live/verify-storage
 This flushes the existing buffer, runs SQLite quick checks on configuration and policy stores,
 and reads/revalidates Parquet files written since run start, one file and 256 rows at a time.
 It reports file/row/byte counts. The audit holds the existing busy gate; do it after stopping
-capture. The scan caps at 10,000 new Parquet files and remains incomplete beyond that cap.
+capture. One call verifies at most 10,000 new Parquet files, in (modification time, path) order,
+and reports `remainingFiles`; the next call resumes after the last verified file, so repeat it
+until `complete` is true (`06-finish.sh` does). A day of live capture writes tens of thousands of
+small files, which a single capped scan could never finish. A read failure keeps its cursor and
+is retried on the next call; confirmed corruption is never reset.
 Check file counts and duplicate/drop counters for operational growth; the recorder does not
 invent an expected file-growth rate or rewrite storage. A read error remains unverified;
 confirmed SQLite corruption or repeated storage failure fails the run.
@@ -159,7 +192,7 @@ The closed telemetry schema includes per-slot attempts, parsed/GOOD/UNCERTAIN co
 Broker-press and armed observations are sticky failure signals. The execution observer can
 miss activity during telemetry gaps, so independent operator verification is required.
 
-Export `/api/shadow-live/checkpoint` to `docs/evidence/phase14/shadow-live-acceptance.json`
+Export `/api/shadow-live/checkpoint` (or the file `06-finish.sh` writes) to `docs/evidence/phase14/shadow-live-acceptance.json`
 after verifying its contents. Include normal CI reference and the exact tested commit in the
 acceptance notes. Never commit the browser profile, screenshots, secrets, or a whole data root.
 The initial committed artifact explicitly records **LIVE ACCEPTANCE PENDING**; synthetic test
@@ -169,3 +202,30 @@ actual sustained session, restart, protected diff review, and normal GitHub CI a
 ## Auto Sync review during the soak
 
 The recorder counts Auto Sync scans and applied slot changes separately from manual Sync. When automatic changes occur, inspect the visible instruments and recorded context transitions before submitting `POST /api/shadow-live/verify-auto-sync` with `platform`, `reviewedAppliedChanges` (the current recorded count), and `unexpectedAutoSyncChanges` (the actually observed number). The attestation is labeled `OPERATOR_OBSERVATION`. An unreviewed applied change keeps acceptance pending, a later change invalidates the earlier review, and any unexpected change fails acceptance. Never attest zero without checking.
+
+## Accelerated rehearsal
+
+`npm run rehearsal:phase14` replays the equivalent of a 25-hour run in minutes on virtual time.
+It is **REHEARSAL ONLY — NOT REAL LIVE ACCEPTANCE**; its output goes to the ignored
+`artifacts/phase14-rehearsal/` folder and never to `docs/evidence/phase14`.
+
+- `services/quant-engine/tests/phase14_rehearsal.py` drives the production `MarketEngine`
+  (Phases 5–10, SHADOW policy) and this recorder with `SYNTHETIC_REHEARSAL` broker-shaped
+  observations: both brokers, nine slots each, GOOD and UNCERTAIN readings, an unidentified slot,
+  an unreadable slot, a manual asset change, a surface context change, an Auto Sync rename and its
+  review, a controlled restart at hour 8 (including a refused wrong-commit resume and a refused
+  second owner), an engine stall with timeouts and a 429, a network hiccup, and capture past the
+  targets before the storage audit. The recorder's clock is injected; production passes none.
+  It then audits the persisted Parquet and policy journal independently of the recorder, runs
+  isolated negative fixtures (future sample, early entry/expiry, stale context, duplicate board,
+  oversized batch, queue beyond capacity, armed execution), and applies the real acceptance
+  evaluator to the final state with only the durations varied (23:59:59 PENDING, 24:00:00 COMPLETE,
+  22:59:59 per broker PENDING).
+- `apps/desktop/tests/rehearsal/` replays the exported board timeline through the real
+  `ExecutionManager` in PAPER mode (its press path refuses and counts), checks every evaluated board
+  against an independent gate oracle, exercises every refusal code around the production defaults
+  (cooldown and hourly cap with an inert WOULD_PRESS stand-in, because PAPER never presses), and
+  drives the real `MarketManager` queue through a burst above 18 and a stall beyond 180.
+
+It cannot show Electron or broker behaviour over a day, memory drift, OCR degradation, login expiry,
+network outages or sleep/wake. Those are what the real soak is for.

@@ -112,7 +112,7 @@ Phase 12 ✅ Evidence-gated adaptive analytical policy (`qst-policy-v1`) and wat
 
 Phase 13 🟡 macOS accepted / Windows deferred. See [Desktop packaging](docs/packaging.md).
 
-Phase 14 🚧 Shadow-live validation in progress. The bounded operational recorder is opt-in; sustained macOS live acceptance is pending. See [Shadow-live validation](docs/shadow-live.md).
+Phase 14 🚧 Shadow-live validation in progress. The bounded operational recorder is opt-in; sustained macOS live acceptance is pending. See [Shadow-live validation](docs/shadow-live.md) and the [Phase 14 operator runbook](docs/phase14-operator-runbook.md). The accelerated rehearsal (`npm run rehearsal:phase14`) validates logic only and is not live acceptance.
 
 Execution layer ⚠️ Implemented, not yet accepted against a live broker. It locates the broker's own direction controls in each of the nine cells, and in AUTO mode presses the one a finished board named. It sets no stake, no expiry and no account, reads no balance, and records no outcome. Verified by unit tests only — the control locator has never been run against a real broker panel, so measure the controls and watch a PAPER run before arming AUTO. Position sizing, outcome tracking and installer packaging remain unimplemented.
 

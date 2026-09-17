@@ -145,3 +145,7 @@ artifacts/**/*.png
 artifacts/**/*.jpg
 artifacts/**/*.jpeg
 artifacts/**/*.bmp
+
+# Phase 14 rehearsal output and local operator state (never committed)
+artifacts/phase14-rehearsal/
+.runtime/

@@ -18,6 +18,7 @@
     "electron/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.ts",
+    "vitest.rehearsal.config.ts",
     "src/renderer/src/global.d.ts",
     "tests/**/*.ts"
   ]
