@@ -74,7 +74,8 @@ export async function queueRehearsal(harness: QueueHarness): Promise<QueueResult
         secondSamples: 5, m1Samples: 6, m1State: 'FORMING' })) })
   }) as typeof fetch
   const market = harness.create(browsers)
-  const telemetry = new ShadowLiveTelemetry(market, { state: () => ({ armed: false, tickets: [] }) } as unknown as ExecutionManager,
+  const telemetry = new ShadowLiveTelemetry(market, { state: () => ({ armed: false, tickets: [], lastBoardAsOf: null,
+    settings: { mode: 'OFF' } }) } as unknown as ExecutionManager,
     { host: '127.0.0.1', port: 8765, healthUrl: 'http://127.0.0.1:8765/health' })
   const dropped = () => PLATFORMS.reduce((total, platform) => total + market.command({ platform, operation: 'state' }).dropped, 0)
   const phase = async (duration: number): Promise<PhaseResult> => {

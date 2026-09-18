@@ -140,3 +140,11 @@ fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .drag-handle { cursor: move; background: #0d172be8; color: white; padding: 5px; max-width: 100%; text-align: left; font-size: 11px; }
 .resize-handle { position: absolute; right: 0; bottom: 0; width: 26px; height: 26px; cursor: nwse-resize; background: #76a5ff; color: #07101e; }
 .overlay-opacity { z-index: 20; position: absolute; bottom: 5px; left: 32px; display: flex; align-items: center; gap: 6px; background: #0d172be8; color: white; font-size: 11px; padding: 4px; }
+
+/* The execution controls sit inside the combined sidebar section without their own card chrome. */
+.trading-controls-wrapper section, .trading-controls-wrapper main, .trading-controls-wrapper div.trading-controls {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+}

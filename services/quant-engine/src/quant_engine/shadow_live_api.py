@@ -1,7 +1,7 @@
 """Local operational evidence endpoints. No policy or execution mutation."""
 
 import asyncio
-from typing import Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
@@ -37,6 +37,19 @@ class CaptureSlot(Model):
     m1Samples: int = Field(default=0, ge=0)
 
 
+class ExecutionTicketSummary(Model):
+    """One would-press (PAPER) or refused (BLOCKED) execution ticket. Never a real press."""
+
+    id: str = Field(min_length=1, max_length=64)
+    boardAsOf: int
+    slotId: int = Field(ge=1, le=9)
+    assetName: str = Field(max_length=120)
+    direction: Literal["HIGHER", "LOWER"]
+    state: Literal["PAPER", "BLOCKED"]
+    reasons: list[Annotated[str, Field(max_length=64)]] = Field(max_length=12)
+    requestedAt: str = Field(max_length=40)
+
+
 class DesktopTelemetry(Model):
     platform: Platform
     instanceId: UUID
@@ -50,7 +63,14 @@ class DesktopTelemetry(Model):
     droppedBatches: int = Field(ge=0)
     http429s: int = Field(ge=0)
     armed: bool
+    """A LIVE (AUTO) executor is armed: the only armed state that can press a broker control."""
     brokerPresses: int = Field(ge=0)
+    executionMode: Literal["OFF", "PAPER", "AUTO"] = "OFF"
+    paperArmed: bool = False
+    boardsEvaluated: int = Field(default=0, ge=0)
+    paperTickets: int = Field(default=0, ge=0)
+    blockedTickets: int = Field(default=0, ge=0)
+    recentTickets: list[ExecutionTicketSummary] = Field(default_factory=list, max_length=5)
     mainLoopDelayMs: float = Field(ge=0, allow_inf_nan=False)
     autoSyncEnabled: bool = False
     autoSyncRuns: int = Field(default=0, ge=0)
@@ -96,7 +116,8 @@ class RestartVerification(Model):
     sessionGuardRestoredWithoutUnlock: bool
     policyJournalRestored: bool
     noOrphanEngine: bool
-    executionStayedDisarmed: bool
+    liveExecutionNeverArmed: bool
+    """AUTO was never armed in either workspace. PAPER may have been armed."""
     noBrokerPresses: bool
 
 
@@ -112,7 +133,7 @@ async def verify_restart(value: RestartVerification, request: Request) -> dict[s
             value.model_dump().values()
         )
         shadow.data["executionVerified"] = (
-            value.executionStayedDisarmed
+            value.liveExecutionNeverArmed
             and value.noBrokerPresses
             and len(shadow.data["desktop"]) == 2
             and shadow.data["executionArmed"] is False

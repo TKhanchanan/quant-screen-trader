@@ -203,6 +203,33 @@ export function directionForVote(direction: 'UP' | 'DOWN' | 'NEUTRAL' | 'SKIP'):
   return direction === 'UP' ? 'HIGHER' : direction === 'DOWN' ? 'LOWER' : null
 }
 
+/** OFF has nothing to arm. PAPER arms the full gate chain without a press; AUTO arms presses. */
+export function armAvailable(state: Pick<ExecutionState, 'armed' | 'settings'>): boolean {
+  return !state.armed && state.settings.mode !== 'OFF'
+}
+
+/**
+ * An armed executor keeps its mode. Switching an armed PAPER executor to AUTO would arm real
+ * orders without anyone pressing Arm for them, so the operator has to press หยุด (Disarm) first.
+ */
+export function modeLocked(state: Pick<ExecutionState, 'armed'>): boolean {
+  return state.armed
+}
+
+export function armedLabel(state: Pick<ExecutionState, 'armed' | 'settings'> | null): string {
+  if (!state?.armed) return 'ยังไม่พร้อม'
+  return state.settings.mode === 'PAPER' ? 'พร้อมคิด (PAPER — ไม่กดจริง)' : 'พร้อมส่งคำสั่ง (ARMED)'
+}
+
+/** The line under the controls: what the next qualifying board will do. */
+export function readyLine(state: Pick<ExecutionState, 'armed' | 'settings'> | null): string {
+  if (!state) return 'กำลังอ่านสถานะคำสั่งซื้อขาย…'
+  if (!state.armed) return 'ยังไม่เปิดพร้อมส่งคำสั่ง'
+  return state.settings.mode === 'PAPER'
+    ? 'พร้อมแล้ว (PAPER) — บอร์ดถัดไปที่ผ่านเกณฑ์จะถูกบันทึกว่าจะกดปุ่มไหน โดยไม่กดจริง'
+    : 'พร้อมแล้ว — บอร์ดถัดไปที่ผ่านเกณฑ์จะถูกกดทันที'
+}
+
 export function ticketLabel(ticket: OrderTicket): string {
   return `${new Date(ticket.requestedAt).toLocaleTimeString('th-TH')} · ช่อง ${ticket.slotId} · ${ticket.assetName} · ` +
     `${DIRECTION_LABELS[ticket.direction]} · ${TICKET_STATE_LABELS[ticket.state]}` +

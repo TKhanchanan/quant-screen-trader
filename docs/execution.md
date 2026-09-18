@@ -112,6 +112,19 @@ changed, and no daily total can reach a stake, a score or a threshold — the gu
 those. The veto is sticky: once a stop has been read it stays in force until the engine
 positively says otherwise, so an unreachable engine cannot lift a limit.
 
+## Arming PAPER, and the mode lock
+
+**Arm** (**เปิดพร้อมส่งคำสั่ง**) is available in PAPER as well as AUTO. An armed PAPER executor runs
+every gate on every new board and records a `PAPER` ticket with reason `NOT_SENT` where AUTO would
+have pressed; it never calls the press path, so it adds nothing to the hourly count or cooldown.
+
+The mode is locked while armed: press **หยุด** before changing it. The main process also refuses a
+switch into AUTO while armed (`EXECUTION_ARMED`), because the manager keeps its arm across a mode
+change to AUTO and an armed PAPER executor would otherwise become a live one without anyone arming
+it. While Phase 14 is recording (`QST_SHADOW_LIVE=1`) the main process refuses AUTO, arming AUTO and
+the all-controls test outright (`SHADOW_LIVE_PAPER_ONLY`). These refusals sit at the IPC boundary;
+the manager, the executor and the press path are unchanged.
+
 ## PAPER mode is not the paper simulator
 
 Two unrelated things in this project are called "paper".

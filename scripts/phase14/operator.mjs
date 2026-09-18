@@ -26,7 +26,7 @@ export const RESTART_QUESTIONS = Object.freeze([
   ["sessionGuardRestoredWithoutUnlock", "Is the daily session guard in the same state as before (a locked day is still locked)?"],
   ["policyJournalRestored", "Does the policy state still show SHADOW with its earlier decision history?"],
   ["noOrphanEngine", "Before relaunch, did 05-restart.sh report port 8765 free and no leftover QuantScreen Trader process?"],
-  ["executionStayedDisarmed", "Did execution stay OFF and disarmed in BOTH workspaces for the whole run?"],
+  ["liveExecutionNeverArmed", "Was AUTO (real orders) NEVER armed in either workspace? (PAPER armed is fine)"],
   ["noBrokerPresses", "Did NO order or entry-control press happen (checked in both brokers' own trade history)?"],
 ]);
 
@@ -105,7 +105,7 @@ export function hardGates(state) {
     ["Queue unbounded", known(state?.unboundedQueue, true), state?.unboundedQueue !== true],
     ["Event overflow", state?.evidenceTruncated ? "YES" : "NO", !state?.evidenceTruncated],
     ["Crash loop", known(state?.engineCrashLoop, true), state?.engineCrashLoop !== true],
-    ["Execution armed", known(state?.executionArmed, true), state?.executionArmed !== true],
+    ["AUTO armed (real orders)", known(state?.executionArmed, true), state?.executionArmed !== true],
     ["Broker presses", state?.unexpectedBrokerPresses ?? "UNKNOWN", !state?.unexpectedBrokerPresses],
     ["Storage corruption", known(state?.storageCorruption, true), state?.storageCorruption !== true],
   ].map(([name, value, ok]) => ({ name, value: String(value), ok }));
@@ -121,6 +121,35 @@ export function eventBudget(state) {
     capBytes: EVENT_CAP_BYTES,
     percent: Math.round((bytes / EVENT_CAP_BYTES) * 1000) / 10,
     hoursLeft: rate ? Math.round(((EVENT_CAP_BYTES - bytes) / rate) * 10) / 10 : null,
+  };
+}
+
+/** What the engine's own paper simulation (Phase 9) did with the signals it saw. */
+export function paperResults(state, name) {
+  const platform = state?.platforms?.[name] ?? {};
+  const outcomes = platform.outcomes ?? {};
+  const win = outcomes.WIN ?? 0, loss = outcomes.LOSS ?? 0, draw = outcomes.DRAW ?? 0;
+  const decided = win + loss;
+  return {
+    ready: platform.boards?.READY ?? 0,
+    opened: platform.paperStates?.OPEN ?? 0,
+    resolved: platform.paperStates?.RESOLVED ?? 0,
+    win, loss, draw, decided,
+    rate: decided ? Math.round((win / decided) * 1000) / 10 : null,
+  };
+}
+
+/** The execution layer as the desktop last reported it, and what the recorder totalled. */
+export function executionNow(state, name) {
+  const desktop = state?.desktop?.[name] ?? {};
+  const totals = state?.platforms?.[name]?.execution ?? {};
+  return {
+    mode: desktop.executionMode ?? "OFF",
+    paperArmed: Boolean(desktop.paperArmed),
+    boardsEvaluated: totals.boardsEvaluated ?? 0,
+    paperTickets: totals.paperTickets ?? 0,
+    blockedTickets: totals.blockedTickets ?? 0,
+    recent: (desktop.recentTickets ?? []).slice(0, 3),
   };
 }
 
@@ -201,11 +230,22 @@ export function formatStatus(state, context = {}) {
     add(`  ${pad(label, 13)}${applied} applied change(s) — ${review}`);
   }
   add();
-  add("Execution:");
-  add(`  Required during the soak   OFF / disarmed in both workspaces`);
-  add(`  Armed ever                 ${state?.executionArmed === null || state?.executionArmed === undefined ? "UNKNOWN (no telemetry yet)" : state.executionArmed ? "YES — run failed" : "NO"}`);
+  add("Signals and paper results (engine simulation, no money):");
+  for (const [name, label] of PLATFORMS) {
+    const paper = paperResults(state, name);
+    add(`  ${pad(label, 13)}READY boards ${count(paper.ready)} · paper trades ${count(paper.opened)} · resolved ${count(paper.resolved)} · WIN ${count(paper.win)} / LOSS ${count(paper.loss)} / DRAW ${count(paper.draw)}${paper.rate === null ? "" : ` · win rate ${paper.rate}% of ${paper.decided}`}`);
+  }
+  add("  (a win rate over a handful of trades says little; it is a record, not a forecast)");
+  add();
+  add("Execution PAPER (would-press, no real orders):");
+  for (const [name, label] of PLATFORMS) {
+    const execution = executionNow(state, name);
+    add(`  ${pad(label, 13)}mode ${execution.mode} · armed ${execution.paperArmed ? "YES (PAPER)" : "NO"} · boards evaluated ${count(execution.boardsEvaluated)} · would-press ${count(execution.paperTickets)} · blocked ${count(execution.blockedTickets)}`);
+    for (const ticket of execution.recent)
+      add(`      ${new Date(ticket.requestedAt).toLocaleTimeString()}  slot ${ticket.slotId} ${ticket.assetName} → ${ticket.direction === "HIGHER" ? "HIGHER (ขึ้น)" : "LOWER (ลง)"}  ${ticket.state === "PAPER" ? "would press" : `blocked: ${ticket.reasons.join(", ")}`}`);
+  }
+  add(`  AUTO armed ever            ${state?.executionArmed === null || state?.executionArmed === undefined ? "UNKNOWN (no telemetry yet)" : state.executionArmed ? "YES — run failed" : "NO"}`);
   add(`  Real broker presses        ${state?.unexpectedBrokerPresses ?? "UNKNOWN"}`);
-  add(`  PAPER decision pipeline    validated by npm run rehearsal:phase14 (not recorded by the soak)`);
   add();
   add("Engine boards / policy / paper:");
   for (const [name, label] of PLATFORMS) {

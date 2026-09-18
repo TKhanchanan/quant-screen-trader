@@ -28,6 +28,7 @@ import { MarketManager } from './market-manager'
 import { ShadowLiveTelemetry } from './shadow-live'
 import { OrderExecutor } from './order-executor'
 import { ExecutionManager } from './execution-manager'
+import { executionRefusal } from './execution-guard'
 import { requestConfiguration } from './configuration-client'
 import { SessionWatcher } from './session-watcher'
 import { requireScope, type RendererScope } from './ipc-scope'
@@ -596,6 +597,10 @@ if (ownsInstance) void app.whenReady().then(() => {
     // page and must never reach it, so it is refused here as well as by its own scope.
     const command = ExecutionCommandSchema.parse(input)
     if (authorize(event, command.platform).overlay) throw new Error('Overlay cannot control execution')
+    // Refusals only (never an arm or a press): no switch into AUTO while armed, and PAPER only
+    // while Phase 14 is recording. The accepted ExecutionManager itself is unchanged.
+    const refusal = executionRefusal(command, execution!.state(command.platform), process.env.QST_SHADOW_LIVE === '1')
+    if (refusal) throw new Error(refusal)
     // Measuring controls needs verified geometry, the same precondition Start observation has, so
     // it resolves the grid itself rather than demanding the operator go and find another button.
     if (command.operation === 'calibrateControls') await prepare(command.platform)

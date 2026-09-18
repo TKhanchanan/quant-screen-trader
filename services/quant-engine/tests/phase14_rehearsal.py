@@ -368,6 +368,8 @@ class DesktopPlatform:
     queue: int = 0
     dropped_batches: int = 0
     http429s: int = 0
+    execution_mode: str = "OFF"
+    paper_armed: bool = False
     auto_sync_enabled: bool = False
     auto_sync_runs: int = 0
     auto_sync_applied: int = 0
@@ -835,6 +837,8 @@ class Rehearsal:
             http429s=self.http429s,
             armed=False,
             brokerPresses=0,
+            executionMode=desktop.execution_mode,
+            paperArmed=desktop.paper_armed,
             mainLoopDelayMs=round(2.5 + 2 * wobble(at // SECOND), 3),
             autoSyncEnabled=desktop.auto_sync_enabled,
             autoSyncRuns=desktop.auto_sync_runs,
@@ -996,9 +1000,20 @@ class Rehearsal:
     def start_segment_at(self, at: int) -> None:
         self.start_segment(at)
 
+    def arm_paper(self, platform: Platform) -> Callable[[int], None]:
+        """The runbook's execution step: PAPER, controls measured, armed. It never presses."""
+
+        def run(at: int) -> None:
+            desktop = self.desktop.get(platform)
+            if desktop is not None and desktop.running:
+                desktop.execution_mode, desktop.paper_armed = "PAPER", True
+
+        return run
+
     def start_capture(self, platform: Platform) -> Callable[[int], None]:
         def run(at: int) -> None:
             desktop = self.desktop[platform]
+            self.schedule.at(at + 2 * MINUTE, self.arm_paper(platform))
             desktop.running, desktop.capture_count, desktop.capture_started = True, 0, at
             # Start observation assigns fresh contexts, as MarketManager.command('start') does.
             self.queue = [row for row in self.queue if row.platform != platform]
@@ -1207,7 +1222,7 @@ class Rehearsal:
             sessionGuardRestoredWithoutUnlock=True,
             policyJournalRestored=(self.paths.market_data / "policy" / "journal.sqlite3").is_file(),
             noOrphanEngine=bool(self.restart_facts.get("concurrentOwnerRefused")),
-            executionStayedDisarmed=data["executionArmed"] is False,
+            liveExecutionNeverArmed=data["executionArmed"] is False,
             noBrokerPresses=data["unexpectedBrokerPresses"] == 0,
         )
         response = segment.client.post("/api/shadow-live/verify-restart", json=answers).json()
@@ -1672,17 +1687,135 @@ def negative_fixtures(workspace: Path) -> dict[str, Any]:
         rejected=report["unboundedQueue"] is True and report["acceptance"] == "FAIL",
     )
 
-    # An armed executor, PAPER or AUTO, is a hard execution-safety failure for the official run.
-    r = recorder("armed-execution")
-    armed = telemetry.model_dump(mode="json") | {"queueDepth": 0, "armed": True}
+    # A LIVE (AUTO) executor armed during the soak is a hard execution-safety failure.
+    r = recorder("auto-armed-execution")
+    armed = telemetry.model_dump(mode="json") | {
+        "queueDepth": 0,
+        "armed": True,
+        "executionMode": "AUTO",
+    }
     r.telemetry(armed, at)
     report = r.report(at)
-    results["armedExecutionDuringRun"] = dict(
+    results["autoArmedDuringRun"] = dict(
         executionArmed=report["executionArmed"],
         acceptance=report["acceptance"],
         rejected=report["executionArmed"] is True and report["acceptance"] == "FAIL",
     )
+
+    # A would-press ticket naming an asset its slot never carried at that board time.
+    r = recorder("stale-execution-ticket")
+    r.observation(observation(at, at), True, at)
+    ticket = dict(
+        id="stale-ticket",
+        boardAsOf=at + 5000,
+        slotId=1,
+        assetName="NOT THE SLOT ASSET",
+        direction="HIGHER",
+        state="PAPER",
+        reasons=["NOT_SENT"],
+        requestedAt=iso(at + 5100),
+    )
+    paper_value = telemetry.model_dump(mode="json") | {
+        "queueDepth": 0,
+        "executionMode": "PAPER",
+        "paperArmed": True,
+        "recentTickets": [ticket],
+    }
+    r.telemetry(DesktopTelemetry.model_validate(paper_value).model_dump(mode="json"), at + 5200)
+    report = r.report(at + 5200)
+    results["staleExecutionTicket"] = dict(
+        contamination=report["crossContextContamination"],
+        acceptance=report["acceptance"],
+        rejected=report["errors"].get("EXECUTION_TICKET_CONTEXT_MISMATCH", 0) == 1
+        and report["acceptance"] == "FAIL",
+    )
     return results
+
+
+def paper_execution_control(workspace: Path) -> dict[str, Any]:
+    """The positive control: PAPER armed, with a correct would-press ticket, is not a failure."""
+    import paper_fixtures as fixtures
+
+    at = fixtures.EPOCH
+    r = ShadowLiveRecorder(
+        workspace, commit_sha="d" * 40, application_version="paper-control", now=at
+    )
+    sample = fixtures.sample(at, 1.2, source="DOM")
+    r.observation(
+        MarketObservation(
+            id=uuid4(),
+            platform=sample.platform,
+            slotId=sample.slotId,
+            assetName=sample.assetName,
+            contextId=sample.contextId,
+            observedAt=datetime.fromtimestamp(at / 1000, UTC),
+            parsedAt=datetime.fromtimestamp(at / 1000, UTC),
+            sourceType="DOM",
+            price=sample.price,
+            payout=None,
+            timerSeconds=None,
+            parserConfidence=1.0,
+            dataQuality=sample.quality,
+            captureLatencyMs=0.0,
+            parseLatencyMs=0.0,
+            calibrationProfileId=None,
+            parserVersion=SOURCE_LABEL,
+        ),
+        True,
+        at,
+    )
+    value = DesktopTelemetry.model_validate(
+        dict(
+            platform=sample.platform,
+            instanceId=str(uuid4()),
+            healthRevision=1,
+            captureRunning=True,
+            surfaceAvailable=True,
+            engineAvailable=True,
+            intervalMs=500,
+            queueDepth=0,
+            droppedBatches=0,
+            http429s=0,
+            armed=False,
+            brokerPresses=0,
+            mainLoopDelayMs=0,
+            executionMode="PAPER",
+            paperArmed=True,
+            boardsEvaluated=3,
+            paperTickets=1,
+            recentTickets=[
+                dict(
+                    id="paper-ticket",
+                    boardAsOf=at + 5000,
+                    slotId=sample.slotId,
+                    assetName=sample.assetName,
+                    direction="LOWER",
+                    state="PAPER",
+                    reasons=["NOT_SENT"],
+                    requestedAt=iso(at + 5100),
+                )
+            ],
+            slots=[],
+        )
+    ).model_dump(mode="json")
+    r.telemetry(value, at + 5200)
+    r.telemetry(value, at + 6200)  # the same ticket again: logged once
+    report = r.report(at + 6200)
+    execution = report["platforms"][sample.platform]["execution"]
+    events = sum(1 for e in r.pending if e["kind"] == "EXECUTION_TICKET")
+    r.lease.close()
+    return dict(
+        executionArmed=report["executionArmed"],
+        paperExecutionArmed=report.get("paperExecutionArmed"),
+        paperTickets=execution["paperTickets"],
+        ticketEvents=events,
+        acceptance=report["acceptance"],
+        allowed=report["executionArmed"] is False
+        and report["acceptance"] != "FAIL"
+        and execution["paperArmedEver"] is True
+        and execution["paperTickets"] == 1
+        and events == 1,
+    )
 
 
 def gate_boundaries(final: dict[str, Any], workspace: Path) -> dict[str, Any]:
@@ -1859,6 +1992,21 @@ def evaluate(
     facts["negativeFixtures"] = fixtures
     for name, value in fixtures.items():
         check(f"negative fixture rejected: {name}", value["rejected"], value)
+    control = paper_execution_control(workspace / "paper-control")
+    facts["paperExecutionControl"] = control
+    check(
+        "PAPER-armed execution is recorded, not failed; AUTO stays a hard failure",
+        control["allowed"],
+        control,
+    )
+    for name in PLATFORMS:
+        execution = platforms[name].get("execution", {})
+        check(
+            f"{name} ran with execution PAPER armed and AUTO never armed",
+            execution.get("paperArmedEver") is True
+            and not execution.get("modeHeartbeats", {}).get("AUTO"),
+            execution,
+        )
     if expect_complete:
         gate = gate_boundaries(final, workspace / "gate")
         facts["acceptanceGate"] = dict(
@@ -1968,6 +2116,7 @@ def summary(rehearsal: Rehearsal, repository: Path) -> dict[str, Any]:
                 pipeline=p["pipeline"],
                 autoSyncAppliedChanges=p.get("autoSyncAppliedChanges", 0),
                 unexpectedAutoSyncChanges=p.get("unexpectedAutoSyncChanges"),
+                execution=p.get("execution"),
             )
             for name, p in platforms.items()
         },
@@ -1998,6 +2147,7 @@ def summary(rehearsal: Rehearsal, repository: Path) -> dict[str, Any]:
         eventBudget=event_projection(rehearsal),
         recorderLimits=facts.get("recorderMemory"),
         negativeFixtures=facts.get("negativeFixtures"),
+        paperExecutionControl=facts.get("paperExecutionControl"),
         acceptanceGate=facts.get("acceptanceGate"),
         firstFailure=facts.get("firstFailure"),
         checks=[

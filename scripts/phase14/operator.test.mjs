@@ -115,7 +115,8 @@ describe("dashboard", () => {
     for (const expected of ["PHASE 14 LIVE SOAK", "Acceptance:", "PENDING", "Total        08:14 / 24:00",
       "CapitalBear  08:12 / 23:00", "IQ Option    08:14 / 23:00", "Total        15:46", "CapitalBear  14:48",
       "IQ Option    14:46", "ACTIVE", "Causality violations", "Context contamination", "Queue unbounded",
-      "Event overflow", "Crash loop", "NOT YET VERIFIED", "Real broker presses        0", "Increasing now: YES"]) {
+      "Event overflow", "Crash loop", "NOT YET VERIFIED", "Real broker presses        0", "Increasing now: YES",
+      "AUTO armed (real orders)"]) {
       assert.ok(text.includes(expected), `missing: ${expected}\n${text}`);
     }
     assert.ok(!text.includes("FAILS THE RUN"));
@@ -128,6 +129,21 @@ describe("dashboard", () => {
     assert.ok(text.includes("WARNING: TESTED_HEAD"));
     assert.equal(hardGates(state({ causalityViolations: 2 })).find((g) => g.name === "Causality violations").ok, false);
     assert.ok(text.includes("FAILS THE RUN"));
+  });
+
+  it("shows paper results and PAPER would-press tickets without calling them orders", () => {
+    const text = formatStatus(state({
+      platforms: { capitalbear: { captureDurationMs: HOUR, boards: { READY: 4 }, paperStates: { OPEN: 3, RESOLVED: 3 },
+        outcomes: { WIN: 2, LOSS: 1 }, execution: { boardsEvaluated: 120, paperTickets: 2, blockedTickets: 1 } },
+      iqoption: { captureDurationMs: HOUR } },
+      desktop: { capitalbear: { executionMode: "PAPER", paperArmed: true, slots: [], recentTickets: [{ id: "t", slotId: 3,
+        assetName: "EUR/USD OTC", direction: "LOWER", state: "PAPER", reasons: ["NOT_SENT"], requestedAt: "2026-09-18T01:00:00.000Z" }] } },
+    }));
+    for (const expected of ["READY boards 4", "WIN 2 / LOSS 1", "win rate 66.7% of 3", "mode PAPER · armed YES (PAPER)",
+      "boards evaluated 120", "would-press 2", "blocked 1", "slot 3 EUR/USD OTC → LOWER (ลง)  would press",
+      "AUTO armed ever            NO", "Real broker presses        0"]) {
+      assert.ok(text.includes(expected), `missing: ${expected}\n${text}`);
+    }
   });
 
   it("names warnings that block acceptance, matching the recorder's list", () => {
@@ -154,7 +170,7 @@ describe("dashboard", () => {
   it("asks every restart observation the endpoint requires, once", () => {
     const fields = RESTART_QUESTIONS.map(([field]) => field);
     assert.deepEqual([...fields].sort(), ["assetPresetsPersisted", "browserSessionPersisted", "calibrationPersisted",
-      "configurationPersisted", "executionStayedDisarmed", "noBrokerPresses", "noOrphanEngine", "paperRestoredSafely",
+      "configurationPersisted", "liveExecutionNeverArmed", "noBrokerPresses", "noOrphanEngine", "paperRestoredSafely",
       "policyJournalRestored", "sessionGuardRestoredWithoutUnlock"]);
   });
 });

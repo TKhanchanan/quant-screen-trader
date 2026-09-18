@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react'
-import { blockLabel, ticketLabel, type ExecutionMode, type ExecutionSettings, type ExecutionState,
-  type OrderDirection, type Platform } from '@quant-screen-trader/shared-types'
+import { armAvailable, armedLabel, blockLabel, modeLocked, readyLine, ticketLabel, type ExecutionMode,
+  type ExecutionSettings, type ExecutionState, type OrderDirection, type Platform } from '@quant-screen-trader/shared-types'
 
 /**
  * The operator's view of the execution layer. Thai, like the broker panel it sits beside.
@@ -47,10 +47,12 @@ export function TradingControls({ platform, onError }: {
     <ol className="trading-steps">
       <li>ตั้งเงินลงทุนกับเวลาหมดอายุบนแผงโบรกเองให้ครบทุกช่องก่อน</li>
       <li>กด <b>วัดตำแหน่งปุ่ม</b> แล้วดูว่าได้ครบ 9 ช่องไหม</li>
-      <li>เลือกโหมด <b>AUTO</b> แล้วกด <b>เปิดพร้อมส่งคำสั่ง</b> — จากนั้นมีสัญญาณเมื่อไหร่มันกดให้เอง</li>
+      <li>ทดลองก่อน: เลือกโหมด <b>PAPER</b> แล้วกด <b>เปิดพร้อมส่งคำสั่ง</b> — จะบันทึกว่าจะกดปุ่มไหน โดยไม่กดจริง</li>
+      <li>ใช้จริง: เลือกโหมด <b>AUTO</b> แล้วกด <b>เปิดพร้อมส่งคำสั่ง</b> — จากนั้นมีสัญญาณเมื่อไหร่มันกดให้เอง</li>
     </ol>
     <div className="toolbar">
-      <label>โหมด <select value={state?.settings.mode ?? 'OFF'} disabled={busy || !state}
+      <label>โหมด <select value={state?.settings.mode ?? 'OFF'} disabled={busy || !state || modeLocked(state)}
+        title={state && modeLocked(state) ? 'กดหยุดก่อนเปลี่ยนโหมด' : undefined}
         onChange={e => patch({ mode: e.target.value as ExecutionMode })}>
         <option value="OFF">OFF — ไม่ส่งอะไรเลย</option>
         <option value="PAPER">PAPER — คิดแต่ไม่กดจริง</option>
@@ -66,12 +68,12 @@ export function TradingControls({ platform, onError }: {
         <option value="HIGHER">ขึ้น / ซื้อ</option>
         <option value="LOWER">ลง / ขาย</option>
       </select></label>
-      <button disabled={busy || state?.armed || state?.settings.mode !== 'AUTO'} onClick={() => run(() =>
+      <button disabled={busy || !state || !armAvailable(state)} onClick={() => run(() =>
         window.quantScreenTrader.execution({ operation: 'arm', platform }), 'Arm ไม่สำเร็จ')}>เปิดพร้อมส่งคำสั่ง</button>
       <button className="stop-execution" onClick={() => run(() =>
         window.quantScreenTrader.execution({ operation: 'disarm', platform }), 'หยุดไม่สำเร็จ — ปิดหน้าต่างนี้')}>
         หยุด</button>
-      <strong>{state?.armed ? 'พร้อมส่งคำสั่ง (ARMED)' : 'ยังไม่พร้อม'}</strong>
+      <strong>{armedLabel(state)}</strong>
     </div>
     <div className="toolbar">
       <label>คะแนนขั้นต่ำ <input type="number" min={0} max={1} step={.05} disabled={busy || !state}
@@ -113,7 +115,7 @@ export function TradingControls({ platform, onError }: {
       {' · '}v{state?.executionVersion ?? '—'}</p>
     {state?.blocked.length
       ? <p role="status" className="blocked-list">ติดอยู่ที่: {state.blocked.map(blockLabel).join(' · ')}</p>
-      : <p role="status" className="ready-line">{!state ? 'กำลังอ่านสถานะคำสั่งซื้อขาย…' : state.armed ? 'พร้อมแล้ว — บอร์ดถัดไปที่ผ่านเกณฑ์จะถูกกดทันที' : 'ยังไม่เปิดพร้อมส่งคำสั่ง'}</p>}
+      : <p role="status" className="ready-line">{readyLine(state)}</p>}
     <details open><summary>รายการออเดอร์ ({state?.tickets.length ?? 0})</summary>
       {state?.tickets.length
         ? <ol>{state.tickets.map(ticket => <li key={ticket.id}>{ticketLabel(ticket)}</li>)}</ol>

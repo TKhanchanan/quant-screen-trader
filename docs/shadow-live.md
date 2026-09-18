@@ -31,8 +31,10 @@ launched from a shell, but it must contain the tested Phase 14 code and bundled 
 The old Phase 13 binary cannot record Phase 14.
 
 1. Manually open CapitalBear and IQ Option, log in if necessary, and show real market charts.
-2. Verify **execution is DISARMED / OFF**, including both workspaces. Never arm, test order
-   controls, or press a broker entry control during acceptance.
+2. Execution runs in **PAPER** only: set PAPER, measure the controls and arm it in both
+   workspaces, so every board is evaluated and would-press tickets are recorded without a press.
+   While `QST_SHADOW_LIVE=1` the application refuses AUTO, arming AUTO and the all-controls test,
+   and an armed executor cannot change mode. Never press a broker entry control during acceptance.
 3. Confirm `/api/policy/state` reports **SHADOW**. Existing policy history is respected;
    the recorder never activates a snapshot or switches PAPER_GATED back to SHADOW for you.
 4. Use existing calibration, asset synchronization and Start observation controls. Keep
@@ -145,7 +147,7 @@ journal persistence, and absence of an orphan engine. Then submit those actual o
   "sessionGuardRestoredWithoutUnlock": true,
   "policyJournalRestored": true,
   "noOrphanEngine": true,
-  "executionStayedDisarmed": true,
+  "liveExecutionNeverArmed": true,
   "noBrokerPresses": true
 }
 ```
@@ -189,8 +191,15 @@ inventing market samples.
 Telemetry must report engine availability and eligible synchronized slots; receipt of a heartbeat alone is insufficient. Gaps longer than five seconds break continuity. `qualifiedCaptureDurationMs` is the union of credited platform intervals; each platform also reports `captureDurationMs`. Idle process lifetime never satisfies the 24-hour / 23-hour targets.
 
 The closed telemetry schema includes per-slot attempts, parsed/GOOD/UNCERTAIN counts, latest attempt/parse/GOOD times, and 1s/S5/M1 samples. Operational snapshots enter the bounded recorder every five minutes, including main-process RSS and Auto Sync counters. Keep Auto Sync off for the first 30–60 minutes. Applied automatic changes require review against the actual visible instruments; they are never automatically declared expected. The market queue is bounded at 180 observations, transmitted in batches of at most 18. Crossing the batch size is not unbounded growth; exceeding the queue capacity is a hard failure. Detailed event overflow is also a hard failure.
-Broker-press and armed observations are sticky failure signals. The execution observer can
-miss activity during telemetry gaps, so independent operator verification is required.
+Broker-press and AUTO-armed observations are sticky failure signals. Telemetry reports `armed`
+only for a live (AUTO) executor; a PAPER-armed executor is reported as `executionMode: PAPER`,
+`paperArmed`, and cumulative `boardsEvaluated` (sampled once a second), `paperTickets` and
+`blockedTickets`, plus up to five recent PAPER/BLOCKED tickets. Each new ticket becomes one
+`EXECUTION_TICKET` event, and a PAPER ticket must name the asset its slot carried at the ticket's
+`boardAsOf` (`EXECUTION_TICKET_CONTEXT_MISMATCH` otherwise). Per-platform totals appear under
+`platforms.<name>.execution`; selecting AUTO at all adds the warning `AUTO_MODE_SELECTED`. The
+execution observer can miss activity during telemetry gaps, so independent operator verification
+is still required.
 
 Export `/api/shadow-live/checkpoint` (or the file `06-finish.sh` writes) to `docs/evidence/phase14/shadow-live-acceptance.json`
 after verifying its contents. Include normal CI reference and the exact tested commit in the

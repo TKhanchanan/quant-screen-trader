@@ -146,11 +146,18 @@ def test_every_negative_fixture_is_rejected(tmp_path: Path) -> None:
         "duplicateBoard",
         "oversizedTransportBatch",
         "queueBeyondCapacity",
-        "armedExecutionDuringRun",
+        "autoArmedDuringRun",
+        "staleExecutionTicket",
     }
     assert {name: value["rejected"] for name, value in results.items()} == dict.fromkeys(
         results, True
     )
+
+
+def test_paper_armed_execution_is_evidence_not_failure(tmp_path: Path) -> None:
+    control = rehearsal.paper_execution_control(tmp_path)
+    assert control["allowed"] is True, control
+    assert control["executionArmed"] is False and control["paperExecutionArmed"] is True
 
 
 def switched_contexts(seconds: int = 420, tail: int = 90) -> list[MarketObservation]:

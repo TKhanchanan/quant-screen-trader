@@ -45,6 +45,8 @@ PLATFORMS = ("capitalbear", "iqoption")
 SUMMARY_WINDOW_MS = 300_000
 SUMMARY_KEYS = 64
 CONTEXT_HISTORY = 16
+TICKET_MEMORY = 256
+EXECUTION_TOTALS = 128
 
 
 def millis() -> int:
@@ -100,6 +102,7 @@ class ShadowLiveRecorder:
         # (asset, context, first accepted sample, first sample of the next identity or reset).
         self.contexts: dict[str, deque[tuple[str, str, int, int | None]]] = {}
         self.board_windows: dict[str, dict[str, Any]] = {}
+        self.ticket_ids: dict[str, None] = {}
         self.data: dict[str, Any] = dict(
             runId=identifier,
             version=SHADOW_LIVE_VERSION,
@@ -710,7 +713,10 @@ class ShadowLiveRecorder:
         self.last_telemetry[name] = (at, value["instanceId"], live)
         if self.once(f"health:{name}:{value['instanceId']}:{value['healthRevision']}"):
             self.event("DESKTOP_HEALTH", at=at, **value)
+        # `armed` is a LIVE (AUTO) executor. PAPER arms every gate and presses nothing, so it is
+        # recorded as evidence of the decision pipeline and never as an execution-safety failure.
         self.data["executionArmed"] = bool(self.data["executionArmed"]) or value["armed"]
+        self.execution(name, value, at)
         self.data["unexpectedBrokerPresses"] = max(
             self.data["unexpectedBrokerPresses"] or 0, value["brokerPresses"]
         )
@@ -722,6 +728,57 @@ class ShadowLiveRecorder:
         if value["armed"] or value["brokerPresses"]:
             self.warn("EXECUTION_SAFETY_FAILURE")
         self.latency(name, "mainLoopDelay", value["mainLoopDelayMs"])
+
+    def execution(self, name: str, value: dict[str, Any], at: int) -> None:
+        execution = self.data["platforms"][name].setdefault(
+            "execution",
+            dict(
+                modeHeartbeats={},
+                paperArmedHeartbeats=0,
+                paperArmedEver=False,
+                boardsEvaluated=0,
+                paperTickets=0,
+                blockedTickets=0,
+            ),
+        )
+        mode = value.get("executionMode", "OFF")
+        execution["modeHeartbeats"][mode] = execution["modeHeartbeats"].get(mode, 0) + 1
+        if mode == "AUTO":
+            self.warn("AUTO_MODE_SELECTED")
+        if value.get("paperArmed"):
+            execution["paperArmedHeartbeats"] += 1
+            execution["paperArmedEver"] = True
+            self.data["paperExecutionArmed"] = True
+        totals = self.data.setdefault("executionTotals", {})
+        key = f"{value['instanceId']}:{name}"
+        if key not in totals and len(totals) >= EXECUTION_TOTALS:
+            self.warn("EXECUTION_TOTALS_CAP_REACHED")
+        else:
+            prior = totals.setdefault(
+                key, dict(boardsEvaluated=0, paperTickets=0, blockedTickets=0)
+            )
+            for metric in prior:
+                prior[metric] = max(prior[metric], value.get(metric, 0))
+        for metric in ("boardsEvaluated", "paperTickets", "blockedTickets"):
+            execution[metric] = sum(v[metric] for k, v in totals.items() if k.endswith(f":{name}"))
+        for ticket in value.get("recentTickets", []):
+            if ticket["id"] in self.ticket_ids:
+                continue
+            self.ticket_ids[ticket["id"]] = None
+            if len(self.ticket_ids) > TICKET_MEMORY:
+                self.ticket_ids.pop(next(iter(self.ticket_ids)))
+            self.event("EXECUTION_TICKET", platform=name, reportedAt=at, **ticket)
+            if ticket["state"] == "PAPER":
+                self.check_ticket(name, ticket["slotId"], ticket["assetName"], ticket["boardAsOf"])
+
+    def check_ticket(self, name: str, slot: int, asset: str, at: int) -> None:
+        """A would-press ticket must name the asset its slot carried when the board's data existed."""
+        history = self.contexts.get(f"{name}:{slot}", ())
+        if not any(
+            entry_asset == asset and start < at and (end is None or at <= end)
+            for entry_asset, _, start, end in history
+        ):
+            self.violation("crossContextContamination", "EXECUTION_TICKET_CONTEXT_MISMATCH")
 
     @observer
     def health(
