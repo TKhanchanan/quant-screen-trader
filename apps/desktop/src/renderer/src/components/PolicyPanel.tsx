@@ -3,11 +3,11 @@ import { emptyPolicyState, type PolicyState } from '@quant-screen-trader/shared-
 
 export function PolicyResult({ state }: { state: PolicyState }): JSX.Element {
   return <>
-    <p>Mode: <strong>{state.mode}</strong> · {state.policyVersion} · {state.watchdogVersion}</p>
-    <p>Snapshot: {state.snapshotId ?? '—'}</p>
-    <p>Evidence cutoff: {state.evidenceCutoffTime === null ? '—'
-      : new Date(state.evidenceCutoffTime).toISOString()} · Evidence: {state.evidenceStatus}</p>
-    <p>Watchdog: {state.watchdogState}</p>
+    <p>โหมด: <strong>{state.mode}</strong> · {state.policyVersion} · {state.watchdogVersion}</p>
+    <p>ชุดข้อมูล: {state.snapshotId ?? '—'}</p>
+    <p>ข้อมูลถึง: {state.evidenceCutoffTime === null ? '—'
+      : new Date(state.evidenceCutoffTime).toISOString()} · หลักฐาน: {state.evidenceStatus}</p>
+    <p>ระบบเฝ้าระวัง: {state.watchdogState}</p>
     {state.error && <p role="alert">{state.error}</p>}
     {state.decisions.length === 0 && <p>ยังไม่มีการประเมินนโยบาย</p>}
     <ol className="analytics-bins">{state.decisions.slice(-5).reverse().map(decision =>
@@ -44,6 +44,6 @@ export function PolicyPanel(): JSX.Element {
   }, [open])
   return <section className="analytics-panel"><details open={open}
     onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>Adaptive Policy</summary><PolicyResult state={state} />
+    <summary>นโยบายปรับตัว</summary><PolicyResult state={state} />
   </details></section>
 }

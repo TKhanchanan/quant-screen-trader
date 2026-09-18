@@ -8,7 +8,7 @@ describe('analytical policy diagnostics', () => {
   it('defaults to SHADOW and rejects a real mode', () => {
     expect(PolicyStateSchema.parse(emptyPolicyState()).mode).toBe('SHADOW')
     expect(PolicyModeSchema.safeParse('LIVE_REAL').success).toBe(false)
-    expect(renderToStaticMarkup(createElement(PolicyPanel))).toContain('Adaptive Policy')
+    expect(renderToStaticMarkup(createElement(PolicyPanel))).toContain('นโยบายปรับตัว')
   })
   it('shows the baseline alongside a veto and its reasons', () => {
     const state = PolicyStateSchema.parse({ ...emptyPolicyState(), decisions: [{

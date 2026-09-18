@@ -151,21 +151,12 @@ function createControlWindow(platform: Platform): BrowserWindow {
   return createWindow(
     `${displayName} Control — QuantScreen Trader`,
     { view: 'platform-control', platform },
-    { width: 1320, height: 900 }
+    { width: 1440, height: 900 }
   )
 }
 const controlWindows = new PlatformWindowRegistry<BrowserWindow>(createControlWindow)
 
-/**
- * The board and execution controls live in their own window. Kept out of the workspace because
- * every pixel they take there is a pixel the broker's nine charts do not get, and the grid
- * detector needs those charts at a readable size.
- */
-function createTradingWindow(platform: Platform): BrowserWindow {
-  return createWindow(`${PLATFORM_DETAILS[platform].name} Trading — QuantScreen Trader`,
-    { view: 'trading', platform }, { width: 720, height: 840 })
-}
-const tradingWindows = new PlatformWindowRegistry<BrowserWindow>(createTradingWindow)
+
 
 function openDashboard(): BrowserWindow {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) {
@@ -572,10 +563,7 @@ if (ownsInstance) void app.whenReady().then(() => {
     workspaceWindows.open(platform)
     controlWindows.open(platform)
   })
-  ipcMain.handle(IPC_CHANNELS.openTrading, (event, input: unknown) => {
-    if (authorize(event).overlay) throw new Error('Overlay cannot open windows')
-    tradingWindows.open(PlatformSchema.parse(input))
-  })
+
   ipcMain.handle(IPC_CHANNELS.platformCommand, async (event, input: unknown) => {
     const command = PlatformCommandSchema.parse(input)
     const scope = authorize(event, command.platform)

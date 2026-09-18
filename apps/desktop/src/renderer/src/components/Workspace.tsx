@@ -19,7 +19,7 @@ export function Workspace({ platform }: WorkspaceProps): JSX.Element {
       const height = Math.min(Math.floor(rect.bottom), window.innerHeight) - y
       if (width < 1 || height < 1) return
       void window.quantScreenTrader.platformCommand({ operation: 'layout', platform,
-        bounds: { x, y, width, height }, visible: true }).catch(() => setActionError('Browser layout unavailable; resize the window to retry.'))
+        bounds: { x, y, width, height }, visible: true }).catch(() => setActionError('จัดพื้นที่แพลตฟอร์มไม่สำเร็จ ลองปรับขนาดหน้าต่างอีกครั้ง'))
     }
     const observer = new ResizeObserver(layout)
     observer.observe(element); layout()

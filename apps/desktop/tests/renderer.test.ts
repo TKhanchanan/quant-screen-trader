@@ -13,7 +13,9 @@ describe('Phase 1 renderer', () => {
 
     expect(markup).toContain('CapitalBear')
     expect(markup).toContain('IQ Option')
-    expect(markup.match(/9 \/ 9/g)).toHaveLength(2)
+    expect(markup).not.toContain('href="#"')
+    expect(markup).not.toContain('Local Service Online')
+    expect(markup.match(/9 ช่อง/g)).toHaveLength(2)
   })
 
   it('renders exactly nine slots in each control window', () => {
@@ -21,8 +23,8 @@ describe('Phase 1 renderer', () => {
       const markup = renderToStaticMarkup(createElement(PlatformControlWindow, { platform }))
 
       expect(markup.match(/data-slot-id=/g)).toHaveLength(9)
-      expect(markup).toContain('Sync Assets')
-      expect(markup).toContain('Start observation')
+      expect(markup).toContain('ซิงก์สินทรัพย์')
+      expect(markup).toContain('เริ่มสังเกตการณ์')
     }
   })
 
@@ -32,7 +34,7 @@ describe('Phase 1 renderer', () => {
 
       expect(markup).toContain('browser-region--full')
       expect(markup).not.toContain('workspace-toolbar')
-      expect(markup).not.toContain('Sync Assets')
+      expect(markup).not.toContain('ซิงก์สินทรัพย์')
       expect(markup).not.toContain('slot-summary')
     }
   })
@@ -44,5 +46,5 @@ it('renders an uncertain parsed price and exposes the read-only probe', () => {
     { asset: 'EUR/USD', price: '1.15368', confidence: .62 }, Date.now())
   const markup = renderToStaticMarkup(createElement(PriceReading, { observation: value }))
   expect(markup).toContain('1.15368'); expect(markup).toContain('UNCERTAIN'); expect(markup).toContain('62%')
-  expect(renderToStaticMarkup(createElement(PlatformControlWindow, { platform: 'iqoption' }))).toContain('Probe Prices')
+  expect(renderToStaticMarkup(createElement(PlatformControlWindow, { platform: 'iqoption' }))).toContain('ตรวจสอบราคา')
 })

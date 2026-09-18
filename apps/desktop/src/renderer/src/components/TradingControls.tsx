@@ -47,7 +47,7 @@ export function TradingControls({ platform, onError }: {
     <ol className="trading-steps">
       <li>ตั้งเงินลงทุนกับเวลาหมดอายุบนแผงโบรกเองให้ครบทุกช่องก่อน</li>
       <li>กด <b>วัดตำแหน่งปุ่ม</b> แล้วดูว่าได้ครบ 9 ช่องไหม</li>
-      <li>เลือกโหมด <b>AUTO</b> แล้วกด <b>Arm</b> — จากนั้นมีสัญญาณเมื่อไหร่มันกดให้เอง</li>
+      <li>เลือกโหมด <b>AUTO</b> แล้วกด <b>เปิดพร้อมส่งคำสั่ง</b> — จากนั้นมีสัญญาณเมื่อไหร่มันกดให้เอง</li>
     </ol>
     <div className="toolbar">
       <label>โหมด <select value={state?.settings.mode ?? 'OFF'} disabled={busy || !state}
@@ -67,11 +67,11 @@ export function TradingControls({ platform, onError }: {
         <option value="LOWER">ลง / ขาย</option>
       </select></label>
       <button disabled={busy || state?.armed || state?.settings.mode !== 'AUTO'} onClick={() => run(() =>
-        window.quantScreenTrader.execution({ operation: 'arm', platform }), 'Arm ไม่สำเร็จ')}>Arm</button>
+        window.quantScreenTrader.execution({ operation: 'arm', platform }), 'Arm ไม่สำเร็จ')}>เปิดพร้อมส่งคำสั่ง</button>
       <button className="stop-execution" onClick={() => run(() =>
         window.quantScreenTrader.execution({ operation: 'disarm', platform }), 'หยุดไม่สำเร็จ — ปิดหน้าต่างนี้')}>
         หยุด</button>
-      <strong>{state?.armed ? 'พร้อมยิง (ARMED)' : 'ยังไม่พร้อม'}</strong>
+      <strong>{state?.armed ? 'พร้อมส่งคำสั่ง (ARMED)' : 'ยังไม่พร้อม'}</strong>
     </div>
     <div className="toolbar">
       <label>คะแนนขั้นต่ำ <input type="number" min={0} max={1} step={.05} disabled={busy || !state}
@@ -89,7 +89,7 @@ export function TradingControls({ platform, onError }: {
       <label><input type="checkbox" disabled={busy || !state}
         checked={state?.settings.limits.acceptBoardStatus.includes('PARTIAL') ?? false}
         onChange={e => limits({ acceptBoardStatus: e.target.checked ? ['READY', 'PARTIAL'] : ['READY'] })} />
-        ยิงตอนข้อมูลไม่ครบ (PARTIAL) ด้วย</label>
+        ส่งคำสั่งเมื่อข้อมูลไม่ครบ (PARTIAL) ด้วย</label>
     </div>
     <div className="toolbar">
       <button disabled={busy || !state?.controlsValid || !measured} onClick={() => setConfirmTest(!confirmTest)}>
@@ -113,7 +113,7 @@ export function TradingControls({ platform, onError }: {
       {' · '}v{state?.executionVersion ?? '—'}</p>
     {state?.blocked.length
       ? <p role="status" className="blocked-list">ติดอยู่ที่: {state.blocked.map(blockLabel).join(' · ')}</p>
-      : <p role="status" className="ready-line">พร้อมแล้ว — บอร์ดถัดไปที่ผ่านเกณฑ์จะถูกกดทันที</p>}
+      : <p role="status" className="ready-line">{!state ? 'กำลังอ่านสถานะคำสั่งซื้อขาย…' : state.armed ? 'พร้อมแล้ว — บอร์ดถัดไปที่ผ่านเกณฑ์จะถูกกดทันที' : 'ยังไม่เปิดพร้อมส่งคำสั่ง'}</p>}
     <details open><summary>รายการออเดอร์ ({state?.tickets.length ?? 0})</summary>
       {state?.tickets.length
         ? <ol>{state.tickets.map(ticket => <li key={ticket.id}>{ticketLabel(ticket)}</li>)}</ol>

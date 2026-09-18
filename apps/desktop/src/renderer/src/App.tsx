@@ -4,7 +4,6 @@ import { Dashboard } from './components/Dashboard'
 import { Workspace } from './components/Workspace'
 import { PlatformControlWindow } from './components/PlatformControlWindow'
 import { CalibrationOverlay } from './components/CalibrationOverlay'
-import { TradingWindow } from './components/TradingWindow'
 import { useEngineHealthPolling } from './hooks/useEngineHealthPolling'
 
 export function App(): JSX.Element {
@@ -25,9 +24,7 @@ export function App(): JSX.Element {
     return <PlatformControlWindow platform={platform.data} />
   }
 
-  if (query.get('view') === 'trading' && platform.success) {
-    return <TradingWindow platform={platform.data} />
-  }
+
 
   return <Dashboard />
 }

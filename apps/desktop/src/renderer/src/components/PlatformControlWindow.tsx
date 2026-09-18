@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { boardLabel, defaultCalibration, percent, voteLabel, type AssetSyncState, type FeatureState, type MarketSnapshot, type OpportunityState, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
+import { boardLabel, candidateLabel, leadLabel, defaultCalibration, percent, type AssetSyncState, type FeatureState, type MarketSnapshot, type OpportunityState, type Platform, type StrategyState } from '@quant-screen-trader/shared-types'
 import { PLATFORM_DETAILS } from '../platforms'
 import { useAppStore } from '../state/appStore'
 import { EngineStatus } from './EngineStatus'
 import { useWorkspaceStore } from '../state/workspaceStore'
 import { AssetSetup } from './AssetSetup'
 import { CalibrationControls } from './CalibrationControls'
+import { AnalyticsPanel } from './AnalyticsPanel'
+import { DailySessionPanel } from './DailySessionPanel'
+import { PaperPanel } from './PaperPanel'
+import { ReplayPanel } from './ReplayPanel'
+import { PolicyPanel } from './PolicyPanel'
+import { TradingControls } from './TradingControls'
 
 interface WorkspaceProps {
   platform: Platform
@@ -16,7 +22,6 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
   const engineHealth = useAppStore((state) => state.engineHealth)
   const { data, session, busy, error, execute, setSession } = useWorkspaceStore()
   const [mode, setMode] = useState<'browser' | 'assets' | 'calibration'>('browser')
-  const [now, setNow] = useState(0)
   const [market, setMarket] = useState<MarketSnapshot | null>(null)
   const [probing, setProbing] = useState(false)
   const [probe, setProbe] = useState<MarketSnapshot | null>(null)
@@ -27,13 +32,17 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
   const [strategy, setStrategy] = useState<StrategyState | null>(null)
   const [opportunity, setOpportunity] = useState<OpportunityState | null>(null)
   const [actionError, setActionError] = useState('')
+  const [activeTab, setActiveTab] = useState('signal')
+  const [showHelp, setShowHelp] = useState(false)
+  const [tradingError, setTradingError] = useState('')
+
   useEffect(() => {
     void execute({ operation: 'get', platform })
     let disposed = false
     const poll = (): void => { void window.quantScreenTrader.platformCommand({ operation: 'state', platform })
-      .then((s) => { if (!disposed) setSession(s.session) }).catch(() => { if (!disposed) setActionError('Platform browser unavailable') }) }
+      .then((s) => { if (!disposed) setSession(s.session) }).catch(() => { if (!disposed) setActionError('เชื่อมต่อหน้าต่างแพลตฟอร์มไม่ได้') }) }
     const dataPoll = (): void => { void window.quantScreenTrader.market({ operation: 'state', platform })
-      .then(s => { if (!disposed) { setMarket(s); setNow(Date.now()) } }).catch(() => {}) }
+      .then(s => { if (!disposed) { setMarket(s) } }).catch(() => {}) }
     const syncPoll = (): void => { void window.quantScreenTrader.assetSync({ operation: 'state', platform }).then(s => {
       if (disposed) return
       setSync(s)
@@ -45,8 +54,6 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
       .then(s => { if (!disposed) setFeatures(s) }).catch(() => {}) }
     const strategyPoll = (): void => { void window.quantScreenTrader.strategy(platform)
       .then(s => { if (!disposed) setStrategy(s) }).catch(() => {}) }
-    // Polling only reads the board. Ranking is computed when Phase 7 produces an ensemble,
-    // never when this timer fires, so a slow or paused UI cannot change a stored ranking.
     const opportunityPoll = (): void => { void window.quantScreenTrader.opportunities(platform)
       .then(s => { if (!disposed) setOpportunity(s) }).catch(() => {}) }
     featurePoll()
@@ -63,12 +70,10 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
       window.clearInterval(syncTimer); window.clearInterval(featureTimer)
       window.clearInterval(strategyTimer); window.clearInterval(opportunityTimer) }
   }, [platform, execute, setSession])
-  useEffect(() => {
-    // PlatformControlWindow no longer manages browser surface geometry.
-  }, [platform, mode])
+
   const close = (): void => {
     void window.quantScreenTrader.platformCommand({ operation: 'endCalibration', platform })
-      .then(() => setMode('browser')).catch(() => setActionError('Could not close calibration'))
+      .then(() => setMode('browser')).catch(() => setActionError('ปิดการปรับพื้นที่ไม่สำเร็จ'))
   }
   const calibrate = (): void => {
     if (!data) return
@@ -76,7 +81,7 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
     void window.quantScreenTrader.platformCommand({ operation: 'state', platform }).then(browser =>
       window.quantScreenTrader.platformCommand({ operation: 'beginCalibration', platform,
         draft: { assets: data.configuration, slots: profile?.slots ?? defaultCalibration(platform), zoomFactor: browser.zoomFactor } }))
-      .then(() => setMode('calibration')).catch(() => setActionError('Could not open calibration'))
+      .then(() => setMode('calibration')).catch(() => setActionError('เปิดการปรับพื้นที่ไม่สำเร็จ'))
   }
   const syncOnce = async (): Promise<void> => {
     try {
@@ -85,123 +90,224 @@ export function PlatformControlWindow({ platform }: WorkspaceProps): JSX.Element
       const result = await window.quantScreenTrader.assetSync({ platform, operation: 'sync' })
       setSync(result); await execute({ operation: 'get', platform })
       if (result.error?.includes('CALIBRATION_ZOOM_MISMATCH')) calibrate()
-    } catch { setActionError('Asset sync unavailable. Existing assets were preserved.') }
+    } catch { setActionError('ซิงก์สินทรัพย์ไม่สำเร็จ ข้อมูลเดิมยังอยู่') }
   }
   const probePrices = async (): Promise<void> => {
     if (!sync?.syncFresh) {
-      setActionError('Asset identity is unverified (sync is stale). Sync Assets before probing prices.')
+      setActionError('กรุณาซิงก์สินทรัพย์ให้เป็นปัจจุบันก่อนตรวจสอบราคา')
       return
     }
     setProbing(true); setActionError('')
     try {
       const result = await window.quantScreenTrader.market({ platform, operation: 'probe' })
       setProbe(result); setMarket(result)
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'Price probe unavailable') }
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'ตรวจสอบราคาไม่ได้') }
     finally { setProbing(false) }
   }
   const observe = async (): Promise<void> => {
     try {
       if (!market?.running && !sync?.syncFresh) {
-        setActionError('Asset identity is unverified (sync is stale). Sync Assets before observing.')
+        setActionError('กรุณาซิงก์สินทรัพย์ให้เป็นปัจจุบันก่อนเริ่มสังเกตการณ์')
         return
       }
       if (!market?.running && !data?.configuration.slots.some(s => s.enabled && s.assetName)) await syncOnce()
       const current = await execute({ operation: 'get', platform })
-      if (!market?.running && !current?.configuration.slots.some(s => s.enabled && s.assetName)) { setActionError('No identified assets. Sync Assets or use Asset Setup.'); return }
-      if (!market?.running && !current?.activeCalibrationId) { setActionError('Assets are ready. Calibrate Slots before starting observation.'); return }
+      if (!market?.running && !current?.configuration.slots.some(s => s.enabled && s.assetName)) { setActionError('ยังไม่มีสินทรัพย์ กรุณาซิงก์หรือตั้งค่าสินทรัพย์'); return }
+      if (!market?.running && !current?.activeCalibrationId) { setActionError('สินทรัพย์พร้อมแล้ว กรุณาปรับพื้นที่อ่านกราฟก่อนเริ่มสังเกตการณ์'); return }
       setActionError('')
       setMarket(await window.quantScreenTrader.market({ platform, operation: market?.running ? 'stop' : 'start' }))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Observation unavailable'
+      const message = error instanceof Error ? error.message : 'เริ่มสังเกตการณ์ไม่สำเร็จ'
       setActionError(message)
       if (message.includes('CALIBRATION_ZOOM_MISMATCH')) calibrate()
     }
   }
   const board = opportunity?.board ?? null
-  return <main className="workspace-shell">
-    <header className="workspace-toolbar">
-      <div className="toolbar"><h1>{details.name}</h1><EngineStatus health={engineHealth} />
-        <span>Session: {session?.state ?? 'STARTING'} · Load: {session?.loadState ?? 'idle'}</span>
-        <button onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'reload', platform }).catch(() => setActionError('Reload failed'))}>Reload Platform</button>
-        <button disabled={busy || mode !== 'browser'} onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'closePortfolio', platform }).then(() => setActionError('')).catch(() => setActionError('Close portfolio failed'))}>Close Portfolio Panel</button>
-        <button disabled={!data || busy || mode !== 'browser'} onClick={calibrate}>Calibrate Chart Area</button>
-        <button disabled={!data || busy || mode !== 'browser'} onClick={() => setMode('assets')}>Asset Setup</button>
-        <button disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void syncOnce()}>Sync Assets</button>
-        <label><input type="checkbox" checked={sync?.auto ?? false} onChange={e => void window.quantScreenTrader.assetSync({ platform, operation: 'auto', enabled: e.target.checked }).then(setSync).catch(() => setActionError('Auto Sync unavailable'))} /> Auto Sync Assets</label>
-        <button disabled={busy || mode !== 'browser'} onClick={() => void execute({ operation: 'get', platform })}>Refresh configuration</button>
+
+  return <main className="combined-workspace-shell">
+    <header className="combined-topbar">
+      <div className="combined-topbar__brand">
+        <div className={`platform-mark platform-mark--${platform}`} aria-hidden="true" style={{ width: 24, height: 24, fontSize: 10, borderRadius: 6 }}>
+          {details.shortName}
+        </div>
+        <h1 style={{ fontSize: '1.2rem', margin: 0 }}>{details.name}</h1>
+        <EngineStatus health={engineHealth} />
       </div>
-      <div className="toolbar">
-        <button disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void observe()}>{market?.running ? 'Stop observation' : 'Start observation'}</button>
-        <label>Sampling <select value={market?.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000)} onChange={e => void window.quantScreenTrader.market({ platform, operation: 'state', intervalMs: Number(e.target.value) }).then(setMarket)}>
-          {[250, 500, 1000, 2000].map(ms => <option key={ms} value={ms}>{ms} ms target</option>)}</select></label>
-        <button disabled={busy || probing || sync?.busy || mode !== 'browser'} onClick={() => void probePrices()}>{probing ? 'Probing prices…' : 'Probe Prices'}</button>
-        <label><input type="checkbox" checked={developer} onChange={e => setDeveloper(e.target.checked)} /> Developer diagnostics</label>
-        <span>Enabled {data?.configuration.slots.filter(s => s.enabled).length ?? 0} · Healthy {market?.slots.filter(s => s.state === 'READY').length ?? 0} · Uncertain {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0} · Stale {market?.slots.filter(s => s.state === 'STALE').length ?? 0} · {market?.captureRate.toFixed(1) ?? 0} obs/s · Queue {market?.queueDepth ?? 0} · Engine {market?.engineAvailable ? 'receiving' : 'waiting'}</span>
+      <div className="combined-topbar__info">
+        <span>เซสชัน: {session?.state ?? 'UNKNOWN'}</span>
+        <span>การโหลด: {session?.loadState ?? 'รอข้อมูล'}</span>
+        <span>{new Date().toLocaleString('th-TH')}</span>
       </div>
-      <p>Login manually in the platform. Authentication remains UNKNOWN unless visible UI evidence can prove it.</p>
-      {sync?.syncStatus === 'SCANNING' && <p role="status">Asset sync: Scanning charts…</p>}
-      {sync?.syncFresh && sync.detection && <p role="status">Asset sync: Detected {sync.detection.slots.filter(s => s.state === 'DETECTED').length} · Uncertain {sync.detection.slots.filter(s => s.state === 'UNCERTAIN').length} · Not found {sync.detection.slots.filter(s => s.state === 'NOT_FOUND').length} · Applied {sync.applied} · Manual slots preserved {sync.manualPreserved}{sync.lastSuccessfulSyncAt ? ` (at ${new Date(sync.lastSuccessfulSyncAt).toLocaleTimeString()})` : ''}</p>}
-      {sync && !sync.syncFresh && (sync.syncStatus === 'FAILED' || sync.error) && <p role="alert" className="error-banner">SYNC FAILED — configured assets below are from last successful sync{sync.error ? `: ${sync.error}` : ''}</p>}
-      {session?.errorMessage && <p role="alert" className="error-banner">{session.errorMessage}</p>}
-      {(error || actionError) && <p role="alert" className="error-banner">{error || actionError}</p>}
-      {/* The board and the execution controls open in their own window. Every row of chrome here
-          is height the broker's nine charts do not get, and the grid detector needs them big. */}
-      <p className="board-summary">บอร์ด: {boardLabel(board)}
-        {board?.selectedSlotId ? ` · ตัวนำช่อง ${board.selectedSlotId} ${board.selectedDirection}` : ' · ไม่มีตัวนำ'}
-        {' · '}<button onClick={() => void window.quantScreenTrader.openTrading(platform)
-          .catch(() => setActionError('เปิดแผงเทรดไม่สำเร็จ'))}>เปิดแผง AUTO / ตั้งเป้ากำไร-ขาดทุน</button></p>
-      <div className="slot-summary" aria-label="Nine configured slots">{Array.from({ length: 9 }, (_, i) => {
-        const slot = data?.configuration.slots.find((s) => s.id === i + 1)
-        const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)
-        const observed = market?.slots.find(s => s.slotId === i + 1)
-        const opinion = strategy?.slots.find(s => s.slotId === i + 1)
-        const isFresh = Boolean(sync?.syncFresh && detected)
-        const configuredName = slot?.displayName || slot?.assetName || 'Unassigned'
-        const candidateName = detected?.rawOCR?.[0] || detected?.assetName
-        return <span key={i} data-slot-id={i + 1}>
-          {isFresh && detected ? (
-            <>{i + 1} · {detected.state === 'DETECTED' ? (detected.displayName || detected.assetName) : detected.state === 'NOT_FOUND' ? 'Empty chart' : candidateName ? `Uncertain (${candidateName})` : 'Uncertain chart'}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br />{detected.state === 'UNCERTAIN' ? 'ASSET UNCERTAIN' : detected.state === 'DETECTED' ? 'DETECTED' : 'NOT FOUND'} {detected.source} {Math.round(detected.confidence * 100)}%{slot?.assetName && detected.assetName !== slot.assetName ? <><br /><small>Configured: {configuredName}</small></> : null}</>
-          ) : (
-            <>{i + 1} · Configured: {configuredName}{slot?.enabled ? '' : ' (off)'} · {slot?.assetMode ?? 'AUTO'}<br /><span style={{ color: '#ffaa00' }}>Current live identity: {sync?.syncStatus === 'SCANNING' ? 'SCANNING…' : 'UNVERIFIED'}</span>{sync?.lastSuccessfulSyncAt ? <><br /><small>Last successful sync: {new Date(sync.lastSuccessfulSyncAt).toLocaleTimeString()}</small></> : null}</>
-          )}
-          <br />{observed?.state ?? 'WAITING'} {observed?.observation?.sourceType ?? ''}<br /><PriceReading observation={observed?.observation ?? null} />
-          {observed?.observation && <small> · Age {Math.max(0, now - Date.parse(observed.observation.observedAt))} ms</small>}
-          <small><br />1s {observed?.secondSamples ?? 0} {platform === 'capitalbear' ? ` · S5 ${observed?.s5Samples ?? 0} ${observed?.s5State ?? 'collecting'}` : ''} · M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</small>
-          {developer && <small><br />Quant: {(features?.slots.find(f => f.slotId === i + 1)?.timeframes ?? [])
-            .map(t => `${t.timeframe} ${t.status ?? 'NONE'} ${t.barCount}`).join(' · ') || 'no feature state'}
-            {features?.available === false ? ' (engine unreachable)' : ''} · v{features?.featureVersion ?? '—'}
-            <br />Regime: {opinion ? `${opinion.primaryRegime} ${percent(opinion.regimeConfidence)}` : '—'}
-            {' · '}Ensemble: {opinion ? `${opinion.direction} ${percent(opinion.confidence)}` : '—'}
-            {opinion?.vetoes.length ? ` · veto ${opinion.vetoes.join(', ')}` : ''}
-            {strategy?.available === false ? ' (engine unreachable)' : ''} · v{strategy?.strategyVersion ?? '—'}
-            <br />Votes: {(opinion?.votes ?? []).map(voteLabel).join(' · ') || 'none'}
-            <br />Stage: {observed?.diagnostics?.stage ?? 'CHART'} · Canvas cell {observed?.diagnostics?.canvasSlotId ?? '—'}
-            <br />{observed?.diagnostics?.message}
-            <br />Chart cell {detected?.tabIndex ?? i + 1}: {JSON.stringify(detected?.pixelBounds)}
-            <br />OCR: {detected?.rawOCR?.join(' | ')}
-            <br />Chart: {JSON.stringify(observed?.pixelBounds)}
-            <br />Price ROI: {JSON.stringify(observed?.diagnostics?.pricePixelBounds)}
-            <br />Callout: {JSON.stringify(observed?.diagnostics?.labelPixelBounds)}
-            <br />Price OCR: {observed?.diagnostics?.rawPrice} · Parsed {observed?.diagnostics?.parsedPrice ?? '—'} · Confidence {observed?.diagnostics?.priceConfidence ?? '—'}
-            <br />Grid confidence {observed?.diagnostics?.gridConfidence ?? '—'}</small>}
-        </span>
-      })}</div>
-      {probe && <details open><summary>Price probe · Attempted {probe.slots.filter(s => s.state !== 'DISABLED').length} · Parsed {probe.slots.filter(s => s.observation?.price != null).length} · GOOD {probe.slots.filter(s => s.observation?.dataQuality.state === 'GOOD').length} · UNCERTAIN {probe.slots.filter(s => s.observation?.dataQuality.state === 'UNCERTAIN').length}</summary>
-        <div style={{ maxHeight: 240, overflow: 'auto' }}><table><thead><tr><th>Slot / asset</th><th>Tab identity</th><th>OCR variants / candidates</th><th>Price / quality</th><th>Raw / evidence confidence</th><th>Failure reason / ROI</th></tr></thead>
-          <tbody>{probe.slots.filter(s => s.state !== 'DISABLED').map(s => <tr key={s.slotId}>
-            <td>{s.slotId} · {data?.configuration.slots.find(c => c.id === s.slotId)?.assetName}</td>
-            <td>{s.diagnostics?.tabIdentity ?? 'Unverified'}</td>
-            <td>{s.diagnostics?.variants?.map((v, i) => <div key={i}>{v.rawText || '(empty)'} → {v.price ?? '—'} · {percent(v.rawOcrConfidence)} {v.error}</div>)}</td>
-            <td>{s.observation?.price ?? '—'} · {s.observation?.dataQuality.state ?? 'INVALID'}</td>
-            <td>{percent(s.diagnostics?.rawOcrConfidence ?? 0)} / {percent(s.diagnostics?.priceEvidenceConfidence ?? 0)}</td>
-            <td>{s.diagnostics?.message ?? '—'}<br />{JSON.stringify(s.diagnostics?.pricePixelBounds)}</td>
-          </tr>)}</tbody></table></div></details>}
-      {developer && <details><summary>Slot diagnostics (images are not stored)</summary><pre style={{ maxHeight: 200, overflow: 'auto' }}>{JSON.stringify({ market, sync, calibration: data?.calibrations.find(p => p.id === data.activeCalibrationId) }, null, 2)}</pre></details>}
-      {mode === 'calibration' && <CalibrationControls platform={platform} onClose={close} onError={setActionError} />}
+      <div className="combined-topbar__actions">
+        <button className="tab-button" onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'reload', platform }).catch(() => setActionError('โหลดแพลตฟอร์มใหม่ไม่สำเร็จ'))}>
+          <span className="nav-icon">🔄</span> โหลดแพลตฟอร์มใหม่
+        </button>
+        <button className="tab-button" onClick={() => void execute({ operation: 'get', platform })}>
+          <span className="nav-icon">🔃</span> รีเฟรชข้อมูล
+        </button>
+        <button className="primary-button" style={{ width: 'auto', padding: '6px 12px' }} disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void syncOnce()}>
+          ซิงก์สินทรัพย์
+        </button>
+        <button className="tab-button" disabled={!data || busy || mode !== 'browser'} onClick={() => setMode('assets')}>ตั้งค่าสินทรัพย์</button>
+        <button className="tab-button" aria-expanded={showHelp} aria-controls="workspace-help" onClick={() => setShowHelp(!showHelp)}>วิธีใช้งาน</button>
+      </div>
     </header>
+
+    {showHelp && <div id="workspace-help" className="workspace-help">เข้าสู่ระบบโบรกเกอร์ → เลือกกราฟ → ซิงก์สินทรัพย์ → ปรับพื้นที่อ่านกราฟ → เริ่มสังเกตการณ์ · การส่งคำสั่งจริงต้องเปิดโหมด AUTO และยืนยันความพร้อมแยกต่างหาก</div>}
+    <div className="combined-content">
+      <div className="combined-main">
+        {/* Slot Summary */}
+        <div className="slot-summary-header">
+          <h2 style={{ fontSize: '1rem', margin: '0 0 10px 0' }}>📊 ภาพรวมสินทรัพย์ · 9 ช่อง <span style={{ fontSize: '0.8rem', color: '#596579', fontWeight: 'normal' }}>สถานะล่าสุดของแต่ละสินทรัพย์ · ติดตามข้อมูลล่าสุด</span></h2>
+        </div>
+        <div className="slot-grid-modern">
+          {Array.from({ length: 9 }, (_, i) => {
+            const slot = data?.configuration.slots.find((s) => s.id === i + 1)
+            const detected = sync?.detection?.slots.find(s => s.slotId === i + 1)
+            const observed = market?.slots.find(s => s.slotId === i + 1)
+            const isFresh = Boolean(sync?.syncFresh && detected)
+            const configuredName = slot?.displayName || slot?.assetName || 'ยังไม่ตั้งค่า'
+
+            return <div key={i} data-slot-id={i + 1} className="slot-card-modern">
+              <div className="slot-card-modern__header">
+                <span style={{ color: '#596579', fontWeight: 'bold' }}>{i + 1}. {configuredName}</span>
+              </div>
+              <div className="slot-card-modern__status" style={{ color: isFresh ? '#087b65' : '#92620b', fontSize: '0.75rem', fontWeight: 600 }}>
+                {isFresh ? 'ยืนยันแล้ว' : 'รอยืนยัน'}
+              </div>
+              <div className="slot-price">{observed?.observation?.price ?? '—'}</div>
+              <div className="slot-card-modern__body" style={{ fontSize: '0.75rem', marginTop: 8 }}>
+                <div style={{ color: '#475569' }}>{observed?.state ?? 'PAUSED'}</div>
+                <div style={{ color: '#596579' }}>คุณภาพราคา · {observed?.observation?.dataQuality.state ?? 'INVALID'}</div>
+                <div style={{ color: '#596579', marginTop: 4 }}>1s {observed?.secondSamples ?? 0} · S5 {observed?.s5Samples ?? 0}</div>
+                <div style={{ color: '#596579' }}>M1 {observed?.m1Samples ?? 0} {observed?.m1State ?? 'collecting'}</div>
+              </div>
+            </div>
+          })}
+        </div>
+
+        {/* Errors & Alerts */}
+        {(error || actionError || tradingError) && <p role="alert" className="error-banner" style={{ margin: '16px 0' }}>{error || actionError || tradingError}</p>}
+        {sync?.syncStatus === 'SCANNING' && <p role="status" style={{ color: '#246bce', margin: '16px 0' }}>กำลังอ่านกราฟเพื่อซิงก์สินทรัพย์…</p>}
+
+        {developer && <details open className="diagnostics"><summary>รายละเอียดระบบ</summary><p>ราคา: {probe?.slots.length ?? 0} ช่อง · ฟีเจอร์: {features ? 'ได้รับข้อมูลแล้ว' : 'รอข้อมูล'} · กลยุทธ์: {strategy ? 'ได้รับข้อมูลแล้ว' : 'รอข้อมูล'}</p><pre>{JSON.stringify({ probe, features, strategy }, null, 2)}</pre></details>}
+        {/* Tab Navigation */}
+        <div className="panel-tabs">
+          {[
+            { id: 'signal', icon: '📡', label: 'บอร์ดสัญญาณ' },
+            { id: 'paper', icon: '📈', label: 'ผลจำลอง (Paper)' },
+            { id: 'daily', icon: '📅', label: 'รอบวัน (Daily)' },
+            { id: 'analytics', icon: '🔬', label: 'วิเคราะห์ผลย้อนหลัง' },
+            { id: 'replay', icon: '⏪', label: 'จำลองย้อนหลัง' },
+            { id: 'policy', icon: '⚙️', label: 'นโยบายปรับตัว' },
+          ].map(t => (
+            <button key={t.id} aria-pressed={activeTab === t.id} className={`panel-tab ${activeTab === t.id ? 'active' : ''}`} onClick={() => setActiveTab(t.id)}>
+              <span className="nav-icon">{t.icon}</span> {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Grid of Panels */}
+        <div className="panels-grid">
+          {(activeTab === 'signal' || activeTab === 'all') && (
+            <div className="dashboard-panel">
+              <div className="dashboard-panel__header">
+                <h3>บอร์ดสัญญาณ (Signal Board)</h3>
+                <span className="page-subtitle">{board ? 'อัปเดตจากระบบ' : 'รอข้อมูล'}</span>
+              </div>
+              <div className="dashboard-panel__body">
+                <p style={{ fontSize: '0.8rem', margin: '0 0 10px 0' }}>
+                  {boardLabel(board)} · {board ? `${board.receivedSlots}/${board.expectedSlots} ช่อง` : '—'}
+                </p>
+                {board?.watchlist.length
+                  ? <ol style={{ margin: 0, paddingLeft: 20, fontSize: '0.8rem' }}>{board.watchlist.map(entry => <li key={entry.slotId}>{candidateLabel(entry)}</li>)}</ol>
+                  : <p style={{ fontSize: '0.8rem', color: '#596579' }}>รอบนี้ไม่มีตัวเลือกที่มีทิศทาง</p>}
+                <p style={{ fontSize: '0.8rem', marginTop: 10 }}>{leadLabel(board)}</p>
+              </div>
+            </div>
+          )}
+
+          {(activeTab === 'paper' || activeTab === 'all') && (
+             <div className="dashboard-panel-wrapper"><PaperPanel platform={platform} /></div>
+          )}
+
+          {(activeTab === 'daily' || activeTab === 'all') && (
+            <div className="dashboard-panel-wrapper"><DailySessionPanel onError={setTradingError} /></div>
+          )}
+
+          {(activeTab === 'analytics' || activeTab === 'all') && (
+            <div className="dashboard-panel-wrapper"><AnalyticsPanel platform={platform} /></div>
+          )}
+
+          {(activeTab === 'replay' || activeTab === 'all') && (
+             <div className="dashboard-panel-wrapper"><ReplayPanel /></div>
+          )}
+
+          {(activeTab === 'policy' || activeTab === 'all') && (
+             <div className="dashboard-panel-wrapper"><PolicyPanel /></div>
+          )}
+        </div>
+      </div>
+
+      <aside className="combined-sidebar">
+        <h2 style={{ fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 16px 0' }}>
+          <span className="nav-icon">⚙️</span> แผงควบคุม
+        </h2>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section__header">01 / ติดตามตลาด</div>
+          <button className="primary-button" style={{ marginBottom: 10 }} disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void observe()}>
+            ▶ {market?.running ? 'หยุดสังเกตการณ์' : 'เริ่มสังเกตการณ์'}
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.75rem', marginBottom: 10 }}>
+            <span style={{ color: '#596579' }}>อ่านข้อมูลทุก</span>
+            <select style={{ flex: 1 }} value={market?.intervalMs ?? (platform === 'capitalbear' ? 500 : 1000)} onChange={e => void window.quantScreenTrader.market({ platform, operation: 'state', intervalMs: Number(e.target.value) }).then(setMarket).catch(() => setActionError('ปรับความถี่ไม่สำเร็จ กรุณาลองอีกครั้ง'))} aria-label="ความถี่ในการอ่านข้อมูล">
+              {[250, 500, 1000, 2000].map(ms => <option key={ms} value={ms}>{ms} มิลลิวินาที</option>)}
+            </select>
+          </div>
+          <label style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+            <input type="checkbox" checked={developer} onChange={e => setDeveloper(e.target.checked)} /> แสดงรายละเอียดระบบ
+          </label>
+          <div style={{ display: 'flex', gap: 8, fontSize: '0.7rem', flexWrap: 'wrap' }}>
+            <span style={{ color: '#087b65' }}><span className="status__dot" style={{background: '#087b65'}}/> พร้อม {market?.slots.filter(s => s.state === 'READY').length ?? 0}</span>
+            <span style={{ color: '#92620b' }}><span className="status__dot" style={{background: '#92620b'}}/> ไม่แน่นอน {market?.slots.filter(s => s.state === 'DATA_UNCERTAIN').length ?? 0}</span>
+            <span style={{ color: '#b42332' }}><span className="status__dot" style={{background: '#b42332'}}/> ข้อมูลเก่า {market?.slots.filter(s => s.state === 'STALE').length ?? 0}</span>
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section__header">02 / เตรียมสินทรัพย์และกราฟ</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <button className="sidebar-button" disabled={busy || mode !== 'browser'} onClick={() => void window.quantScreenTrader.platformCommand({ operation: 'closePortfolio', platform }).then(() => setActionError('')).catch(() => setActionError('ปิดแผงพอร์ตไม่สำเร็จ'))}>ปิดแผงพอร์ต</button>
+            <button className="sidebar-button" disabled={!data || busy || mode !== 'browser'} onClick={calibrate}>ปรับพื้นที่อ่านกราฟ</button>
+            <button className="sidebar-button" disabled={!data || busy || mode !== 'browser'} onClick={() => setMode('assets')}>ตั้งค่าสินทรัพย์</button>
+            <button className="sidebar-button" disabled={busy || sync?.busy || mode !== 'browser'} onClick={() => void syncOnce()}>ซิงก์สินทรัพย์</button>
+          </div>
+          <label style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <input type="checkbox" checked={sync?.auto ?? false} onChange={e => void window.quantScreenTrader.assetSync({ platform, operation: 'auto', enabled: e.target.checked }).then(setSync).catch(() => setActionError('เปิดซิงก์อัตโนมัติไม่สำเร็จ'))} /> ซิงก์สินทรัพย์อัตโนมัติ
+          </label>
+          <button className="sidebar-button" style={{ width: '100%' }} disabled={busy || probing || sync?.busy || mode !== 'browser'} onClick={() => void probePrices()}>{probing ? 'กำลังตรวจสอบราคา…' : 'ตรวจสอบราคา'}</button>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section__header">03 / คำสั่งซื้อขาย</div>
+          <div className="trading-controls-wrapper">
+             <TradingControls platform={platform} onError={setTradingError} />
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section__header">สถานะปัจจุบัน</div>
+          <EngineStatus health={engineHealth} />
+          <p className="card-hint">{market?.running ? 'กำลังสังเกตการณ์' : 'หยุดสังเกตการณ์'} · {sync?.syncFresh ? 'สินทรัพย์ยืนยันแล้ว' : 'รอซิงก์สินทรัพย์'}</p>
+        </div>
+      </aside>
+    </div>
+
     <div className="control-region">
       {mode === 'assets' && data && <AssetSetup platform={platform} initialSlots={data.configuration.slots} onClose={() => setMode('browser')} />}
     </div>
+    {mode === 'calibration' && <CalibrationControls platform={platform} onClose={close} onError={setActionError} />}
   </main>
 }
 
